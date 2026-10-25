@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+
+# downloaded model weights and demo output
+models/
+*.pt
+*.mlpackage/
+screenshots/
+recordings/
+*.mp4
+
+# files dropped in for live texture uploads
+uploads/*
+!uploads/README.md
+.DS_Store
