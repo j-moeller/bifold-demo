@@ -82,3 +82,15 @@ def test_image_background_and_texture_updates(gl, two_tone_png):
         assert image[45, 80].tolist() == [255, 255, 255]
     finally:
         renderer.release()
+
+
+def test_fog_fades_distant_surfaces(gl):
+    from bifold_demo.scene import Fog
+
+    scene = Scene(background=(0, 0, 0), fog=Fog(start=1.0, end=5.0, color=(0, 0, 255)))
+    scene.camera = Camera(position=(0, 0, 0), target=(0, 0, -1))
+    scene.add(Quad(size=1.0, texture="#ff0000", position=(0, 0, -3), lit=False), name="mid")
+    b, g, r = _render(scene)[45, 80].tolist()
+    assert 110 < r < 145 and 110 < b < 145  # halfway between red and the blue fog
+    scene.fog = None
+    assert _render(scene)[45, 80].tolist() == [0, 0, 255]

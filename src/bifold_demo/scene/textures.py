@@ -169,7 +169,7 @@ def parse_color(color) -> tuple[int, int, int]:
     values = tuple(color)
     if len(values) not in (3, 4):
         raise ValueError(f"colour must have 3 components (r, g, b), got {color!r}")
-    return tuple(int(np.clip(round(float(v)), 0, 255)) for v in values[:3])
+    return tuple(min(255, max(0, int(round(float(v))))) for v in values[:3])
 
 
 _color_cache: dict[tuple[int, int, int], Texture] = {}

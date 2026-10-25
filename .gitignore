@@ -18,4 +18,6 @@ recordings/
 # files dropped in for live texture uploads
 uploads/*
 !uploads/README.md
+people/*
+!people/README.md
 .DS_Store

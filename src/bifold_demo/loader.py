@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .scene import Scene
 
-DEFAULT_SCENE = "bifold_demo.scenes.demo"
+DEFAULT_SCENE = "bifold_demo.scenes.fair"
 _counter = itertools.count()
 
 
@@ -29,7 +29,7 @@ def _split(spec: str) -> tuple[str, str | None, bool]:
 def load_scene(spec: str | None = None) -> tuple[Scene, Path | None]:
     """Build a scene from ``spec`` and return it with the file it came from.
 
-    ``spec`` is ``"path/to/scene.py"`` or a module name (``"bifold_demo.scenes.demo"``),
+    ``spec`` is ``"path/to/scene.py"`` or a module name (``"bifold_demo.scenes.basic"``),
     optionally followed by ``":function"``. Without a function name the module's
     ``build_scene()`` is called, or its module-level ``scene`` is used.
     """

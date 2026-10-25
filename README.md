@@ -5,6 +5,12 @@ from the **webcam** or from a **customizable 3D scene** rendered on the GPU.
 Every frame goes through a **YOLO** detector, and the video is shown on screen
 at its normal resolution with the detections drawn on top.
 
+The default scene is a **trade-fair hall**: visitors standing in a half circle
+in front of the camera, people walking by in the background, exhibitor booths
+and a keynote stage. Its people come from a separate **people generator**
+(`bifold-people`), which creates realistic, made-up people with an open
+text-to-image model and cuts them out for the scene.
+
 ```
  ┌──────────────── sources ────────────────┐     ┌── detection ──┐     ┌──── display ────┐
  │ WebcamSource ─┐                         │     │               │     │                 │
@@ -25,8 +31,9 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 
-bifold-demo                      # the built-in 3D demo scene
+bifold-demo                      # the trade-fair hall (default scene)
 bifold-demo --source webcam      # start with the webcam
+bifold-demo --scene bifold_demo.scenes.basic    # a small scene with a few photo objects
 ```
 
 The first run downloads the YOLO weights (`yolo26n.pt`, about 5 MB) into
@@ -47,6 +54,88 @@ for your terminal app. Allow it, then run the command again.
 | `M`       | mirror the webcam on or off                               |
 | `H`       | hide or show the status panel                             |
 | `Q`/`Esc` | quit                                                      |
+
+## The trade-fair scene
+
+[`scenes/fair.py`](src/bifold_demo/scenes/fair.py) builds a 44 × 72 m exhibition
+hall with:
+
+- **Visitors**: 6 people standing in a half circle in front of the camera,
+  swaying slightly.
+- **Walkers**: 11 people walking by along the cross aisles, at different
+  speeds and in both directions.
+- **Booths**: 8 booths for fictional exhibitors. Each has a printed back wall,
+  a counter with staff behind it, a screen cycling through slides, a slowly
+  spinning hanging sign and a plant; some have a guest in front.
+- **Stage**: a keynote stage at the back of the hall, with an LED wall, trusses
+  and a welcome banner.
+- **The hall**: floor tiles, carpeted aisles, walls with high windows,
+  pillars, roof trusses, ceiling lights and a light haze (fog) for depth.
+
+The constants at the top of the file control the layout: number of visitors
+and walkers, the radius of the half circle, booth rows, company names and
+colours, the event name and the random `SEED`. Save the file while the demo
+runs and the scene reloads.
+
+**People.** The scene takes its people from the `people/` folder (see
+[Generating people](#generating-people)). Until that folder has people, a few
+default people cut out of the Ultralytics sample photos stand in. With only
+two of them the crowd is visibly cloned, so generate a library for the real
+thing.
+
+**Your own graphics.** Every part has a name, so you can put your own images
+on it through the uploads folder, e.g. `uploads/booth1_wall.png` for a booth's
+back wall. The names are `booth1_wall` … `booth8_wall`, `booth1_counter`,
+`booth1_sign`, `booth1_screen`, `stage_screen`, `banner`, `floor`, and the
+people `visitor1` … `visitor6`, `walker1` … `walker11`, `staff1` … `staff8` and
+`speaker`.
+
+## Generating people
+
+`bifold-people` is the component that creates the crowd. For each person it:
+
+1. writes a random description (age, gender, appearance, trade-fair outfit,
+   lanyard or coffee cup, standing or walking),
+2. generates a full-body photo on a plain studio background with a
+   text-to-image model,
+3. cuts the person out (YOLO segmentation, edges refined with GrabCut),
+4. rejects bad images (no person, several people, feet or head cut off) and
+   retries with another seed,
+5. saves a transparent PNG and a JSON file (height, pose, prompt, seed) into
+   `people/`.
+
+```bash
+pip install -e ".[people]"          # diffusers + transformers
+bifold-people models                # the available models
+bifold-people generate -n 30        # 30 people with the default model (mix of standing and walking)
+bifold-people sheet                 # contact sheet of everyone: people/_contact_sheet.jpg
+bifold-demo                         # the hall now uses them
+```
+
+The first `generate` downloads the model from Hugging Face. Generation happens
+once, before the demo. Each image takes a few seconds to a minute depending on
+the Mac, and the demo itself only loads the finished cut-outs.
+
+| Preset (`--model`)      | Model                                                                   | Memory  | Licence |
+|-------------------------|-------------------------------------------------------------------------|---------|---------|
+| `flux2-klein` (default) | [FLUX.2 [klein] 4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B), 4 steps | ~16 GB; a 24 GB+ Mac recommended | Apache-2.0 |
+| `z-image-turbo`         | [Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) 6B, 8 steps; very photorealistic | ~24 GB; a 32 GB+ Mac recommended | Apache-2.0 |
+| `sd-turbo`              | [SD-Turbo](https://huggingface.co/stabilityai/sd-turbo), 2 steps; lower quality, for small Macs | ~4 GB | Stability AI Community License |
+
+Any other Hugging Face text-to-image model works with `--model owner/name`
+(plus `--steps`/`--size`). Other useful options are `--pose standing|walking`,
+`--seed N` for reproducible people, and `--keep-raw` to keep the uncut images.
+
+Why one model for the whole person, rather than a face GAN plus a body? Current
+diffusion models generate the face, body, clothes and lighting together, so
+everything matches. Stitching a GAN face onto a separately made body leaves
+seams and mismatched light. At the distances in the hall, faces are small
+anyway.
+
+**Your own photos.** `bifold-people import photo1.jpg photo2.jpg` cuts the
+largest person out of each photo (`--all` for everyone). People cut off at the
+waist are used as booth staff, where the counter hides the missing legs. You
+can also drop a transparent PNG straight into `people/`.
 
 ## Building your own scene
 
@@ -184,8 +273,8 @@ uses it updates.
 **Uploads folder.** While the demo runs, drop a file into `uploads/` that is
 named like an object, and it becomes that object's texture. For example,
 `uploads/poster.jpg` goes onto the object named `poster`. Replace the file to
-change the texture again; delete it to restore the original. The built-in
-scene's objects are `poster`, `cube`, `ball` and `floor`. Use
+change the texture again; delete it to restore the original. The trade-fair
+scene's object names are listed [above](#the-trade-fair-scene). Use
 `--uploads OTHER_DIR` to pick another folder, or `--uploads ''` to turn this
 off.
 
@@ -196,7 +285,8 @@ Scene(background=(28, 30, 36),          # a colour, or an image/video path (fill
       ambient=0.45,                     # brightness in shadow, 0..1
       light_direction=(-0.4, -1, -0.5), # where the light shines towards
       light_color=(255, 255, 255),
-      camera=Camera(position=(0, 1.6, 6), target=(0, 1, 0), fov=55))
+      camera=Camera(position=(0, 1.6, 6), target=(0, 1, 0), fov=55),
+      fog=Fog(start=20, end=100, color=(200, 200, 200), strength=0.5))  # distance haze, or None
 ```
 
 ## Detection options
@@ -238,10 +328,13 @@ src/bifold_demo/
                animation.py, physics.py, renderer.py (ModernGL)        ← the 3D scene
   detection/   yolo.py (YoloDetector), worker.py (AsyncDetector)      ← module 2: recognition
   display/     overlay.py (boxes, HUD), window.py                      ← module 3: on screen
+  people/      prompts.py, generator.py (text-to-image), cutout.py,
+               library.py, defaults.py, cli.py (bifold-people)          ← people generator
   app.py       main loop and command line; loader.py loads and reloads scene files
-  scenes/demo.py   the built-in demo scene
+  scenes/      fair.py (default trade-fair hall), basic.py
 examples/      example scenes
 uploads/       drop textures here while the demo runs
+people/        generated / imported people cut-outs used by the fair scene
 tests/         pytest suite
 ```
 
@@ -268,10 +361,17 @@ a headless Linux machine, run them with `xvfb-run -a pytest`. The tests marked
   should print `arm64`), not one running under Rosetta.
 - **OpenGL errors on startup**: the scene renderer needs OpenGL 3.3 or newer.
   Current Macs provide OpenGL 4.1. On Linux without a display, use `xvfb-run`.
+- **`bifold-people generate` runs out of memory or is very slow**: use a
+  smaller model (`--model sd-turbo`) or a smaller image (`--size 576x1024`).
+  Close other apps; the model needs most of the Mac's memory.
+- **"cannot load … gated"**: open the model's Hugging Face page, accept its
+  terms, then run `hf auth login`.
 
 ## Licensing note
 
 Ultralytics YOLO is licensed under AGPL-3.0. That is fine for running demos.
 Embedding it in a closed-source product requires an Ultralytics Enterprise
-licence. The sample photos used by the default scene (`bus.jpg`, `zidane.jpg`)
-ship with the `ultralytics` package; this repository does not contain them.
+licence. The sample photos used for the default people (`bus.jpg`, `zidane.jpg`)
+ship with the `ultralytics` package; this repository does not contain them. The
+image models have their own licences (table above). FLUX.2 [klein] 4B and
+Z-Image-Turbo are Apache-2.0; SD-Turbo's licence restricts commercial use.

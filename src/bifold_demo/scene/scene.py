@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -147,11 +148,26 @@ class SceneObject:
                 self._texture_error = message
 
     def model_matrix(self, camera_position=None) -> np.ndarray:
-        m = translation(self.current_position)
+        return self.matrices(camera_position)[0]
+
+    def matrices(self, camera_position=None) -> tuple[np.ndarray, np.ndarray]:
+        """The model matrix and the normal matrix, recomputed only when the object moved."""
+        yaw = None
         if self.face_camera and camera_position is not None:
             d = np.asarray(camera_position) - self.current_position
-            m = m @ rotation_y(math.degrees(math.atan2(d[0], d[2])))
-        return m @ euler_rotation(self.current_rotation) @ scaling(self.current_scale)
+            yaw = math.degrees(math.atan2(d[0], d[2]))
+        key = (self.current_position.tobytes(), self.current_rotation.tobytes(), self.current_scale.tobytes(), yaw)
+        cached = self.__dict__.get("_matrix_cache")
+        if cached is not None and cached[0] == key:
+            return cached[1], cached[2]
+        m = translation(self.current_position)
+        if yaw is not None:
+            m = m @ rotation_y(yaw)
+        model = m @ euler_rotation(self.current_rotation) @ scaling(self.current_scale)
+        linear = model[:3, :3]
+        normal = np.linalg.inv(linear).T if abs(np.linalg.det(linear)) > 1e-12 else np.eye(3)
+        self.__dict__["_matrix_cache"] = (key, model, normal)
+        return model, normal
 
     def extents(self, rotation=None, scale=None) -> tuple[np.ndarray, np.ndarray]:
         """Bounding-box offsets ``(low, high)`` of the rotated, scaled mesh relative to its centre."""
@@ -284,6 +300,16 @@ class Camera:
         return perspective(self.current_fov, aspect, self.near, self.far)
 
 
+@dataclass
+class Fog:
+    """Distance haze: surfaces blend towards ``color`` between ``start`` and ``end`` (distance from the camera)."""
+
+    start: float = 20.0
+    end: float = 100.0
+    color: tuple = (200, 200, 200)
+    strength: float = 1.0  # how much of ``color`` is mixed in at ``end`` and beyond (0-1)
+
+
 class Scene:
     """A collection of named objects, a camera and a light.
 
@@ -294,11 +320,13 @@ class Scene:
         light_direction: direction the light travels in (from the light into the scene).
         light_color: ``(r, g, b)`` colour of the light.
         camera: a :class:`Camera`; a default one is created when omitted.
+        fog: a :class:`Fog` for distance haze (useful in large rooms), or ``None``.
     """
 
     def __init__(self, *, background=(28, 30, 36), ambient: float = 0.45, light_direction=(-0.4, -1.0, -0.5),
-                 light_color=(255, 255, 255), camera: Camera | None = None):
+                 light_color=(255, 255, 255), camera: Camera | None = None, fog: Fog | None = None):
         self.background = background
+        self.fog = fog
         self.ambient = ambient
         self.light_direction = light_direction
         self.light_color = light_color

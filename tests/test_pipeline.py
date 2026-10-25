@@ -10,6 +10,8 @@ from bifold_demo.display import draw_detections, draw_panel
 from bifold_demo.scene import Camera, Quad, Scene, sample_image
 from bifold_demo.sources import Frame, SourceSwitcher
 
+BASIC = "bifold_demo.scenes.basic"  # light scene for app tests
+
 
 class FakeDetector:
     """Reports one 'thing' box in the middle of every frame."""
@@ -99,7 +101,7 @@ def test_headless_run_records_annotated_video(gl, tmp_path, monkeypatch):
     monkeypatch.setattr(detection, "YoloDetector", FakeDetector)
     monkeypatch.chdir(tmp_path)
     out = tmp_path / "out.mp4"
-    app = DemoApp(DemoConfig(headless=True, frames=12, width=320, height=180, record=str(out)))
+    app = DemoApp(DemoConfig(scene=BASIC, headless=True, frames=12, width=320, height=180, record=str(out)))
     app.run()
     cap = cv2.VideoCapture(str(out))
     frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -114,7 +116,7 @@ def test_keys_control_the_demo(gl, tmp_path, monkeypatch):
 
     monkeypatch.setattr(detection, "YoloDetector", FakeDetector)
     monkeypatch.chdir(tmp_path)
-    app = DemoApp(DemoConfig(headless=True, frames=1, width=160, height=90, detect=False, camera=99))
+    app = DemoApp(DemoConfig(scene=BASIC, headless=True, frames=1, width=160, height=90, detect=False, camera=99))
     app.run()
     app.switcher = SourceSwitcher({"scene": lambda: app.scene_source, "webcam": _no_camera}, "scene")
     window = type("W", (), {"toggle_fullscreen": lambda self: None})()
@@ -171,7 +173,7 @@ def test_detector_failure_keeps_the_video_running(gl, tmp_path, monkeypatch):
 
     monkeypatch.setattr(detection, "YoloDetector", Offline)
     monkeypatch.chdir(tmp_path)
-    app = DemoApp(DemoConfig(headless=True, frames=3, width=160, height=90))
+    app = DemoApp(DemoConfig(scene=BASIC, headless=True, frames=3, width=160, height=90))
     app.run()
     assert app.detector is None and "no network" in app._detector_error
     assert app._last_canvas is not None

@@ -1,4 +1,4 @@
-"""Default demo scene: a photo poster, a photo cube and a bouncing ball under a slowly drifting camera.
+"""Basic scene: a photo poster, a photo cube and a bouncing ball under a slowly drifting camera.
 
 Objects (drop ``uploads/<name>.jpg`` to replace a texture): ``poster``, ``cube``, ``ball``, ``floor``.
 """

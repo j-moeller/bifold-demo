@@ -15,11 +15,14 @@ def _write(path, body):
     path.write_text(textwrap.dedent(body))
 
 
-def test_builtin_demo_scene():
-    scene, path = load_scene(None)
-    assert isinstance(scene, Scene)
+def test_builtin_scenes(monkeypatch):
+    import bifold_demo.scenes.fair as fair
+
+    monkeypatch.setattr(fair, "people_for_scene", lambda folder: [])
+    scene, path = load_scene(None)  # the default: the trade-fair hall
+    assert isinstance(scene, Scene) and path.name == "fair.py" and "stage_screen" in scene
+    scene, path = load_scene("bifold_demo.scenes.basic")
     assert {"poster", "cube", "ball", "floor"} <= set(scene.objects)
-    assert path.name == "demo.py"
 
 
 def test_scene_file_variants(tmp_path):

@@ -16,10 +16,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# text-to-image models for generating people (bifold-people generate)
+people = ["diffusers>=0.42", "transformers>=4.51", "accelerate>=1.0", "safetensors"]
 dev = ["pytest>=7"]
 
 [project.scripts]
 bifold-demo = "bifold_demo.app:main"
+bifold-people = "bifold_demo.people.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

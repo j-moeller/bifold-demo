@@ -20,10 +20,12 @@ in vec3 in_normal;
 in vec2 in_uv;
 out vec3 v_normal;
 out vec2 v_uv;
+out float v_depth;
 void main() {
     v_normal = u_normal_matrix * in_normal;
     v_uv = in_uv;
     gl_Position = u_mvp * vec4(in_position, 1.0);
+    v_depth = gl_Position.w;  // distance along the view direction
 }
 """
 
@@ -35,8 +37,13 @@ uniform bool u_lit;
 uniform vec3 u_light_dir;
 uniform vec3 u_light_color;
 uniform float u_ambient;
+uniform vec3 u_fog_color;
+uniform float u_fog_start;
+uniform float u_fog_end;
+uniform float u_fog_strength;
 in vec3 v_normal;
 in vec2 v_uv;
+in float v_depth;
 out vec4 f_color;
 void main() {
     vec4 texel = texture(u_texture, v_uv);
@@ -48,6 +55,8 @@ void main() {
         float diffuse = max(dot(n, -u_light_dir), 0.0);
         rgb *= u_ambient + (1.0 - u_ambient) * diffuse * u_light_color;
     }
+    float fog = clamp((v_depth - u_fog_start) / max(u_fog_end - u_fog_start, 1e-3), 0.0, 1.0);
+    rgb = mix(rgb, u_fog_color, fog * u_fog_strength);
     f_color = vec4(rgb.bgr, 1.0);  // BGR so OpenCV can use the pixels directly
 }
 """
@@ -105,6 +114,7 @@ class Renderer:
         self._bg_program = self.ctx.program(vertex_shader=_BACKGROUND_VS, fragment_shader=_BACKGROUND_FS)
         self._bg_vao = self.ctx.vertex_array(self._bg_program, [])
         self._program["u_texture"].value = 0
+        self._uniforms = {name: self._program[name] for name in ("u_mvp", "u_normal_matrix", "u_color", "u_lit")}
         self._bg_program["u_texture"].value = 0
         self._white = as_texture((255, 255, 255))
         self._meshes: dict[int, tuple] = {}  # id(mesh) -> (weakref, vao, vbo, ibo)
@@ -146,6 +156,12 @@ class Renderer:
         prog["u_light_dir"].value = tuple(light)
         prog["u_light_color"].value = tuple(c / 255.0 for c in parse_color(scene.light_color))
         prog["u_ambient"].value = float(np.clip(scene.ambient, 0.0, 1.0))
+        fog = scene.fog
+        prog["u_fog_strength"].value = float(np.clip(fog.strength, 0.0, 1.0)) if fog else 0.0
+        if fog:
+            prog["u_fog_color"].value = tuple(c / 255.0 for c in parse_color(fog.color))
+            prog["u_fog_start"].value = float(fog.start)
+            prog["u_fog_end"].value = float(fog.end)
 
         for obj in scene:
             if obj.current_visible:
@@ -161,13 +177,13 @@ class Renderer:
         return cv2.flip(image, 0)  # OpenGL rows start at the bottom
 
     def _draw(self, obj: SceneObject, view_proj: np.ndarray, camera_position) -> None:
-        model = obj.model_matrix(camera_position)
-        normal_matrix = np.linalg.inv(model[:3, :3]).T if abs(np.linalg.det(model[:3, :3])) > 1e-12 else np.eye(3)
-        prog = self._program
-        prog["u_mvp"].write(gl_bytes(view_proj @ model))
-        prog["u_normal_matrix"].write(gl_bytes(normal_matrix))
-        prog["u_color"].value = tuple(c / 255.0 for c in obj.current_color)
-        prog["u_lit"].value = bool(obj.lit)
+        model, normal_matrix = obj.matrices(camera_position)
+        u = self._uniforms
+        u["u_mvp"].write(gl_bytes(view_proj @ model))
+        u["u_normal_matrix"].write(gl_bytes(normal_matrix))
+        r, g, b = obj.current_color
+        u["u_color"].value = (r / 255.0, g / 255.0, b / 255.0)
+        u["u_lit"].value = bool(obj.lit)
         self._gl_texture(obj.current_texture or self._white).use(0)
         self._vao(obj.mesh).render(self._moderngl.TRIANGLES)
 
