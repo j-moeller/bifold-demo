@@ -71,6 +71,10 @@ work goes on. The people are avatars from the
   dive with the arms wide into a fold over straight legs, the hips over the
   heels, the head hanging, the hands on the floor beside the feet (on the
   fingertips for the shorter-armed women).
+- `yoga_plank.jpg`: the Plank Pose (Phalakasana) clip: down to hands and knees,
+  the toes tucked, the right foot and then the left one stepping back, the hips
+  lowering into one straight line from the heels to the head on straight arms,
+  on the balls of the feet, the gaze on the floor a little ahead of the hands.
 - `selection.jpg`: selection mode in the fair: three of the audience doing Cow
   Pose, Downward Facing Dog and Upward Facing Dog (keys 2, 4 and 6), each at a
   spot they walked to where the camera sees the whole pose; the selected one is

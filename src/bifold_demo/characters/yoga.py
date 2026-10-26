@@ -887,14 +887,16 @@ def _warrior2_steps(body: Body) -> list[Step]:
             Step(stand, seconds=3.0, lift=steps)]
 
 
-def plank(body: Body, hands: BodyPose) -> BodyPose:
+def plank(body: Body, hands: BodyPose, ankle_height: float | None = None, leg_reach: float = ARM_STRAIGHT) -> BodyPose:
     """High plank with the hands of ``hands``: straight arms upright under the shoulders, the body one straight line
-    down to the heels, on the balls of the feet."""
+    down to the heels, on the balls of the feet (the ankles ``ankle_height`` above the floor, the legs reaching
+    ``leg_reach`` of their length)."""
     left = body.sides["left"]
     hand = np.asarray(hands.left_arm.target, float)
     shoulder = hand + np.array([0.0, ARM_STRAIGHT * (left["upper_length"] + left["fore_length"]), 0.0])
-    legs = ARM_STRAIGHT * (left["thigh_length"] + left["shin_length"])
-    ankle_height = 0.14 * body.leg  # on the balls of the feet, the heels up
+    legs = leg_reach * (left["thigh_length"] + left["shin_length"])
+    if ankle_height is None:
+        ankle_height = 0.14 * body.leg  # on the balls of the feet, the heels up
     arms = {name: replace(getattr(hands, name), pole=(0.0, 0.0, -1.0)) for name in ("left_arm", "right_arm")}
     base = BodyPose((0.0, 0.0, 0.0), pelvis=(80.0, 0.0, 0.0), head=(-8.0, 0.0, 0.0), flat_hands=True, **arms,
                     left_leg=hands.left_leg, right_leg=hands.right_leg)
@@ -1590,6 +1592,49 @@ def _forward_bend_steps(body: Body) -> list[Step]:
             Step(stand, seconds=2.0)]
 
 
+LEG_STRAIGHT = 0.999  # a leg held long and straight in a plank reaches this share of its length (the knee about 5°)
+
+
+def _step_back(body: Body, pose: BodyPose, side: str, ankle_height: float, kneeling: bool = True) -> BodyPose:
+    """``pose`` (on the knees, the toes tucked) with the ``side`` leg stepped back straight from the hip, on the
+    ball of the foot with the ankle ``ankle_height`` above the floor; the hips stay where they are. ``kneeling``:
+    the other knee is still down."""
+    s = body.sides[side]
+    legs = LEG_STRAIGHT * (s["thigh_length"] + s["shin_length"])
+    forward, up = _unit((0.0, -0.87, -0.49)), _unit((0.0, -0.49, 0.87))  # the heel up, the toes bent on the floor
+    pose = replace(pose, knees_down=kneeling)
+    for _ in range(2):  # the ankle where the straight leg reaches the floor, again once the foot has settled
+        _, glob = solve(body, pose)
+        hip = glob[s["thigh"], :3, 3]
+        ankle_z = hip[2] - math.sqrt(max(legs ** 2 - (hip[1] - ankle_height) ** 2, 0.0))
+        leg = Limb((s["sign"] * 0.5 * body.hip_width, ankle_height, ankle_z), (0.0, -1.0, 0.0), tuple(forward),
+                   tuple(up), contact=True, toes=55.0)
+        pose = settle(body, replace(pose, **{f"{side}_leg": leg}))
+        ankle_height = getattr(pose, f"{side}_leg").target[1]
+    return pose
+
+
+def _plank_steps(body: Body) -> list[Step]:
+    """Phalakasana: from standing down to hands and knees, the toes tuck, the right foot steps back and then the
+    left one, the hips lower into a high plank: the straight arms under the shoulders, the body one line from the
+    heels to the head, on the balls of the feet, the gaze on the floor a little ahead of the hands; back the same
+    way."""
+    down = _down_to_table(body)
+    table = settle(body, down[-1].pose)  # the hands where they will be, so the arms end up straight
+    board = settle(body, plank(body, table, leg_reach=LEG_STRAIGHT))
+    ankles = 0.5 * (board.left_leg.target[1] + board.right_leg.target[1])  # where the feet rest (big shoes: higher)
+    board = settle(body, plank(body, table, ankles, leg_reach=LEG_STRAIGHT))  # the legs straight down to there
+    tucked = settle(body, replace(down[3].pose, left_arm=table.left_arm, right_arm=table.right_arm))  # toes tucked
+    half = _step_back(body, tucked, "right", board.right_leg.target[1])  # the left knee still down
+    pike = _step_back(body, half, "left", board.left_leg.target[1], kneeling=False)  # the hips still high
+    feet = {"left_leg": 0.05, "right_leg": 0.05}
+    right, left = {"right_leg": 0.06}, {"left_leg": 0.06}  # one foot steps back, then the other
+    return down + [Step(tucked, seconds=1.2, lift=feet), Step(half, seconds=1.4, lift=right),
+                   Step(pike, seconds=1.4, lift=left), Step(board, seconds=1.2, hold=9.0),
+                   Step(pike, seconds=1.2), Step(half, seconds=1.4, lift=left), Step(tucked, seconds=1.4, lift=right),
+                   Step(down[-1].pose, seconds=1.2, hold=1.0, breathe=False, lift=feet)] + _up_from(down)
+
+
 POSES: dict[str, PoseSpec] = {
     "yogi_squat": PoseSpec("Yogi Squat (Malasana)", _yogi_squat_steps, main=1, view=0.0),
     "cow": PoseSpec("Cow Pose (Bitilasana)", _cow_steps, main=5, view=90.0),
@@ -1603,4 +1648,5 @@ POSES: dict[str, PoseSpec] = {
     "warrior_3": PoseSpec("Warrior 3 (Virabhadrasana III)", _warrior3_steps, main=2, view=90.0),
     "triangle": PoseSpec("Triangle Pose (Utthita Trikonasana)", _triangle_steps, main=4, view=0.0),
     "forward_bend": PoseSpec("Standing Forward Bend (Uttanasana)", _forward_bend_steps, main=3, view=90.0),
+    "plank": PoseSpec("Plank Pose (Phalakasana)", _plank_steps, main=8, view=90.0),
 }

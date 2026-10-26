@@ -448,6 +448,33 @@ def test_goddess_squats_wide_with_the_knees_over_the_toes_and_cactus_arms(body):
     assert gaze[2] > 0.95  # looking ahead
 
 
+def test_plank_is_one_straight_line_from_the_heels_to_the_head(body):
+    spec = yoga.POSES["plank"]
+    pose = yoga.settle(body, spec.steps(body)[spec.main].pose)
+    _, glob = yoga.solve(body, pose)
+    left, right = body.sides["left"], body.sides["right"]
+    for s in (left, right):
+        shoulder, hand = glob[s["upper"], :3, 3], glob[s["hand"], :3, 3]
+        assert abs(shoulder[2] - hand[2]) < 0.03  # the shoulders right above the wrists ...
+        assert _bend(glob, s["upper"], s["fore"], s["hand"]) < 15.0  # ... on straight arms
+        assert _bend(glob, s["thigh"], s["calf"], s["foot"]) < 10.0  # the legs long and straight
+        toes = glob[s["foot"], :3, :3] @ body.rest_rot[s["foot"]].T @ s["foot_forward"]
+        assert toes[1] < -0.6  # on the balls of the feet, the heels up
+    heels = 0.5 * (glob[left["foot"], :3, 3] + glob[right["foot"], :3, 3])
+    hips = 0.5 * (glob[left["thigh"], :3, 3] + glob[right["thigh"], :3, 3])
+    shoulders = 0.5 * (glob[left["upper"], :3, 3] + glob[right["upper"], :3, 3])
+    legs, trunk, line = hips - heels, shoulders - hips, shoulders - heels
+    assert math.degrees(math.acos(legs @ trunk / np.linalg.norm(legs) / np.linalg.norm(trunk))) < 3.0  # no sag, no pike
+    head = glob[body.head, :3, 3]
+    assert np.linalg.norm(np.cross(head - heels, line)) / np.linalg.norm(line) < 0.05  # the head in line too
+    assert 10.0 < math.degrees(math.atan2(line[1], line[2])) < 30.0  # the body slopes up from the heels
+    verts = yoga.skin(body, glob)
+    assert all(verts[body.knee_group(side), 1].min() > 0.05 for side in body.sides)  # the knees off the floor
+    gaze = glob[body.head, :3, :3] @ body.rest_rot[body.head].T @ (0.0, 0.0, 1.0)
+    assert gaze[1] < -0.8 and gaze[2] > 0.1  # looking down at the floor a little ahead of the hands
+    assert all(getattr(pose, limb).contact for limb in yoga.LIMBS) and not pose.knees_down
+
+
 # -- every pose on real avatars --------------------------------------------------------------------------------
 
 

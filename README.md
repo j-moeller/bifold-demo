@@ -328,6 +328,7 @@ menu), then `1`.
 | `↓ 2` | Warrior 3 (Virabhadrasana III) | `"warrior_3"` | standing, the weight shifts onto the left foot, the body tips forward as the right leg lifts back and the arms swing forward |
 | `↓ 3` | Triangle Pose (Utthita Trikonasana) | `"triangle"` | standing, the feet step wide and the arms open, the front foot turns out, the torso reaches over the front leg and tilts down, the lower hand to the shin, the top arm up |
 | `↓ 4` | Standing Forward Bend (Uttanasana) | `"forward_bend"` | standing, the arms open wide, a flat-back hinge with the arms out (swan dive), the fold down over straight legs to the hands beside the feet |
+| `↓ 5` | Plank Pose (Phalakasana) | `"plank"` | standing, down to hands and knees, toes tucked, the right foot then the left steps back, the hips lower into the plank |
 
 ```python
 from bifold_demo.characters.character import Character
