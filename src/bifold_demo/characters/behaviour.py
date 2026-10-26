@@ -50,12 +50,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .character import NECK_SHARE
 from .model import AnimationClip, CharacterModel, CharacterState, Layer, quat_from_axis_angle, quat_multiply, \
     quat_to_matrix
 
 ROLES = ("walk", "walk_slow", "stroll", "idle", "look_around", "talk", "listen", "phone",
          "turn_left_90", "turn_right_90", "turn_left_180", "turn_right_180")
-FADE = 0.3  # crossfade between consecutive clips, seconds
+FADE = 0.3  # shortest crossfade between consecutive clips, seconds
 HEAD_YAW_LIMIT = 70.0
 MIN_ANGLE = 35.0
 MIN_CAMERA_DISTANCE = 0.75  # metres on the floor plane; closer than this the direction to the camera is undefined
@@ -69,8 +70,12 @@ _MARGIN = 5.0  # extra degrees the head plan keeps from the camera (blending and
 _PLAN_DT = 0.1  # head plan time step, seconds
 _BIN = 2.5  # head plan yaw resolution, degrees
 _HEAD_SPEED = 170.0  # fastest head turn the plan may use, degrees per second
+_FADE_SPEED = 200.0  # crossfades last long enough that the clips' head yaw difference moves at most this fast
+_MAX_FADE = 1.0
 _WALK_TURN = 20.0  # walks starting more than this off the current heading turn in place first
 _SHARP = 120.0  # corners sharper than this (degrees of deflection) stop and turn in place
+_PACE = {"child": (1.0, 1.25), "adult": (0.92, 1.1), "older": (0.85, 1.0)}  # walking speed / the clip's own speed
+_STRIDE = {"child": 0.72, "adult": 1.0, "older": 0.97}  # default stride_scale when the style gives none
 
 
 def _wrap(a: float) -> float:
@@ -115,6 +120,32 @@ def _choice(rng, items):
     if hasattr(rng, "integers"):
         return items[int(rng.integers(len(items)))]
     return items[rng.randrange(len(items))]
+
+
+def pitch_shift(clip_yaw, elevation, head_yaw, head_pitch, vector: bool = False):
+    """Degrees by which ``head_pitch`` moves the face sideways (on the floor plane) as :class:`Character` applies it.
+
+    Character turns the neck by ``NECK_SHARE`` of ``(head_yaw, head_pitch)`` and then the head by the rest, each as
+    a pitch about the body's right axis followed by a yaw about +Y, so when the clip already turns the head
+    (``clip_yaw``, ``elevation`` = degrees below the horizontal) the pitch also changes the face's yaw a little.
+    The face heading is ``heading + clip_yaw + head_yaw + pitch_shift(...)``. ``vector``: numpy arrays in and out.
+    """
+    if vector:
+        sin, cos, atan2 = np.sin, np.cos, np.arctan2
+    else:
+        if not head_pitch:
+            return 0.0
+        sin, cos, atan2 = math.sin, math.cos, math.atan2
+    r = math.pi / 180.0
+    ce = cos(elevation * r)
+    x, y, z = sin(clip_yaw * r) * ce, -sin(elevation * r), cos(clip_yaw * r) * ce
+    for share in (NECK_SHARE, 1.0 - NECK_SHARE):
+        c, s = cos(head_pitch * share * r), sin(head_pitch * share * r)
+        y, z = y * c - z * s, y * s + z * c
+        c, s = cos(head_yaw * share * r), sin(head_yaw * share * r)
+        x, z = x * c + z * s, z * c - x * s
+    shift = atan2(x, z) / r - clip_yaw - head_yaw
+    return (shift + 180.0) % 360.0 - 180.0
 
 
 # -- motion library ---------------------------------------------------------------------------------
@@ -215,7 +246,7 @@ class MotionLibrary:
                 self._roles[role].append(name)
         self.head_forward = self._estimate_head_forward() if head_forward is None else \
             np.asarray(head_forward, dtype=np.float64) / np.linalg.norm(head_forward)
-        self._yaw: dict[int, tuple[AnimationClip, list[float]]] = {}
+        self._yaw: dict[int, tuple[AnimationClip, tuple[list[float], list[float]]]] = {}
         self._after: dict[int, tuple[AnimationClip, AnimationClip]] = {}
 
     def register(self, role: str, clip_name: str) -> None:
@@ -255,8 +286,19 @@ class MotionLibrary:
             raise KeyError(f"no clip for role {role!r}")
         return _choice(rng, clips)
 
+    def role_of(self, clip: AnimationClip) -> str | None:
+        """The first role (in ``ROLES`` order) ``clip`` is registered for, else ``None``."""
+        return next((role for role in ROLES if clip.name in self._roles[role]), None)
+
     def head_yaw(self, clip: AnimationClip) -> list[float]:
         """Per-frame yaw (degrees, unwrapped) of the head the clip produces, in character space (0 = facing +Z)."""
+        return self._head(clip)[0]
+
+    def head_elevation(self, clip: AnimationClip) -> list[float]:
+        """Per-frame angle (degrees) of the head's forward axis below the horizontal (positive = looking down)."""
+        return self._head(clip)[1]
+
+    def _head(self, clip: AnimationClip) -> tuple[list[float], list[float]]:
         cached = self._yaw.get(id(clip))
         if cached is not None and cached[0] is clip:
             return cached[1]
@@ -270,7 +312,9 @@ class MotionLibrary:
             directions = np.tile([0.0, 0.0, 1.0], (clip.frames, 1))
         yaw = np.degrees(np.unwrap(np.arctan2(directions[:, 0], directions[:, 2])))
         yaw -= 360.0 * np.round(yaw[0] / 360.0)
-        self._yaw[id(clip)] = (clip, [float(v) for v in yaw])
+        norm = np.maximum(np.linalg.norm(directions, axis=1), 1e-12)
+        elevation = np.degrees(np.arcsin(np.clip(-directions[:, 1] / norm, -1.0, 1.0)))
+        self._yaw[id(clip)] = (clip, ([float(v) for v in yaw], [float(v) for v in elevation]))
         return self._yaw[id(clip)][1]
 
     def after_turn(self, clip: AnimationClip) -> AnimationClip:
@@ -338,9 +382,11 @@ class Idle:
 
 @dataclass
 class Turn:
-    """Turn in place by ``degrees`` (positive = to the left)."""
+    """Turn in place by ``degrees`` (positive = to the left); with ``either_way`` the behaviour may turn the other
+    way round instead (``degrees`` -/+ 360) when that keeps the face off the camera."""
 
     degrees: float
+    either_way: bool = False
 
 
 @dataclass
@@ -384,7 +430,7 @@ class _WalkPiece:
         self.speed = speed
         self.ease = min(0.7, self.length / speed)
         self.t0, self.t1 = t0, t0 + self.length / speed + self.ease
-        self.blend, self.blend_time = blend, max(0.8, self.ease)
+        self.blend, self.blend_time = blend, min(max(0.8, self.ease), self.t1 - t0)
         self.visible, self.kind, self.turn = True, "walk", 0.0
 
     def distance(self, local: float) -> float:
@@ -419,16 +465,17 @@ class _WalkPiece:
 
 
 class _Entry:
-    """One clip on the clip track; ``sample(tl)`` gives ``(clip, clip time, clip head yaw)`` (also past ``t1``)."""
+    """One clip on the clip track; ``sample(tl)`` gives ``(clip, clip time, head yaw, head elevation)`` of the
+    clip (also past ``t1``)."""
 
-    __slots__ = ("t0", "t1", "clip", "after", "yaw", "after_yaw", "walk", "phase", "scale", "role", "fade", "fps",
+    __slots__ = ("t0", "t1", "clip", "after", "head", "after_head", "walk", "phase", "scale", "role", "fade", "fps",
                  "last", "loop")
 
-    def __init__(self, t0, t1, clip, yaw=None, role=None, walk=None, phase=0.0, scale=1.0, after=None,
-                 after_yaw=None):
-        self.t0, self.t1, self.clip, self.yaw, self.role = t0, t1, clip, yaw, role
+    def __init__(self, t0, t1, clip, head=None, role=None, walk=None, phase=0.0, scale=1.0, after=None,
+                 after_head=None):
+        self.t0, self.t1, self.clip, self.head, self.role = t0, t1, clip, head, role
         self.walk, self.phase, self.scale = walk, phase, scale
-        self.after, self.after_yaw = after, after_yaw
+        self.after, self.after_head = after, after_head
         self.fade = 0.0
         if clip is not None:
             self.fps, self.last, self.loop = clip.fps, clip.frames - 1, clip.loop
@@ -438,17 +485,18 @@ class _Entry:
             time = (self.walk.distance(tl - self.walk.t0) + self.phase) * self.scale
         else:
             time = self.phase + (tl - self.t0)
-        clip, yaw = self.clip, self.yaw
+        clip, (yaw, elevation) = self.clip, self.head
         if self.after is not None and tl >= self.t1:
-            clip, yaw = self.after, self.after_yaw
+            clip, (yaw, elevation) = self.after, self.after_head
         last = self.last
         if last <= 0:
-            return clip, time, yaw[0]
+            return clip, time, yaw[0], elevation[0]
         f = time * self.fps
         f = f % last if self.loop else (0.0 if f < 0.0 else last if f > last else f)
         i = int(f)
         j = i + 1 if i < last else last
-        return clip, time, yaw[i] + (yaw[j] - yaw[i]) * (f - i)
+        a = f - i
+        return clip, time, yaw[i] + (yaw[j] - yaw[i]) * a, elevation[i] + (elevation[j] - elevation[i]) * a
 
 
 def _rounded_path(points: list[tuple[float, float]], radius: float = 1.0, step: float = 0.05):
@@ -534,19 +582,26 @@ class _Camera:
 
 
 class _Style:
+    """Avatar metadata reduced to what behaviours use. Without an explicit ``speed`` people walk at their walk
+    clip's own speed (times ``stride_scale``) times a random pace, so clips play at about their natural rate."""
+
     def __init__(self, style, rng: random.Random):
         style = dict(style or {})
         self.sex = "female" if str(style.get("sex", "male")).lower().startswith("f") else "male"
         self.age = str(style.get("age_group", "adult")).lower()
-        if self.age == "child":
-            self.walk_role, low, high, stride = "walk", 0.8, 1.0, 0.72
-        elif self.age == "older":
-            self.walk_role, low, high, stride = rng.choice(("walk_slow", "stroll")), 0.8, 1.0, 0.97
-        else:
-            self.walk_role, low, high, stride = "walk", 1.1, 1.4, 1.0
+        if self.age not in _PACE:
+            self.age = "adult"
+        self.walk_role = rng.choice(("walk_slow", "stroll")) if self.age == "older" else "walk"
         self.walk_role = style.get("walk_role", self.walk_role)
-        self.speed = float(style.get("speed") or rng.uniform(low, high))
-        self.stride = float(style.get("stride_scale") or stride)
+        self.pace = rng.uniform(*_PACE[self.age])
+        self.speed = float(style["speed"]) if style.get("speed") else None
+        self.stride = float(style.get("stride_scale") or _STRIDE[self.age])
+
+    def walk_speed(self, clip: AnimationClip | None) -> float:
+        if self.speed is not None:
+            return self.speed
+        natural = float(clip.metadata.get("speed") or 0.0) if clip is not None else 0.0
+        return (natural or 1.2) * self.stride * self.pace
 
 
 class Behaviour:
@@ -578,12 +633,28 @@ class Behaviour:
         self.partners = [_xz(p) for p in partners]
         self.start = _xz(start)
         self.start_heading = float(heading)
+        segments = list(segments)
+        for segment in segments:
+            if not isinstance(segment, (Walk, Idle, Turn, Hide)):
+                raise TypeError(f"unknown segment {segment!r}")
+        state = self.rng.getstate()
+        self._build(segments, set())
+        flips = self._choose_turns()
+        if flips:
+            self.rng.setstate(state)
+            self._build(segments, flips)
+        self._plan_head()
+
+    # -- building ------------------------------------------------------------------------------------
+
+    def _build(self, segments: list, flips: set[int]) -> None:
+        """Lay out the pieces and the clip track; the automatic turns numbered in ``flips`` go the other way round."""
         self._pieces: list = []
         self._entries: list[_Entry] = []
         self._walk_clips: dict[str, AnimationClip | None] = {}
         self._side = 0
+        self._flips, self._choices = flips, []
         self._t, self._pos, self._heading = 0.0, self.start, self.start_heading
-        segments = list(segments)
         for k, segment in enumerate(segments):
             following = segments[k + 1] if k + 1 < len(segments) else None
             if isinstance(segment, Walk):
@@ -591,11 +662,9 @@ class Behaviour:
             elif isinstance(segment, Idle):
                 self._add_idle(segment, following)
             elif isinstance(segment, Turn):
-                self._add_turn(float(segment.degrees))
-            elif isinstance(segment, Hide):
-                self._add_hide(segment)
+                self._add_turn(float(segment.degrees), choice=bool(segment.either_way))
             else:
-                raise TypeError(f"unknown segment {segment!r}")
+                self._add_hide(segment)
         self._close_loop()
         self.duration = self._t
         self._piece_starts = [p.t0 for p in self._pieces]
@@ -603,10 +672,82 @@ class Behaviour:
         for j, entry in enumerate(self._entries):
             before = self._entries[j - 1]
             if entry.clip is not None and before.clip is not None:
-                entry.fade = min(FADE, 0.5 * (before.t1 - before.t0), 0.5 * (entry.t1 - entry.t0))
-        self._plan_head()
+                gap = abs(_wrap(before.sample(entry.t0 if j else entry.t0 + self.duration)[2] - entry.sample(entry.t0)[2]))
+                fade = min(max(FADE, gap / _FADE_SPEED), _MAX_FADE)
+                entry.fade = min(fade, 0.5 * (before.t1 - before.t0), 0.5 * (entry.t1 - entry.t0))
 
-    # -- building ------------------------------------------------------------------------------------
+    def _choose_turns(self) -> set[int] | None:
+        """Which turns with a choice of direction (automatic turns, ``Turn(either_way=True)``) to make the other way.
+
+        The face can avoid the camera all along the loop only if ``psi = heading + clip yaw - camera bearing``
+        (unwrapped) stays inside one window ``(w - HEAD_YAW_LIMIT, 360 - w + HEAD_YAW_LIMIT) + 360 k``, where ``w`` is
+        the angle to keep: the face ``psi + head_yaw`` must stay inside one of the gaps between the camera
+        directions. In particular ``psi`` must wind around as often as the camera bearing does over a loop. Flipping
+        a turn of ``d`` degrees to ``d -/+ 360`` shifts ``psi`` by -/+ 360 from then on, so this picks the flips
+        that fit ``psi`` into a window (with room to spare) and turn the least; ``None`` keeps the turns as they are.
+        """
+        cam = self.camera.nominal
+        if cam is None or not self._choices or any(not p.visible for p in self._pieces):
+            return None
+        n = max(8, int(math.ceil(self.duration / _PLAN_DT)))
+        times = np.arange(n + 1) * (self.duration / n)
+        samples = np.array([self._body(tl)[:3] + (self._body(tl)[6],) for tl in times[:n]] +
+                           [self._body(0.0)[:3] + (self._body(0.0)[6],)])
+        dx, dz = cam[0] - samples[:, 0], cam[1] - samples[:, 1]
+        distance = np.hypot(dx, dz)
+        if distance.min() < MIN_CAMERA_DISTANCE + self.camera.radius:
+            return None
+        bearing = np.degrees(np.unwrap(np.radians(np.arctan2(dx, dz) * (180.0 / math.pi))))
+        psi = samples[:, 2] + samples[:, 3] - bearing
+        psi[-1] = psi[0] + (self._heading - self.start_heading) - (bearing[-1] - bearing[0])  # the loop's closure
+        width = self.min_angle + _MARGIN + 3.0 + float(np.degrees(np.arcsin(min(
+            self.camera.radius / max(float(distance.min()), 1e-9), 0.5))))
+        low, high = width - HEAD_YAW_LIMIT, 360.0 - width + HEAD_YAW_LIMIT
+        # intervals of the grid: between turns (shifted by the flips before them) and turns (stretched if flipped)
+        bounds = [(int(np.searchsorted(times, t0)), int(np.searchsorted(times, t1)), d) for t0, t1, d in self._choices]
+        flippable = [k for k, (_, _, d) in enumerate(bounds) if abs(d) >= 90.0][:10]
+        pieces, i = [], 0
+        for k, (i0, i1, d) in enumerate(bounds):
+            if i0 > i:
+                pieces.append((None, float(psi[i:i0].min()), float(psi[i:i0].max())))
+            a, b = float(psi[min(i0, n)]), float(psi[min(i1, n)])
+            seg = psi[min(i0, n):min(i1, n) + 1]
+            pieces.append((k, a, b, float(seg.min()) - min(a, b), float(seg.max()) - max(a, b)))
+            i = max(i, i1)
+        if i <= n:
+            pieces.append((None, float(psi[i:].min()), float(psi[i:].max())))
+        best = None
+        for mask in range(1 << len(flippable)):
+            flips = {flippable[j] for j in range(len(flippable)) if mask >> j & 1}
+            offset, lo, hi, turned = 0.0, math.inf, -math.inf, 0.0
+            for piece in pieces:
+                if piece[0] is None:
+                    lo, hi = min(lo, piece[1] + offset), max(hi, piece[2] + offset)
+                    continue
+                k, a, b, below, above = piece
+                d = bounds[k][2]
+                shift = -math.copysign(360.0, d) if k in flips else 0.0
+                turned += abs(d + shift)
+                ends = (a + offset, b + offset + shift)
+                lo, hi = min(lo, min(ends) + below), max(hi, max(ends) + above)
+                offset += shift
+            if abs(offset + psi[-1] - psi[0] - (psi[-1] - psi[0])) > 1e-6 and abs(offset) > 1e-6:
+                pass
+            if abs(psi[-1] + offset - psi[0] - 360.0 * round((psi[-1] + offset - psi[0]) / 360.0)) > 1e-6 or \
+                    round((psi[-1] + offset - psi[0]) / 360.0) != 0:
+                continue  # the loop must close without winding around the camera
+            k = round(((lo - low) + (hi - high)) / 2.0 / 360.0)
+            room = min(lo - low - 360.0 * k, 360.0 * k - (hi - high))
+            score = (min(room, 10.0), -turned)
+            if best is None or score > best[0]:
+                best = (score, flips)
+        if best is None or not best[1]:
+            return None
+        return best[1]
+
+    def _add_auto_turn(self, delta: float) -> None:
+        """Turn in place by ``delta`` (wrapped) the way :meth:`_turn_direction` suggests (unless flipped)."""
+        self._add_turn(self._turn_direction(delta), choice=True)
 
     def _walk_clip(self, role: str) -> AnimationClip | None:
         if role not in self._walk_clips:
@@ -644,23 +785,23 @@ class Behaviour:
                     legs.append(leg)
                     leg = [points[i]]
         legs.append(leg)
-        speed = float(walk.speed or self.style.speed)
         role = walk.role or self.style.walk_role
+        clip = self._walk_clip(role)
+        speed = float(walk.speed or self.style.walk_speed(clip))
         for leg in legs:
             s, px, pz, ph = _rounded_path(leg)
             if s[-1] < 1e-3:
                 continue
             delta = _wrap(ph[0] - self._heading)
             if abs(delta) > _WALK_TURN:
-                self._add_turn(self._turn_direction(delta))
+                self._add_auto_turn(delta)
                 delta = _wrap(ph[0] - self._heading)
             shift = self._heading + delta - ph[0]
             piece = _WalkPiece(self._t, (s, px, pz, [h + shift for h in ph]), speed, -delta)
             self._pieces.append(piece)
-            clip = self._walk_clip(role)
             if clip is not None:
                 natural = float(clip.metadata.get("speed") or 0.0) or 1.2
-                self._entries.append(_Entry(piece.t0, piece.t1, clip, self.library.head_yaw(clip), role=role,
+                self._entries.append(_Entry(piece.t0, piece.t1, clip, self.library._head(clip), role=role,
                                             walk=piece, phase=self.rng.uniform(0.0, natural * clip.duration),
                                             scale=1.0 / (natural * self.style.stride)))
             else:
@@ -676,24 +817,34 @@ class Behaviour:
                    if lib.has(f"turn_{direction}_{a}")]
         if not options:
             return None
-        return min(options, key=lambda c: abs(abs(turn_angle(c)) - abs(degrees)))
+        clip = min(options, key=lambda c: abs(abs(turn_angle(c)) - abs(degrees)))
+        turn = turn_angle(clip)
+        if turn * degrees <= 0 or abs(degrees - turn) > max(45.0, 0.5 * abs(degrees)):
+            return None  # e.g. only a 180 degree clip for a 90 degree turn: turn procedurally instead
+        return clip
 
-    def _add_turn(self, degrees: float) -> None:
+    def _add_turn(self, degrees: float, choice: bool = False) -> None:
         if abs(degrees) < 1e-6:
             return
+        if choice:
+            if len(self._choices) in self._flips:
+                degrees -= math.copysign(360.0, degrees)
+            self._choices.append((self._t, None, degrees))
         clip = self._turn_clip(degrees)
         x, z = self._pos
         if clip is not None:
             turn = turn_angle(clip)
             piece = _Stand(self._t, clip.duration, x, z, self._heading, degrees - turn, kind="turn", turn=degrees)
             after = self.library.after_turn(clip)
-            self._entries.append(_Entry(piece.t0, piece.t1, clip, self.library.head_yaw(clip), role="turn",
-                                        after=after, after_yaw=self.library.head_yaw(after)))
+            self._entries.append(_Entry(piece.t0, piece.t1, clip, self.library._head(clip), role="turn",
+                                        after=after, after_head=self.library._head(after)))
         else:
             duration = 0.5 + abs(degrees) / 180.0
             piece = _Stand(self._t, duration, x, z, self._heading, degrees, kind="turn", turn=degrees)
             self._extend_or_add_idle(piece.t0, piece.t1, "idle")
         self._pieces.append(piece)
+        if choice:
+            self._choices[-1] = (piece.t0, piece.t1, degrees)
         self._t, self._heading = piece.t1, self._heading + degrees
 
     def _extend_or_add_idle(self, t0: float, t1: float, role: str) -> None:
@@ -706,18 +857,20 @@ class Behaviour:
         self._add_idle_entry(t0, t1, clip, role)
 
     def _add_idle_entry(self, t0: float, t1: float, clip: AnimationClip | None, role: str) -> None:
-        """Add a clip from ``t0`` to ``t1``, starting where its head yaw is close to the previous clip's."""
+        """Add a clip from ``t0`` to ``t1``, starting where its head yaw is close to the previous clip's and ending
+        with the head near the middle (where walks and turns start), so the crossfades stay gentle."""
         if clip is None:
             self._entries.append(_Entry(t0, t1, None, role=role))
             return
-        yaw = self.library.head_yaw(clip)
-        entry = _Entry(t0, t1, clip, yaw, role=role)
+        entry = _Entry(t0, t1, clip, self.library._head(clip), role=role)
         before = self._entries[-1] if self._entries else None
         target = before.sample(t0)[2] if before is not None and before.clip is not None else None
         best = None
-        for _ in range(16 if target is not None else 1):
+        for _ in range(24):
             entry.phase = self.rng.uniform(0.0, clip.duration)
-            error = 0.0 if target is None else abs(entry.sample(t0)[2] - target)
+            error = 0.5 * abs(entry.sample(t1)[2])
+            if target is not None:
+                error += abs(_wrap(entry.sample(t0)[2] - target))
             if best is None or error < best[0]:
                 best = (error, entry.phase)
         entry.phase = best[1]
@@ -728,7 +881,7 @@ class Behaviour:
         lib = self.library
         if lib is None:
             return []
-        options = [(role, clip) for role in roles for clip in lib.choices(role, self.style.sex)]
+        options = self._role_clips(roles)
         cam = self.camera.nominal
         if cam is None or not options:
             return options
@@ -747,16 +900,26 @@ class Behaviour:
         good = [(role, clip) for role, clip in options if fits(clip)]
         if good:
             return good
-        others = [(role, clip) for role in ("idle", "listen", "phone", "look_around", "talk")
-                  for clip in lib.choices(role, self.style.sex)]
+        others = self._role_clips(("idle", "listen", "phone", "look_around", "talk"))
         good = [(role, clip) for role, clip in others if fits(clip)]
         if good:
             return good
         return [min(options, key=lambda rc: float(np.ptp(lib.head_yaw(rc[1]))))]
 
+    def _role_clips(self, roles) -> list[tuple[str, AnimationClip]]:
+        """``(role, clip)`` for the clips of ``roles`` (with fallbacks); ``role`` is the one the clip really plays."""
+        lib, out = self.library, []
+        for role in roles:
+            for clip in lib.choices(role, self.style.sex):
+                actual = role if clip.name in lib.names(role) else lib.role_of(clip) or role
+                if all(c is not clip for _, c in out):
+                    out.append((actual, clip))
+        return out
+
     def _idle_side(self, following) -> int:
         if isinstance(following, Turn) and abs(following.degrees) >= 90.0:
-            return 1 if following.degrees > 0 else -1
+            flipped = following.either_way and len(self._choices) in self._flips
+            return 1 if (following.degrees > 0) != flipped else -1
         if not self._side:
             cam = self.camera.nominal
             r = _wrap(_bearing(*self._pos, *cam) - self._heading) if cam is not None else 0.0
@@ -800,7 +963,7 @@ class Behaviour:
             self._add_walk(Walk([self.start]))
         delta = _wrap(self.start_heading - self._heading)
         if abs(delta) > 1e-3:
-            self._add_turn(self._turn_direction(delta))
+            self._add_auto_turn(delta)
         if self._t <= 0.0:
             self._add_idle(Idle(5.0), None)
 
@@ -813,21 +976,22 @@ class Behaviour:
         return math.degrees(math.asin(min(self.camera.radius / distance, 0.5)))
 
     def _body(self, tl: float):
-        """``(x, z, heading, piece, entry, layers, clip_yaw)`` at loop time ``tl``."""
+        """``(x, z, heading, piece, entry, layers, clip_yaw, clip_elevation)`` at loop time ``tl``."""
         piece = self._pieces[bisect.bisect_right(self._piece_starts, tl) - 1]
         x, z, heading = piece.state(tl)
         j = bisect.bisect_right(self._entry_starts, tl) - 1
         entry = self._entries[j]
         if entry.clip is None:
-            return x, z, heading, piece, entry, [], 0.0
-        clip, time, yaw = entry.sample(tl)
+            return x, z, heading, piece, entry, [], 0.0, 0.0
+        clip, time, yaw, elevation = entry.sample(tl)
         if entry.fade and tl - entry.t0 < entry.fade:
             w = _smooth((tl - entry.t0) / entry.fade)
             before = self._entries[j - 1]
-            pclip, ptime, pyaw = before.sample(tl if j else tl + self.duration)
+            pclip, ptime, pyaw, pelevation = before.sample(tl if j else tl + self.duration)
+            pyaw += 360.0 * round((yaw - pyaw) / 360.0)
             return x, z, heading, piece, entry, [Layer(pclip, ptime, 1.0 - w), Layer(clip, time, w)], \
-                pyaw + (yaw - pyaw) * w
-        return x, z, heading, piece, entry, [Layer(clip, time, 1.0)], yaw
+                pyaw + (yaw - pyaw) * w, pelevation + (elevation - pelevation) * w
+        return x, z, heading, piece, entry, [Layer(clip, time, 1.0)], yaw, elevation
 
     def _plan_head(self) -> None:
         n = max(8, int(math.ceil(self.duration / _PLAN_DT)))
@@ -837,6 +1001,7 @@ class Behaviour:
         z = np.array([b[1] for b in body])
         heading = np.array([b[2] for b in body])
         clip_yaw = np.array([b[6] for b in body])
+        clip_elevation = np.array([b[7] for b in body])
         visible = np.array([b[3].visible for b in body])
         want_yaw, want_pitch = self._desired_looks(body, dt)
         bins = np.arange(-HEAD_YAW_LIMIT, HEAD_YAW_LIMIT + 1e-9, _BIN)
@@ -849,21 +1014,27 @@ class Behaviour:
             constrained = visible & (distance >= MIN_CAMERA_DISTANCE)
             face_centre = bearing - heading - clip_yaw  # head yaw that would face the camera
             plain_centre = bearing - heading
-            spread = np.array([self._camera_spread(d) for d in distance])
+            if self.camera.radius > 0.0:
+                spread = np.degrees(np.arcsin(np.minimum(self.camera.radius / np.maximum(distance, 1e-9), 0.5)))
+            else:
+                spread = np.zeros(n)
             facing = np.abs(_wrap_array(face_centre)) < 50.0
             walking = np.array([b[3].kind == "walk" for b in body])
             want_pitch = want_pitch + np.where(facing & walking, 12.0, 0.0)
-        want_pitch = _periodic_smooth(want_pitch, 0.4 / dt)
+        pitch = np.clip(_periodic_smooth(want_pitch, 0.4 / dt), -20.0, 40.0)
         deviation = ((bins[None, :] - want_yaw[:, None]) / 20.0) ** 2
         self.look_feasible = True
         path, width = None, np.zeros(n)
         if cam is not None and constrained.any():
+            # where the face points (relative to heading + clip yaw) for every head yaw bin, pitch included
+            face = bins[None, :] + pitch_shift(clip_yaw[:, None], clip_elevation[:, None], bins[None, :],
+                                               pitch[:, None], vector=True)
+            off_camera = np.abs(_wrap_array(face - face_centre[:, None]))
             plain = np.abs(_wrap_array(bins[None, :] - plain_centre[:, None])) < self.min_angle + _MARGIN
             soft = deviation + np.where(plain & constrained[:, None], 25.0, 0.0)
             for margin, use_spread in ((_MARGIN, True), (0.0, True), (0.0, False)):
                 width = self.min_angle + margin + (spread if use_spread else np.zeros(n))
-                blocked = (np.abs(_wrap_array(bins[None, :] - face_centre[:, None])) < width[:, None]) & \
-                    constrained[:, None]
+                blocked = (off_camera < width[:, None]) & constrained[:, None]
                 path = _plan(np.where(blocked, np.inf, soft), dt)
                 if path is not None:
                     break
@@ -874,12 +1045,12 @@ class Behaviour:
             path = _plan(deviation, dt)
         yaw = _periodic_smooth(bins[path], 0.15 / dt)
         if cam is not None and self.look_feasible:
-            d = _wrap_array(bins[path] - face_centre)
+            d = _wrap_array(face[np.arange(n), path] - face_centre)
             low = np.where(constrained & (d >= 0), bins[path] - (d - width), -HEAD_YAW_LIMIT)
             high = np.where(constrained & (d < 0), bins[path] - d - width, HEAD_YAW_LIMIT)
             yaw = np.clip(yaw, np.maximum(low, -HEAD_YAW_LIMIT), np.minimum(high, HEAD_YAW_LIMIT))
         self._grid_yaw = [float(v) for v in np.clip(yaw, -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT)]
-        self._grid_pitch = [float(v) for v in np.clip(want_pitch, -20.0, 40.0)]
+        self._grid_pitch = [float(v) for v in pitch]
         self._grid_yaw.append(self._grid_yaw[0])
         self._grid_pitch.append(self._grid_pitch[0])
 
@@ -890,7 +1061,7 @@ class Behaviour:
         rng = random.Random(self.rng.random())
         glance_end, next_glance, target, piece_seen = -1.0, rng.uniform(0.5, 3.0), None, None
         phone_yaw = {}
-        for i, (x, z, heading, piece, entry, _, clip_yaw) in enumerate(body):
+        for i, (x, z, heading, piece, entry, _, clip_yaw, _) in enumerate(body):
             t = i * dt
             if not piece.visible:
                 continue
@@ -947,7 +1118,7 @@ class Behaviour:
 
     def _evaluate(self, t: float):
         tl = (t + self.offset) % self.duration
-        x, z, heading, piece, entry, layers, clip_yaw = self._body(tl)
+        x, z, heading, piece, entry, layers, clip_yaw, elevation = self._body(tl)
         u = tl / self._dt
         i = int(u)
         if i >= len(self._grid_yaw) - 1:
@@ -958,35 +1129,46 @@ class Behaviour:
         pitch = gp[i] + (gp[i + 1] - gp[i]) * a
         visible = piece.visible
         if visible and self.camera.nominal is not None:
-            yaw = self._avoid_camera(t, x, z, heading + clip_yaw, yaw)
-        return CharacterState((x, 0.0, z), heading, layers, yaw, pitch, visible), clip_yaw
+            yaw = self._avoid_camera(t, x, z, heading, clip_yaw, elevation, yaw, pitch)
+        return CharacterState((x, 0.0, z), heading, layers, yaw, pitch, visible), clip_yaw, elevation
 
-    def _avoid_camera(self, t: float, x: float, z: float, body: float, yaw: float) -> float:
-        """Push ``yaw`` out to ``min_angle`` from the actual camera direction, on the side the plan chose."""
+    def _avoid_camera(self, t: float, x: float, z: float, heading: float, clip_yaw: float, elevation: float,
+                      yaw: float, pitch: float) -> float:
+        """Push ``yaw`` out until the face is ``min_angle`` from the actual camera direction, on the planned side."""
         camera = self.camera
         nx, nz = camera.nominal
         cx, cz = camera.at(t) if camera.fn is not None else (nx, nz)
         if (cx - x) ** 2 + (cz - z) ** 2 < MIN_CAMERA_DISTANCE ** 2:
             return yaw
         nominal = math.degrees(math.atan2(nx - x, nz - z))
-        planned = _wrap(yaw - nominal + body)
-        actual = planned if camera.fn is None else planned - _wrap(math.degrees(math.atan2(cx - x, cz - z)) - nominal)
-        side = 1.0 if planned >= 0 else -1.0
-        if side * actual < self.min_angle:
-            yaw += side * self.min_angle - actual
-        return HEAD_YAW_LIMIT if yaw > HEAD_YAW_LIMIT else -HEAD_YAW_LIMIT if yaw < -HEAD_YAW_LIMIT else yaw
+        moved = 0.0 if camera.fn is None else _wrap(math.degrees(math.atan2(cx - x, cz - z)) - nominal)
+        base = heading + clip_yaw - nominal
+        side = 0.0
+        for _ in range(4):
+            planned = _wrap(base + yaw + pitch_shift(clip_yaw, elevation, yaw, pitch))
+            if not side:
+                side = 1.0 if planned >= 0 else -1.0
+            short = self.min_angle + 1e-6 - side * (planned - moved)
+            if short <= 0.0:
+                break
+            yaw += side * short
+            if yaw > HEAD_YAW_LIMIT or yaw < -HEAD_YAW_LIMIT:
+                return HEAD_YAW_LIMIT if yaw > 0 else -HEAD_YAW_LIMIT
+        return yaw
 
     def __call__(self, t: float) -> CharacterState:
         return self._evaluate(t)[0]
 
     def face_heading(self, t: float) -> float:
-        """``heading + clip head yaw + head_yaw`` at ``t``: where the face points on the floor plane (degrees)."""
-        state, clip_yaw = self._evaluate(t)
-        return state.heading + clip_yaw + state.head_yaw
+        """Where the face points on the floor plane at ``t`` (degrees): ``heading + clip head yaw + head_yaw`` plus
+        the small sideways effect of ``head_pitch`` (:func:`pitch_shift`)."""
+        state, clip_yaw, elevation = self._evaluate(t)
+        return state.heading + clip_yaw + state.head_yaw + pitch_shift(clip_yaw, elevation, state.head_yaw,
+                                                                      state.head_pitch)
 
     def body_heading(self, t: float) -> float:
         """``heading + clip head yaw`` at ``t`` (continuous, unlike ``heading`` at the end of a turn clip)."""
-        state, clip_yaw = self._evaluate(t)
+        state, clip_yaw, _ = self._evaluate(t)
         return state.heading + clip_yaw
 
     def teleports(self) -> list[tuple[float, float]]:
@@ -1024,18 +1206,20 @@ def _plan(cost: np.ndarray, dt: float) -> np.ndarray | None:
     order = (start + np.arange(n + 1)) % n
     offsets = np.arange(-reach, reach + 1)
     step_cost = 0.02 * offsets.astype(np.float64) ** 2
-    pad = np.full(reach, np.inf)
+    padded = np.full(bins + 2 * reach, np.inf)
+    previous = padded[reach:reach + bins]
+    windows = np.lib.stride_tricks.sliding_window_view(padded, 2 * reach + 1)  # a view: follows ``padded``
     first = int(np.argmin(cost[start]))
-    total = np.full(bins, np.inf)
-    total[first] = 0.0
+    previous[first] = 0.0
     back = np.empty((n, bins), dtype=np.int8)
     rows = np.arange(bins)
+    options = np.empty((bins, 2 * reach + 1))
     for k in range(1, n + 1):
-        windows = np.lib.stride_tricks.sliding_window_view(np.concatenate([pad, total, pad]), 2 * reach + 1)
-        options = windows + step_cost
+        np.add(windows, step_cost, out=options)
         best = options.argmin(axis=1)
-        total = options[rows, best] + cost[order[k]]
+        previous[:] = options[rows, best] + cost[order[k]]
         back[k - 1] = best - reach
+    total = previous
     if not np.isfinite(total[first]):
         return None
     path = np.empty(n + 1, dtype=np.int64)
@@ -1055,35 +1239,29 @@ def _offset(rng: random.Random, offset, behaviour: Behaviour) -> Behaviour:
     return behaviour
 
 
-def _away_from_camera(position, heading: float, camera: _Camera) -> float | None:
-    """+180 or -180: the turn around whose face sweeps behind the person rather than past the camera.
-
-    ``None`` when the camera is (almost) straight ahead or behind, where both ways are equally good.
-    """
+def _away_from_camera(position, heading: float, camera: _Camera) -> tuple[float, float]:
+    """``(turn, clearance)``: the turn around (+180 or -180) whose face sweeps behind the person rather than past the
+    camera, and how clearly (degrees the camera is off the line ahead / behind; 0 = either way would do)."""
     cam = camera.nominal
     if cam is None:
-        return None
+        return 180.0, 0.0
     r = _wrap(_bearing(*position, *cam) - heading)
-    if abs(r) < 3.0 or abs(r) > 177.0:
-        return None
-    return -180.0 if r > 0 else 180.0
+    return (-180.0 if r > 0 else 180.0), min(abs(r), 180.0 - abs(r))
 
 
 def _turns_around(far, far_heading, near, near_heading, camera: _Camera, rng: random.Random):
-    """Turn-around angles at both ends of an out-and-back path, each away from the camera.
+    """Turn-around angles at both ends of an out-and-back path: away from the camera, and always opposite ways.
 
-    Where the camera is in line with the path either way would do, but the two turns must then go opposite ways:
-    the head stays on one side of the camera while walking towards it, so the turn there must go that way too.
+    Over a loop the face must not wind around the camera (see :meth:`Behaviour._choose_turns`), so two turns of
+    the same sense are impossible to watch without the face sweeping across the camera somewhere; the end where
+    the camera is more clearly to one side chooses.
     """
-    at_far = _away_from_camera(far, far_heading, camera)
-    at_near = _away_from_camera(near, near_heading, camera)
-    if at_far is None and at_near is None:
+    at_far, far_clear = _away_from_camera(far, far_heading, camera)
+    at_near, near_clear = _away_from_camera(near, near_heading, camera)
+    if max(far_clear, near_clear) < 3.0:
         at_far = rng.choice((180.0, -180.0))
-    if at_far is None:
-        at_far = -at_near
-    if at_near is None:
-        at_near = -at_far
-    return at_far, at_near
+        return at_far, -at_far
+    return (at_far, -at_far) if far_clear >= near_clear else (-at_near, at_near)
 
 
 def walk_by(points, speed: float | None = None, *, library: MotionLibrary | None, return_mode: str = "turn",
