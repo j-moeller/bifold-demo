@@ -118,8 +118,8 @@ def cmd_list(args) -> int:
         height = f"{meta['height']:.2f}" if prepared else "-"
         tris = str(meta.get("triangles", "-")) if prepared else "-"
         print(f"{name:22s} {meta.get('sex', '?'):6s} {meta.get('age_group', '?'):6s} "
-              f"{str(meta.get('skin_tone', '-')):4s} {meta.get('outfit', '?'):12s} "
-              f"{str(meta.get('conference_fit', '-')):3s} {height:>6s} {tris:>6s}"
+              f"{meta.get('skin_tone', '-')!s:4s} {meta.get('outfit', '?'):12s} "
+              f"{meta.get('conference_fit', '-')!s:3s} {height:>6s} {tris:>6s}"
               + ("" if prepared else "  (not prepared)"))
     print(library.describe())
     return 0

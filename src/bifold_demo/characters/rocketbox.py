@@ -231,8 +231,8 @@ _CLIP_MANIFEST = {
     "stroll": ("xy", "walk_stroll_01 walk_stroll_02"),
     "idle": ("static", " ".join(f"idle_neutral_{i:02d}" for i in range(1, 10))),
     "look_around": ("static", "idle_look_around_01 idle_look_around_02 idle_look_around_03"),
-    "talk": ("static", "gestic_talk_neutral_01 gestic_talk_neutral_02 gestic_talk_neutral_03 "
-                       "gestic_talk_relaxed_01 gestic_talk_relaxed_02"),
+    "talk": ("static", "gestic_talk_neutral_01 gestic_talk_neutral_02 gestic_talk_neutral_03 gestic_talk_relaxed_01 "
+                       + "gestic_talk_relaxed_02"),
     "listen": ("static", "gestic_listen_neutral_01 gestic_listen_neutral_02 gestic_listen_neutral_03 "
                          + " ".join(f"gestic_listen_accept_{i:02d}" for i in range(1, 6))),
     "phone": ("static", "cell_phone_textmessage"),
@@ -284,6 +284,8 @@ def load_catalog(path=None) -> dict[str, dict]:
             catalog = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             raise ValueError(f"cannot read the avatar catalog {path}: {exc}") from exc
+        if not isinstance(catalog, dict):
+            raise TypeError(f"the avatar catalog {path} must map avatar names to entries")
         _catalog_cache.update(key=key, value={k: v for k, v in catalog.items() if isinstance(v, dict)})
     return _catalog_cache["value"]
 
@@ -368,7 +370,7 @@ def url_for(path: str, base_url: str = BASE_URL) -> str:
 class FetchError(RuntimeError):
     """Some files could not be downloaded; ``report.failed`` lists them (the rest was downloaded)."""
 
-    def __init__(self, report: "FetchReport"):
+    def __init__(self, report: FetchReport):
         self.report = report
         lines = [f"  {path}: {reason}" for path, reason in report.failed[:5]]
         more = f"\n  ... and {len(report.failed) - 5} more" if len(report.failed) > 5 else ""
@@ -468,8 +470,8 @@ def fetch(dest, avatars, clips, jobs: int = 8, progress=None, *, retries: int = 
     :class:`FetchError` after the others finished when some files failed. ``opener(request, timeout=...)``
     replaces :func:`urllib.request.urlopen` (for tests).
     """
-    if jobs < 1:
-        raise ValueError("jobs must be at least 1")
+    if jobs < 1 or retries < 0:
+        raise ValueError("jobs must be at least 1 and retries at least 0")
     dest = Path(dest).expanduser()
     paths = files_for(AVATARS if avatars is None else avatars, CLIPS if clips is None else clips)
     report = FetchReport(files=[dest / p for p in paths])
@@ -518,8 +520,12 @@ def _write_atomic(path: Path, write) -> None:
     os.replace(tmp, path)
 
 
+def _json(data, **kw) -> str:
+    return json.dumps(data, default=lambda o: o.tolist() if hasattr(o, "tolist") else str(o), **kw)
+
+
 def _write_json(path: Path, data: dict) -> None:
-    _write_atomic(path, lambda f: f.write(json.dumps(data, indent=1, sort_keys=True).encode("utf-8")))
+    _write_atomic(path, lambda f: f.write(_json(data, indent=1, sort_keys=True).encode("utf-8")))
 
 
 def save_character(model: CharacterModel, cache_dir, metadata: dict | None = None) -> Path:
@@ -549,8 +555,8 @@ def save_character(model: CharacterModel, cache_dir, metadata: dict | None = Non
                 _write_atomic(folder / file, lambda f, data=png: f.write(data.tobytes()))
                 textures[id(p.texture)] = file
             file = textures[id(p.texture)]
-        primitives.append({"name": p.name, "texture": file, "vertices": int(len(p.positions)),
-                           "triangles": int(len(p.indices))})
+        primitives.append({"name": p.name, "texture": file, "vertices": len(p.positions),
+                           "triangles": len(p.indices)})
     _write_atomic(folder / f"{name}.npz", lambda f: np.savez(f, **arrays))
     meta = {**model.metadata, **(metadata or {})}
     meta.update(name=name, format=FORMAT, height=round(model.height, 4), bones=len(model.skeleton),
@@ -607,7 +613,7 @@ def save_clip(clip: AnimationClip, cache_dir, metadata: dict | None = None) -> P
     path = folder / f"{clip.name}.npz"
     _write_atomic(path, lambda f: np.savez(
         f, bone_names=np.array(clip.bone_names), rotations=np.asarray(clip.rotations, np.float32),
-        translations=np.asarray(clip.translations, np.float32), info=np.array(json.dumps(info))))
+        translations=np.asarray(clip.translations, np.float32), info=np.array(_json(info))))
     return path
 
 
@@ -687,8 +693,8 @@ def prepare(raw_dir, cache_dir, avatars=None, clips=None, delete_raw: bool = Fal
                     meta = {**avatar_metadata(name, catalog), "source": files[0], "license": LICENSE}
                     save_character(model, cache, meta)
                     report.avatars.append(name)
-                    status = f"prepared ({meta.get('sex', '?')}, {model.height:.2f} m, " \
-                             f"{sum(len(p.indices) for p in model.primitives)} triangles)"
+                    status = (f"prepared ({meta.get('sex', '?')}, {model.height:.2f} m, "
+                              f"{sum(len(p.indices) for p in model.primitives)} triangles)")
                 else:
                     clip = converter.load_clip(root / files[0], name=name)
                     save_clip(clip, cache, {"role": CLIPS[name].role, "sex": CLIPS[name].sex, "source": files[0]})

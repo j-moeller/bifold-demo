@@ -51,7 +51,8 @@ COMPANIES = [  # fictional exhibitors: name, tagline, main colour, accent colour
 ]
 
 
-def build_scene() -> Scene:
+def build_scene(people=None) -> Scene:
+    """The hall; ``people`` are 2D cut-outs (default: ``PEOPLE_FOLDER`` or default people; ``[]`` = an empty hall)."""
     rng = random.Random(SEED)
     scene = Scene(
         background=(205, 207, 212),
@@ -68,14 +69,20 @@ def build_scene() -> Scene:
     )
     add_hall(scene)
     add_stage(scene)
-    people = Crowd(people_for_scene(PEOPLE_FOLDER), rng)
-    sides = [(-BOOTH_OFFSET, 90.0), (BOOTH_OFFSET, -90.0)]  # left booths face +x, right booths face -x
-    for i, (z, (x, yaw)) in enumerate(((z, side) for z in BOOTH_ROWS for side in sides)):
-        add_booth(scene, i + 1, (x, 0.0, z), yaw, COMPANIES[i % len(COMPANIES)], people, rng)
+    people = Crowd(people_for_scene(PEOPLE_FOLDER) if people is None else people, rng)
+    for index, origin, yaw in booth_layout():
+        add_booth(scene, index, origin, yaw, COMPANIES[(index - 1) % len(COMPANIES)], people, rng)
     add_speaker(scene, people)
     add_visitors(scene, people, rng)
     add_walkers(scene, people, rng)
     return scene
+
+
+def booth_layout() -> list[tuple[int, tuple, float]]:
+    """``(number, centre, yaw)`` of every booth; left booths face +x, right booths face -x."""
+    sides = [(-BOOTH_OFFSET, 90.0), (BOOTH_OFFSET, -90.0)]
+    rows = ((z, side) for z in BOOTH_ROWS for side in sides)
+    return [(i + 1, (x, 0.0, z), yaw) for i, (z, (x, yaw)) in enumerate(rows)]
 
 
 # -- people -------------------------------------------------------------------------------------
