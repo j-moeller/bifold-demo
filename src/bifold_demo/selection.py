@@ -10,24 +10,33 @@ selected instead.
 from __future__ import annotations
 
 import math
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
 from .characters import yoga
-from .characters.performer import TURN_MIN, Performer, choose_place, footprint, obstacles
+from .characters.performer import TURN_MIN, Performer, choose_place, floors, footprint, obstacles, place
 from .characters.yoga_clips import YogaClips
 from .display.window import BACKSPACE, BACKTAB, LEFT, RIGHT, TAB
 
 POSE_KEYS = {ord(str(k + 1)): name for k, name in enumerate(yoga.POSES)}  # "1" -> the first pose, ...
 STOP_KEYS = (ord("0"), BACKSPACE)
-MIN_HEIGHT = 30  # pixels: people who would be drawn smaller than this standing (far away) cannot be selected
+MIN_HEIGHT = 0.08  # share of the picture height: people drawn smaller standing (far away) cannot be selected
 MIN_INSIDE = 0.6  # share of a person's box that must be in the picture
 KEEP = 0.25, 0.8  # the selected person stays selected down to these shares of MIN_INSIDE and MIN_HEIGHT
+WALK_REACH = 4.0  # metres a person walks at most to find room for a pose (people without walk clips: STEP_REACH)
+STEP_REACH = 0.6
+PERSON = 0.6, 1.8  # width and height of the box that stands for another person hiding the pose
+HIDDEN = 0.1  # share of a pose's points that may be hidden behind people or furniture in a frame of its hold
 
 
 def short_title(pose: str) -> str:
     """``"Cow Pose"`` for ``"cow"`` (the title without the Sanskrit name)."""
     return yoga.POSES[pose].title.split(" (")[0]
+
+
+def _pose_of(clip) -> str:
+    return str(clip.metadata.get("pose", "")) if not isinstance(clip, str) else clip
 
 
 def person_name(character) -> str:
@@ -82,7 +91,9 @@ class Selection:
         self._scene = None
         self._size = (1, 1)
         self._last_centre: tuple | None = None
-        self._requests: dict[int, tuple] = {}  # id(character) -> (character, pose): waiting for the clip
+        self._requests: dict[int, tuple] = {}  # id(character) -> (character, pose, hold): waiting for the clip
+        self._placing: dict[int, tuple] = {}  # id(character) -> (character, clip, future, hold): finding a spot
+        self._pool = None  # the thread that looks for spots (it takes up to a second)
         self._performers: list[Performer] = []
         self._can: dict[int, tuple] = {}
         self._footprints: dict[tuple, tuple] = {}
@@ -117,7 +128,7 @@ class Selection:
                       * max(0.0, min(box[3], size[1]) - max(box[1], 0.0)))
             share, height = KEEP if obj is self.selected else (1.0, 1.0)
             if (area > 0 and inside >= share * MIN_INSIDE * area
-                    and self._standing_height(obj, clip_from_world, size) >= height * MIN_HEIGHT):
+                    and self._standing_height(obj, clip_from_world, size) >= height * MIN_HEIGHT * size[1]):
                 found.append(OnScreen(obj, box))
         found.sort(key=lambda p: p.centre[0])
         return found
@@ -229,24 +240,40 @@ class Selection:
         self._select(self.people[index])
         return f"selected {person_name(self.selected)} ({index + 1} of {len(self.people)})"
 
-    def do(self, pose: str, t: float) -> str:
-        """Have the selected person do ``pose`` (from scene time ``t``, as soon as its clip is ready)."""
+    def do(self, pose: str, t: float) -> str | None:
+        """Have the selected person do ``pose`` (from scene time ``t``, as soon as its clip is ready and a spot for it
+        is found; :meth:`update` then says so)."""
         character = self.selected
         if character is None:
             return "nobody selected"
         performer = self._performer(character)
         act = performer.current(t)
-        title = short_title(pose)
+        title, key = short_title(pose), id(character)
+        coming = self._requests.get(key) or self._placing.get(key)  # asked for, not started yet
+        if coming is not None and _pose_of(coming[1]) == pose:
+            self._hold_later(key)
+            return f"{person_name(character)} will keep holding {title} (0 stops)"
+        if performer.queued is not None and _pose_of(performer.queued[0]) == pose and coming is None:
+            performer.hold(t)
+            return f"{person_name(character)} will keep holding {title} (0 stops)"
         same = act is not None and act.name == pose and act.cut is None and performer.queued is None
-        if same and performer.hold(t):
+        if same and coming is None and performer.hold(t):
             return f"{person_name(character)} keeps holding {title} (0 stops)"
         clip = self.clips.request(character.skinned_model, pose)
+        self._placing.pop(key, None)
         if clip is None:
-            performer.stop(t)  # out of the pose they are in while the new one is prepared
-            self._requests[id(character)] = (character, pose)
+            performer.stop(t)  # out of the pose they are in while the new one is prepared (it takes seconds)
+            self._requests[key] = (character, pose, False)
             return f"preparing {title} for {person_name(character)} ..."
-        self._requests.pop(id(character), None)
-        return self._begin(character, performer, clip, t)
+        self._requests.pop(key, None)
+        self._place(character, performer, clip, t)
+        return None
+
+    def _hold_later(self, key: int) -> None:
+        if key in self._requests:
+            self._requests[key] = (*self._requests[key][:2], True)
+        if key in self._placing:
+            self._placing[key] = (*self._placing[key][:3], True)
 
     def stop(self, t: float) -> str:
         """The selected person leaves their pose (and forgets one being prepared)."""
@@ -254,6 +281,7 @@ class Selection:
         if character is None:
             return "nobody selected"
         waiting = self._requests.pop(id(character), None) is not None
+        waiting = self._placing.pop(id(character), None) is not None or waiting
         performer = character.behaviour if isinstance(character.behaviour, Performer) else None
         if (performer is not None and performer.stop(t)) or waiting:
             return f"{person_name(character)} stops"
@@ -264,9 +292,13 @@ class Selection:
         for performer in self._performers:
             performer.reset()
         self._requests.clear()
+        self._placing.clear()
 
     def close(self) -> None:
         self.clips.close()
+        if self._pool is not None:
+            self._pool.shutdown(wait=False, cancel_futures=True)
+            self._pool = None
 
     # -- poses ------------------------------------------------------------------------------------------------
 
@@ -279,7 +311,7 @@ class Selection:
     def _start_ready(self) -> list[str]:
         messages = []
         t = self._scene.time if self._scene is not None else 0.0
-        for key, (character, pose) in list(self._requests.items()):
+        for key, (character, pose, hold) in list(self._requests.items()):
             model = character.skinned_model
             clip = self.clips.get(model, pose)
             if clip is None:
@@ -293,25 +325,56 @@ class Selection:
             del self._requests[key]
             if self._scene.get(character.name) is not character or not character.current_visible:
                 continue  # gone while the clip was being prepared
-            messages.append(self._begin(character, self._performer(character), clip, t))
+            self._place(character, self._performer(character), clip, t, hold)
+        for key, (character, clip, future, hold) in list(self._placing.items()):
+            if not future.done():
+                continue
+            del self._placing[key]
+            if self._scene.get(character.name) is not character or not character.current_visible:
+                continue
+            try:
+                heading, spot = future.result()
+            except Exception as exc:  # noqa: BLE001 - do it where they are then
+                print(f"[selection] no spot found for {character.name}: {type(exc).__name__}: {exc}")
+                heading, spot = None, None
+            performer = self._performer(character)
+            if heading is None:
+                heading = performer(t).heading
+            act = performer.perform(clip, t, heading, spot, hold=hold)
+            title = short_title(clip.metadata.get("pose", ""))
+            messages.append(f"{person_name(character)}: {title}" + ("" if act is not None else " (next)"))
         return messages
 
-    def _begin(self, character, performer: Performer, clip, t: float) -> str:
-        """Start ``clip`` (or queue it after the current pose), facing so the camera sees it well and the mat is
-        clear of the others."""
+    def _place(self, character, performer: Performer, clip, t: float, hold: bool = False) -> None:
+        """Look (on a thread) for a spot near the person from which the camera sees the whole pose from its best side,
+        with room for it (see :func:`choose_place`); :meth:`update` starts ``clip`` there once it is found (or queues
+        it after the current pose)."""
         start = performer.free_at(t)
-        here = np.asarray(performer(start).position, float)
+        here = np.asarray(performer.peek(start).position, float)
         camera = self._scene.camera.current_position
         bearing = math.degrees(math.atan2(camera[0] - here[0], camera[2] - here[2]))
         view = float(clip.metadata.get("view", 0.0))
         views = [bearing - view] + ([bearing + view] if abs(math.sin(math.radians(view))) > 1e-6 else [])
         times, points = self._footprint(character, clip)
-        others = self._others(character, here, start + TURN_MIN + times, float(np.abs(points).max()) + 1.5)
+        reach = WALK_REACH if performer.can_walk else STEP_REACH
+        # where the others are during each frame of the pose: it starts after the turn, or after a walk of up to
+        # about 7 s, so each of those moments counts (as if the people then were all there)
+        delays = (0.0, 2.5, 5.0, 7.5) if performer.can_walk else (0.0, 0.6)
+        moments = [start + TURN_MIN + delay + times for delay in delays]
+        tracks = np.concatenate([self._tracks(character, m) for m in moments], axis=1)
+        bodies = np.concatenate([self._bodies(character, m) for m in moments], axis=1)
+        span = float(np.abs(points[..., [0, 2]]).max()) + reach + 1.0
+        distance = np.linalg.norm(tracks - here[[0, 2]], axis=-1)
+        near = tracks[:, np.nan_to_num(distance, nan=np.inf).min(axis=0) < span]
         furniture = obstacles(self._scene, float(here[1]))
-        heading, spot = choose_place(here, views, points, others, furniture)
-        act = performer.perform(clip, t, heading, spot)
-        title = short_title(clip.metadata.get("pose", ""))
-        return f"{person_name(character)}: {title}" + ("" if act is not None else " (next)")
+        window = clip.metadata.get("hold")
+        holding = (times >= window[0]) & (times <= window[1]) if window else np.ones(len(times), bool)
+        seen = self._rating(tracks, furniture, np.nonzero(holding)[0] if holding.any() else np.arange(len(times)))
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="yoga-place")
+        future = self._pool.submit(choose_place, here, views, points, near, furniture, bodies=bodies,
+                                   floor_rects=floors(self._scene), reach=reach, seen=seen)
+        self._placing[id(character)] = (character, clip, future, hold)
 
     def _footprint(self, character, clip):
         key = (id(clip), self.clips.key(character.skinned_model))
@@ -320,8 +383,8 @@ class Selection:
             known = self._footprints[key] = (clip, *footprint(character, clip))
         return known[1], known[2]
 
-    def _others(self, me, here, times, reach: float) -> np.ndarray:
-        """``(T, O, 2)`` floor positions of the other people within ``reach`` of ``here`` at scene ``times``."""
+    def _tracks(self, me, times) -> np.ndarray:
+        """``(T, O, 2)`` floor positions of the other people at scene ``times`` (nan while hidden)."""
         columns = []
         for obj in self._scene:
             if obj is me or getattr(obj, "skinned_model", None) is None:
@@ -337,10 +400,82 @@ class Selection:
                     state = behaviour(float(t))
                     if state.visible:
                         track[k] = np.asarray(state.position, float)[[0, 2]]
-            d = np.linalg.norm(track - here[[0, 2]], axis=1)
-            if np.isfinite(d).any() and np.nanmin(d) < reach:
-                columns.append(track)
+            columns.append(track)
         return np.stack(columns, axis=1) if columns else np.zeros((len(times), 0, 2))
+
+    def _bodies(self, me, times) -> np.ndarray:
+        """``(T, Q, 2)`` floor points of the bodies of the other people who are doing a pose at scene ``times`` (nan
+        where nobody is)."""
+        columns = []
+        for obj in self._scene:
+            performer = getattr(obj, "behaviour", None)
+            if obj is me or not isinstance(performer, Performer) or not (performer.acts or performer.queued):
+                continue
+            acts = performer._planned(float(times.max()))
+            for act in acts:
+                if act.end <= times.min() or act.start >= times.max():
+                    continue
+                frames, points = self._footprint(obj, act.clip)
+                track = np.full((len(times), points.shape[1], 2), np.nan)
+                for k, t in enumerate(times):
+                    if act.clip_start <= t < act.clip_end:
+                        f = min(round(act.clip_time(float(t)) / (frames[1] - frames[0])), len(frames) - 1)
+                        track[k] = place(points[f], act.heading, act.position)[:, [0, 2]]
+                columns.append(track)
+        return np.concatenate(columns, axis=1) if columns else np.zeros((len(times), 0, 2))
+
+    def _rating(self, tracks: np.ndarray, furniture: np.ndarray, hold: np.ndarray):
+        """``seen(world_points) -> share`` for :func:`choose_place`: the share of a pose's ``(T, P, 3)`` points that are
+        in the picture, halved when, in one of its ``hold`` frames, another person (``tracks``) or a piece of
+        ``furniture`` in front hides more than ``HIDDEN`` of its points."""
+        w, h = self._size
+        clip_from_world = self._scene.camera.projection_matrix(w / h) @ self._scene.camera.view_matrix()
+        margin = 0.02 * h
+
+        def project(points):
+            c = np.concatenate([points, np.ones(points.shape[:-1] + (1,))], axis=-1) @ clip_from_world.T
+            depth = c[..., 3]
+            safe = np.where(depth > 1e-6, depth, np.nan)
+            return (c[..., 0] / safe * 0.5 + 0.5) * w, (0.5 - c[..., 1] / safe * 0.5) * h, depth
+
+        def boxes(corners):  # (..., 8, 3) -> screen boxes (..., 4) and the depth of their centres (...)
+            x, y, _ = project(corners)
+            _, _, centre = project(corners.mean(axis=-2))
+            return np.stack([x.min(-1), y.min(-1), x.max(-1), y.max(-1)], axis=-1), centre
+
+        unit = np.array([(i & 1, (i >> 1) & 1, (i >> 2) & 1) for i in range(8)], float)  # cube corners
+        half, tall = PERSON[0] / 2, PERSON[1]
+        people = np.zeros(tracks.shape[:2] + (8, 3))
+        people[..., 0] = tracks[..., None, 0] - half + 2 * half * unit[:, 0]
+        people[..., 1] = tall * unit[:, 1]
+        people[..., 2] = tracks[..., None, 1] - half + 2 * half * unit[:, 2]
+        people_boxes, people_depth = boxes(people)  # (T, O, 4), (T, O)
+        lo = furniture[:, [0, 4, 1]] if len(furniture) else np.zeros((0, 3))
+        hi = furniture[:, [2, 5, 3]] if len(furniture) else np.zeros((0, 3))
+        things_boxes, things_depth = boxes(lo[:, None, :] + (hi - lo)[:, None, :] * unit)  # (N, 4), (N,)
+
+        def hidden(x, y, depth, occluders, occluder_depth) -> np.ndarray:
+            """Which points ``(..., K, P)`` lie in the screen box of something nearer (``(K, O, 4)`` / ``(O, 4)``
+            boxes at depths ``(K, O)`` / ``(O,)``)."""
+            if occluders.size == 0:
+                return np.zeros(x.shape, bool)
+            if occluders.ndim == 2:  # the same for every frame
+                occluders, occluder_depth = occluders[None], occluder_depth[None]
+            o = occluders[:, None, :, :]  # (K, 1, O, 4) against points (..., K, P, 1)
+            px, py, pd = x[..., None], y[..., None], depth[..., None]
+            inside = (px >= o[..., 0]) & (px <= o[..., 2]) & (py >= o[..., 1]) & (py <= o[..., 3])
+            return (inside & (pd > np.nan_to_num(occluder_depth, nan=np.inf)[:, None, :] + 0.1)).any(axis=-1)
+
+        def seen(world: np.ndarray) -> np.ndarray:
+            x, y, depth = project(world)  # (..., T, P)
+            inside = (x >= margin) & (x <= w - margin) & (y >= margin) & (y <= h - margin)
+            share = np.where(np.isfinite(x).all(axis=(-2, -1)), inside.mean(axis=(-2, -1)), 0.0)
+            xs, ys, ds = x[..., hold, :], y[..., hold, :], depth[..., hold, :]  # the hold frames: (..., K, P)
+            covered = (hidden(xs, ys, ds, people_boxes[hold], people_depth[hold])
+                       | hidden(xs, ys, ds, things_boxes, things_depth)).mean(axis=-1)  # (..., K)
+            return np.where((share >= 0.97) & (covered > HIDDEN).any(axis=-1), 0.5 * share, share)
+
+        return seen
 
     # -- what to show -----------------------------------------------------------------------------------------
 
@@ -349,17 +484,20 @@ class Selection:
         waiting = self._requests.get(id(character))
         if waiting is not None:
             return f"preparing {short_title(waiting[1])} ..."
+        placing = self._placing.get(id(character))
+        if placing is not None:
+            return f"{short_title(_pose_of(placing[1]))}: finding a spot ..."
         performer = character.behaviour if isinstance(character.behaviour, Performer) else None
         act = performer.current(t) if performer is not None else None
         if act is None:
             return ""
         title = short_title(act.name)
         phase = act.phase(t)
-        text = {"turning": f"{title}: getting ready", "into": title,
+        text = {"walking": f"{title}: walking to a free spot", "turning": f"{title}: getting ready", "into": title,
                 "holding": f"{title}: holding" + (" (until 0)" if act.looping else ""),
-                "out": f"{title}: back to standing"}[phase]
+                "out": f"{title}: back to standing", "back": f"{title}: done, walking back"}[phase]
         if performer.queued is not None:
-            text += f", then {short_title(performer.queued[0].metadata.get('pose', ''))}"
+            text += f", then {short_title(_pose_of(performer.queued[0]))}" + (" (held)" if performer.queued[3] else "")
         return text
 
     def status_lines(self, t: float) -> list[str]:
@@ -377,7 +515,8 @@ class Selection:
     @staticmethod
     def help_lines() -> list[str]:
         poses = "  ".join(f"{chr(k)} {short_title(p)}" for k, p in POSE_KEYS.items())
-        return ["Tab / Shift+Tab next / previous person | 0 stop | same number again: keep holding | Esc done",
+        return [("Tab / Shift+Tab (or arrows) next / previous person | 0 stop | same number again: keep holding | "
+                 "Esc done"),
                 poses]
 
     def _forget(self) -> None:
@@ -385,5 +524,6 @@ class Selection:
         self.selected = self.box = self._last_centre = None
         self.people = []
         self._requests.clear()
+        self._placing.clear()
         self._performers = []
         self._footprints.clear()

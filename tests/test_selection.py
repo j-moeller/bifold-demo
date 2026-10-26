@@ -5,12 +5,14 @@ import time
 
 import numpy as np
 import pytest
+from test_behaviour import synthetic_clips
 from test_yoga import synthetic_biped
 
 from bifold_demo.characters import yoga
+from bifold_demo.characters.behaviour import MotionLibrary, stand
 from bifold_demo.characters.character import Character
 from bifold_demo.characters.model import AnimationClip, CharacterState, Layer
-from bifold_demo.characters.performer import Performer, choose_place
+from bifold_demo.characters.performer import Performer, choose_place, place
 from bifold_demo.characters.yoga_clips import YogaClips, cache_path, model_key
 from bifold_demo.display.window import BACKSPACE, BACKTAB, LEFT, RIGHT, TAB, key_code
 from bifold_demo.scene import Camera, Scene
@@ -25,14 +27,14 @@ def test_key_codes_from_every_backend():
     assert key_code(9) == TAB
     assert key_code(25) == BACKTAB  # macOS: Shift+Tab
     assert key_code(0xFE20 | 1 << 16) == BACKTAB  # GTK ISO_Left_Tab with Shift held
-    assert key_code(0x01000002) == BACKTAB  # Qt Backtab
+    assert key_code(11) == BACKTAB  # Qt: Shift+Tab
     assert key_code(0x250000) == LEFT and key_code(0x270000) == RIGHT  # Windows arrows
-    assert key_code(0xF702) == LEFT and key_code(0x01000014) == RIGHT  # macOS, Qt
+    assert key_code(0xF702) == LEFT and key_code(0xFF53) == RIGHT  # macOS, Qt and GTK (X11 keysyms)
     assert key_code(0xFF51) == LEFT  # GTK: not "q" (which would quit)
     assert key_code(27 | 0x10 << 16) == 27  # GTK Escape with NumLock on
     assert key_code(ord("y") | 0x10 << 16) == ord("y")
     assert key_code(127) == BACKSPACE and key_code(0xFF08) == BACKSPACE
-    assert key_code(0x700000) is None and key_code(0xF704) is None and key_code(0x01000030) is None  # F1 keys
+    assert key_code(0x700000) is None and key_code(0xF704) is None and key_code(0xFFBE) is None  # F1 keys
 
 
 # -- the performer ------------------------------------------------------------------------------------------------
@@ -108,17 +110,121 @@ def test_holding_keeps_the_pose_until_stopped_and_a_new_pose_follows_the_current
     assert performer.positions([t])[0] == pytest.approx((0.0, 0.0))
 
 
+def _line(length=1.5, n=7):
+    points = np.zeros((2, n, 3))
+    points[:, :, 2] = np.linspace(0.0, length, n)  # a pose reaching ``length`` metres ahead of the person
+    return points
+
+
+def test_looking_ahead_changes_nothing_and_a_queued_pose_can_be_held():
+    performer = Performer(_walker)
+    performer.perform(_clip(), 0.0, heading=90.0)
+    performer.perform(_clip(duration=5.0, hold=(1.0, 3.0), view=0.0), 3.0, heading=0.0)  # follows the first
+    acts, queued = list(performer.acts), performer.queued
+    later = performer.acts[-1].end + 3.0
+    ahead, peeked = performer.positions([1.0, later]), performer.peek(later)
+    assert performer.acts == acts and performer.queued == queued  # nothing started early
+    assert performer.hold(4.0) and performer.queued[3]  # the same key again: hold the one that follows
+    real = performer(later)
+    assert np.allclose(ahead[1], np.asarray(real.position)[[0, 2]]) and np.allclose(peeked.position, real.position)
+    assert performer.acts[-1].looping and math.isinf(performer.acts[-1].end)
+
+
+def test_going_back_to_the_behaviour_turns_smoothly_and_steps_back_at_a_walking_pace():
+    turning = Performer(lambda t: CharacterState((0.0, 0.0, -0.5 * t), 171.0 + 15.0 * t, []))  # walking a curve
+    act = turning.perform(_clip(), 0.0, heading=0.0, position=(0.6, 0.0, 0.0))
+    times = np.arange(act.end - 0.5, act.end + 4.0, 1 / 60)
+    states = [turning(t) for t in times]
+    steps = np.abs((np.diff([s.heading for s in states]) + 180) % 360 - 180)
+    assert steps.max() < 6.0  # no flip when the behaviour's heading crosses the opposite direction
+    speed = np.linalg.norm(np.diff([s.position for s in states], axis=0), axis=1) * 60
+    assert speed.max() < 1.6  # the 0.6 m step back is no glide (the behaviour itself moves at 0.5 m/s)
+    ahead = turning.positions(times)
+    assert np.allclose(ahead, np.array([s.position for s in states])[:, [0, 2]])
+
+
+def test_a_new_pose_breaks_off_the_walk_back():
+    library = MotionLibrary(synthetic_clips())
+    performer = Performer(stand((0.0, 0.0), 0.0, library=library))
+    act = performer.perform(_clip(), 0.0, heading=90.0, position=(3.0, 0.0, 0.0))
+    t = act.clip_end + 0.5 * act.retreat.duration  # on the way back
+    here = np.asarray(performer(t).position)
+    assert performer.free_at(t) == t
+    second = performer.perform(_clip(view=0.0), t, heading=0.0, position=(2.0, 0.0, 1.0))
+    assert second is not None and act.end == t and np.allclose(second.before.position, here)
+    assert second.home == act.home
+
+
 def test_the_place_for_a_pose_keeps_the_mat_clear():
-    points = np.zeros((2, 7, 2))
-    points[:, :, 1] = np.linspace(0.0, 1.5, 7)  # the pose reaches 1.5 m ahead of the person
-    nobody = np.zeros((2, 0, 2))
-    assert choose_place((0, 0, 0), [90.0, -90.0], points, nobody, np.zeros((0, 4))) == (90.0, (0.0, 0.0, 0.0))
+    points, nobody, nothing = _line(), np.zeros((2, 0, 2)), np.zeros((0, 6))
+    assert choose_place((0, 0, 0), [90.0, -90.0], points, nobody, nothing) == (90.0, (0.0, 0.0, 0.0))
     in_the_way = np.tile((1.4, 0.0), (2, 1, 1))  # someone where the head would go
-    heading, spot = choose_place((0, 0, 0), [90.0, -90.0], points, in_the_way, np.zeros((0, 4)))
+    heading, spot = choose_place((0, 0, 0), [90.0, -90.0], points, in_the_way, nothing)
     assert heading == -90.0 and spot == (0.0, 0.0, 0.0)  # seen from the other side instead
-    wall = np.array([[-3.0, 0.5, 3.0, 0.7]])  # a counter just in front, a person behind
-    heading, spot = choose_place((0, 0, 0), [0.0], points, nobody, wall)
+    lying = np.zeros((2, 3, 2))
+    lying[:, :, 0] = (0.1, 0.4, 0.7)  # someone doing a pose, their body right next to ours
+    lying[:, :, 1] = 0.75
+    heading, spot = choose_place((0, 0, 0), [0.0], points, nobody, nothing, bodies=lying)
+    assert (heading, spot) != (0.0, (0.0, 0.0, 0.0))
+    counter = np.array([[-3.0, 0.5, 3.0, 0.7, 0.0, 1.0]])  # a counter just in front
+    heading, spot = choose_place((0, 0, 0), [0.0], points, nobody, counter)
     assert abs(heading) > 15.0 or spot != (0.0, 0.0, 0.0)
+
+
+def test_the_place_for_a_pose_is_in_the_picture_and_on_one_floor():
+    points, nobody, nothing = _line(), np.zeros((2, 0, 2)), np.zeros((0, 6))
+    def seen(world):  # the camera sees only z <= -1
+        return (world[..., 2] <= -1.0).mean(axis=(-2, -1))
+
+    heading, spot = choose_place((0, 0, 0), [180.0], points, nobody, nothing, reach=4.0, seen=seen)
+    assert seen(place(points, heading, spot)) == 1.0 and spot[2] <= -1.0
+    assert math.hypot(spot[0], spot[2]) <= 1.5  # the nearest such spot
+    assert choose_place((0, 0, 0), [180.0], points, nobody, nothing, reach=0.6, seen=seen)[1][2] >= -0.6
+    platform = np.array([[-5.0, -5.0, 5.0, 5.0, 0.0], [0.5, -5.0, 5.0, 5.0, 0.08]])  # a booth platform at x > 0.5
+    heading, spot = choose_place((0, 0, 0), [90.0], points, nobody, nothing, floor_rects=platform)
+    assert place(points, heading, spot)[..., 0].max() < 0.5  # all of it off the platform
+
+
+def test_people_with_walk_clips_walk_to_the_place_and_back():
+    library = MotionLibrary(synthetic_clips())
+    performer = Performer(stand((0.0, 0.0), 0.0, library=library))
+    assert performer.can_walk and not Performer(_walker).can_walk
+    act = performer.perform(_clip(), 1.0, heading=90.0, position=(2.0, 0.0, 0.0))
+    assert act.approach is not None and act.retreat is not None and act.arrived > act.start + 1.0
+    times = np.arange(0.0, act.end + 3.0, 1 / 30)
+    track = np.array([performer(t).position for t in times])
+    states = [performer(t) for t in times]
+    headings = np.array([state.heading for state in states])
+    assert np.abs(np.diff(track, axis=0)).max() < 0.08  # no jumps: at most a walking step per frame
+    # turn clips hand over to their "@after" variant: the heading jumps where the clip's root turned
+    handover = np.array([any(layer.clip.name.endswith("@after") for layer in state.layers) for state in states])
+    steps = np.abs((np.diff(headings) + 180) % 360 - 180)[~(handover[1:] & ~handover[:-1])]
+    assert steps.max() < 12.0
+    assert np.allclose(performer(act.arrived + 0.5).position, (2.0, 0.0, 0.0))
+    assert np.allclose(performer(act.clip_end - 0.1).position, (2.0, 0.0, 0.0))
+    assert np.allclose(performer(act.end + 3.0).position, (0.0, 0.0, 0.0), atol=1e-6)  # back home
+    assert np.allclose(performer.positions(times), track[:, [0, 2]], atol=1e-9)
+    assert act.phase(act.start + 0.5) == "walking" and act.phase(act.clip_end + 0.5) == "back"
+
+
+def test_a_pose_cut_short_on_the_way_walks_back_and_a_new_one_starts_where_the_last_ended():
+    library = MotionLibrary(synthetic_clips())
+    performer = Performer(stand((0.0, 0.0), 0.0, library=library))
+    act = performer.perform(_clip(), 0.0, heading=90.0, position=(3.0, 0.0, 0.0))
+    t = act.arrived * 0.5
+    halfway = np.asarray(performer(t).position)
+    assert performer.stop(t) and act.clip_end == t
+    assert np.allclose(act.retreat(0.0).position, halfway) and np.allclose(act.final().position, (0, 0, 0))
+    assert np.linalg.norm(np.asarray(performer(t + 1 / 30).position) - halfway) < 0.08
+    first = Performer(stand((0.0, 0.0), 0.0, library=library))
+    act = first.perform(_clip(), 0.0, heading=90.0, position=(2.0, 0.0, 0.0))
+    holding = act.clip_start + 3.0
+    assert first.perform(_clip(view=0.0), holding, heading=0.0, position=(2.6, 0.0, 0.0)) is None
+    assert act.retreat is None  # no walk back in between
+    second = first.current(act.end + 0.01)
+    assert second is not act and second.approach is not None and second.home == act.home
+    assert np.allclose(second.before.position, (2.0, 0.0, 0.0))
+    assert np.allclose(first(second.end + 3.0).position, (0.0, 0.0, 0.0), atol=1e-6)
 
 
 # -- selecting people -------------------------------------------------------------------------------------------
@@ -207,7 +313,7 @@ def _run_until(scene, selection, t, until, step=1 / 15):
             messages.append(message)
         if until(t):
             return t, messages
-        if not messages and selection._requests:
+        if not messages and (selection._requests or selection._placing):
             time.sleep(0.005)  # let the clip thread work
     raise AssertionError("timed out")
 
@@ -238,6 +344,21 @@ def test_number_keys_make_the_selected_person_do_yoga(biped):
         assert selection.handle_key(BACKSPACE, act.end + 5.0)[1] == "middle (synthetic_biped) is not doing a pose"
         selection.reset()
         assert person.behaviour.acts == []
+    finally:
+        selection.close()
+
+
+def test_the_same_number_again_holds_a_pose_that_has_not_started_yet(biped):
+    scene = _scene(biped)
+    selection = Selection(_clips())
+    try:
+        selection.enter(scene, SIZE)
+        person = selection.selected
+        assert selection.handle_key(ord("1"), 0.0)[1].startswith("preparing Yogi Squat")
+        assert "will keep holding Yogi Squat" in selection.handle_key(ord("1"), 0.0)[1]
+        t, _ = _run_until(scene, selection, 0.0, lambda t: isinstance(person.behaviour, Performer)
+                          and person.behaviour.current(t) is not None)
+        assert person.behaviour.current(t).looping
     finally:
         selection.close()
 

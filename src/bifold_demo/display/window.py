@@ -12,10 +12,10 @@ BACKTAB, LEFT, RIGHT = 0x110001, 0x110002, 0x110003  # Shift+Tab, arrow keys
 # what the HighGUI backends report for them (cv2.waitKeyEx)
 _SPECIAL = {
     25: BACKTAB, 127: BACKSPACE, 0xF702: LEFT, 0xF703: RIGHT,  # macOS: Shift+Tab types a back-tab, delete a DEL
-    0x01000002: BACKTAB, 0x01000003: BACKSPACE, 0x01000012: LEFT, 0x01000014: RIGHT,  # Qt (Linux wheels)
+    11: BACKTAB,  # Qt (the Linux wheels): Shift+Tab as Qt's ASCII for it; other keys as X11 keysyms (below)
     0x250000: LEFT, 0x270000: RIGHT,  # Windows (cannot tell Shift+Tab from Tab)
 }
-_GTK = {0xFE20: BACKTAB, 0xFF51: LEFT, 0xFF53: RIGHT}  # keysyms; GTK adds the modifiers above bit 16
+_GTK = {0xFE20: BACKTAB, 0xFF51: LEFT, 0xFF53: RIGHT}  # X11 keysyms (GTK and Qt); GTK adds modifiers above bit 16
 
 
 def key_code(raw: int) -> int | None:
@@ -26,8 +26,6 @@ def key_code(raw: int) -> int | None:
         return None
     if raw in _SPECIAL:
         return _SPECIAL[raw]
-    if raw >> 16 == 0x100:  # other Qt special keys
-        return None
     key = raw & 0xFFFF  # GTK puts the modifier keys above bit 16
     if key in _GTK:
         return _GTK[key]
