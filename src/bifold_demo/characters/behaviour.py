@@ -22,7 +22,8 @@ off) and add its ``metadata["turn"]`` to the heading when it ends (the contract 
 of the angle turned procedurally during the clip; smaller turns, or turns without a fitting clip, rotate the heading
 procedurally while an idle clip plays. Position is continuous everywhere except inside
 :class:`Hide` (an intentional teleport while invisible), and the body's facing ``heading + clip yaw`` is continuous
-(``heading`` itself jumps by the clip's turn exactly when a turn clip ends, as the contract requires). Consecutive
+(``heading`` itself jumps by the clip's turn exactly when a turn clip ends, as the contract requires;
+:meth:`MotionLibrary.turned` gives the body's own part, the root yaw of the playing turn clips). Consecutive
 clips crossfade with two layers whose weights sum to 1, over ``FADE`` seconds or longer (up to a second) when the
 clips hold the head at very different angles.
 
@@ -377,6 +378,8 @@ class MotionLibrary:
             np.asarray(head_forward, dtype=np.float64) / np.linalg.norm(head_forward)
         self._yaw: dict[int, tuple[AnimationClip, tuple[list[float], list[float]]]] = {}
         self._after: dict[int, tuple[AnimationClip, AnimationClip]] = {}
+        self._turned_from: dict[int, tuple[AnimationClip, AnimationClip]] = {}  # "@after" variant -> the turn clip
+        self._body: dict[int, tuple[AnimationClip, list[float] | None]] = {}
         self._chains: dict[int, tuple[AnimationClip, list[int]]] = {}
         self._feet: dict[int, tuple[AnimationClip, np.ndarray | None]] = {}
 
@@ -508,7 +511,77 @@ class MotionLibrary:
         after = AnimationClip(f"{clip.name}@after", clip.fps, list(clip.bone_names), rotations, translations,
                               loop=clip.loop, root=clip.root, metadata={**clip.metadata, "turn": 0.0})
         self._after[id(clip)] = (clip, after)
+        self._turned_from[id(after)] = (after, clip)
         return after
+
+    def body_yaw(self, clip: AnimationClip) -> list[float] | None:
+        """Per-frame yaw (degrees, unwrapped) by which a turn clip's root bone turns the body away from the heading:
+        the turn made so far, from 0 at frame 0 to about the clip's ``turn``. For the ``"@after"`` variant
+        (:meth:`after_turn`, played once the heading has taken the turn) it is what is left of the turn, from
+        ``-turn`` to about 0. ``None`` for every other clip: by the clip contract they face the heading."""
+        cached = self._body.get(id(clip))
+        if cached is not None and cached[0] is clip:
+            return cached[1]
+        original = self._turned_from.get(id(clip))
+        source = original[1] if original is not None and original[0] is clip else clip
+        turn, yaw = turn_angle(source), None
+        if turn and source.root in source.bone_names and source.frames > 1:
+            k = source.bone_names.index(source.root)
+            rotations = quat_to_matrix(np.asarray(source.rotations, dtype=np.float64)[:, k])
+            forward = rotations @ (rotations[0].T @ np.array([0.0, 0.0, 1.0]))  # frame 0 faces the heading
+            yaw = np.degrees(np.unwrap(np.arctan2(forward[:, 0], forward[:, 2])))
+            yaw = [float(v) for v in (yaw - turn if source is not clip else yaw)]
+        self._body[id(clip)] = (clip, yaw)
+        return yaw
+
+    def turned(self, layers) -> float:
+        """Degrees (-180 to 180) by which the turn clips among ``layers`` turn the body away from the heading,
+        blended the way the :class:`~.model.Poser` blends the root bone: the body faces ``heading + turned(layers)``
+        (``heading`` alone jumps when a turn clip hands over to its ``"@after"`` variant; this is continuous)."""
+        c, s, total, turning = 1.0, 0.0, 0.0, False
+        for layer in layers:
+            if layer.weight <= 0.0:
+                continue
+            yaw, qc, qs = self.body_yaw(layer.clip), 1.0, 0.0
+            if yaw is not None:
+                clip, last = layer.clip, layer.clip.frames - 1
+                f = float(layer.time) * clip.fps
+                f = f % last if clip.loop else min(max(f, 0.0), float(last))
+                i = min(int(f), last - 1)
+                half = math.radians(yaw[i] + (yaw[i + 1] - yaw[i]) * (f - i)) / 2.0
+                qc, qs, turning = math.cos(half), math.sin(half), True
+            if total:  # the Poser's running blend: nlerp along the shorter arc
+                share = layer.weight / (total + layer.weight)
+                if c * qc + s * qs < 0.0:
+                    qc, qs = -qc, -qs
+                c, s = c + (qc - c) * share, s + (qs - s) * share
+                norm = math.hypot(c, s)
+                c, s = c / norm, s / norm
+            else:
+                c, s = qc, qs
+            total += layer.weight
+        return _wrap(math.degrees(2.0 * math.atan2(s, c))) if turning else 0.0
+
+    def settled(self, state: CharacterState, toward: float = 0.0) -> CharacterState:
+        """``state`` playing a turn clip on its own, handed over early to the clip's ``"@after"`` variant (the heading
+        takes the turn) if that brings the root's yaw (:meth:`turned`) nearer to ``toward``: the same pose and the
+        same facing. Crossfades mix the layers of two states under one heading, so they should turn their roots
+        alike: late in a 180 degree turn clip the root is about opposite to that of a clip facing the heading, and
+        the blend of nearly opposite rotations flips between the two ways round from frame to frame."""
+        clips = {id(layer.clip): layer.clip for layer in state.layers if layer.weight > 0.0}
+        if len(clips) != 1:
+            return state
+        (clip,) = clips.values()
+        turn = turn_angle(clip)
+        variant = self._turned_from.get(id(clip))
+        if not turn or (variant is not None and variant[0] is clip) or self.body_yaw(clip) is None:
+            return state  # no turn clip, or already the "@after" variant
+        yaw = self.turned(state.layers)
+        if abs(_wrap(yaw - turn - toward)) >= abs(_wrap(yaw - toward)):
+            return state
+        after = self.after_turn(clip)
+        layers = [replace(layer, clip=after) if layer.clip is clip else layer for layer in state.layers]
+        return replace(state, heading=state.heading + turn, layers=layers)
 
     def _estimate_head_forward(self) -> np.ndarray:
         total = np.zeros(3)

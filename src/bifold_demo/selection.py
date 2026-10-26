@@ -8,9 +8,10 @@ the same number again keeps them holding it and 0 (or Backspace) stops; in the i
 0 takes everything off. When the selected person leaves the picture, is hidden or is removed from the scene, the
 person nearest to where they were is selected instead.
 
-A person asked for a pose stops at once and stands while a spot for it is found on a thread (:meth:`Selection._place`:
-it takes a second or two). The search plans for the pose to start a little later, and the pose waits for that
-moment, so where the person stands and where the others will be are what the search assumed; a spot found too late
+A person asked for a pose stops (someone walking slows to a stop over half a second, someone standing stops at once)
+and stands there while a spot for it is found on a thread (:meth:`Selection._place`: it takes a second or two). The
+search plans from where they stop, for the pose to start a little later, and the pose waits for that moment, so
+where the person stands and where the others will be are what the search assumed; a spot found too late
 (after a while on the webcam, say) is looked for again. Spots are found one after another, each once the pose before
 has started, so poses asked of several people in a row keep clear of each other.
 """
@@ -550,7 +551,7 @@ class Selection:
                 continue
             del self._placing[key]
             clip = entry.clip
-            act = performer.perform(clip, t, now.heading if heading is None else heading, spot, hold=entry.hold)
+            act = performer.perform(clip, t, performer.facing(t) if heading is None else heading, spot, hold=entry.hold)
             current = performer.current(t)
             started = act is not None or (current is not None and current.clip is clip)  # after the wait, at once
             title = short_title(clip.metadata.get("pose", ""))

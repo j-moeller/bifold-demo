@@ -1,6 +1,7 @@
 import math
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,8 @@ from bifold_demo.characters.character import Character
 from bifold_demo.characters.model import (
     AnimationClip,
     CharacterModel,
+    CharacterState,
+    Layer,
     Poser,
     Skeleton,
     SkinnedPrimitive,
@@ -216,6 +219,49 @@ def test_head_yaw_matches_forward_kinematics(sparse):
             assert math.degrees(math.asin(-d[1] / np.linalg.norm(d))) == pytest.approx(elevation[frame], abs=1e-6)
     after = sparse.after_turn(sparse.clips["m_turn_left_180"])
     assert sparse.head_yaw(after)[-1] == pytest.approx(0.0, abs=1e-6)  # yawed back by its turn
+
+
+def test_turned_is_how_far_the_turn_clips_turn_the_body(full):
+    """``heading + turned(layers)`` is where the root bone, as the Poser blends it, faces: inside turn clips, after
+    the hand-over to their ``"@after"`` variant and in crossfades; other clips count as facing the heading."""
+    model = synthetic_model()
+    poser = Poser(model)
+    root = model.skeleton.index("Bip01")
+    forward = model.skeleton.rest_global[root, :3, :3].T @ np.array([0.0, 0.0, 1.0])
+    seen = set()
+    for behaviour in (B.walk_by([(-3, 0, 1), (3, 0, 1)], library=full, offset=0.0),
+                      Behaviour([Turn(180.0), Idle(1.0), Turn(-90.0), Walk([(0, 3)])], full)):
+        for t in np.arange(0.0, behaviour.duration, 1 / 30):
+            layers = behaviour(t).layers
+            d = poser.global_pose(layers)[root, :3, :3] @ forward
+            assert B._wrap(_yaw(d) - full.turned(layers)) == pytest.approx(0.0, abs=0.01), t
+            seen.update(("after" if "@after" in layer.clip.name else "turn" if "turn" in layer.clip.name else
+                         "other", len(layers)) for layer in layers)
+    assert {("turn", 1), ("after", 2), ("other", 2), ("other", 1)} <= seen
+    assert full.body_yaw(full.clips["m_walk_neutral_01"]) is None and full.turned([]) == 0.0
+
+
+def test_settled_hands_a_late_turn_clip_over_early_to_the_same_pose(full):
+    """Late in a turn clip ``settled`` gives the same pose with the root yawed back by the turn (the ``"@after"``
+    variant, the heading taking the turn); early in it, mixed with other clips or toward its own way, nothing changes."""
+    poser, clip = Poser(synthetic_model()), full.clips["m_turn_left_180"]
+    late = CharacterState((1.0, 0.0, 2.0), 30.0, [Layer(clip, 0.9 * clip.duration)], head_yaw=10.0)
+    settled = full.settled(late)
+    assert settled.layers[0].clip is full.after_turn(clip) and settled.heading == pytest.approx(210.0)
+    assert abs(full.turned(settled.layers)) < 90.0 < abs(full.turned(late.layers))
+    assert np.allclose(_world(poser, settled), _world(poser, late), atol=1e-9)  # the same pose, and facing
+    assert full.settled(settled) is settled and full.settled(late, toward=170.0) is late
+    early = replace(late, layers=[Layer(clip, 0.2 * clip.duration)])
+    idle = full.clips["m_idle_neutral_01"]
+    mixed = replace(late, layers=[Layer(clip, 0.9 * clip.duration, 0.5), Layer(idle, 0.0, 0.5)])
+    assert full.settled(early) is early and full.settled(mixed) is mixed
+
+
+def _world(poser, state):
+    """World joint positions of ``state`` (its heading turning the character)."""
+    a = math.radians(state.heading)
+    turn = np.array([[math.cos(a), 0.0, math.sin(a)], [0.0, 1.0, 0.0], [-math.sin(a), 0.0, math.cos(a)]])
+    return poser.global_pose(state.layers)[:, :3, 3] @ turn.T + state.position
 
 
 def test_stride_scale_is_the_posers_size_ratio(sparse):

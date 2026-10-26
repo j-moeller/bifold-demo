@@ -6,14 +6,23 @@ from concurrent.futures import wait
 
 import numpy as np
 import pytest
-from test_behaviour import synthetic_clips
+from test_behaviour import (
+    BONES,
+    CAMERA,
+    CHARACTERS,
+    _angle_to_camera,
+    synthetic_clip,
+    synthetic_clips,
+    synthetic_model,
+)
 from test_yoga import synthetic_biped
 
 from bifold_demo.characters import yoga
-from bifold_demo.characters.behaviour import MotionLibrary, stand
+from bifold_demo.characters.behaviour import MotionLibrary, stand, turn_angle, walk_by
 from bifold_demo.characters.character import Character
 from bifold_demo.characters.model import AnimationClip, CharacterState, Layer
 from bifold_demo.characters.performer import (
+    LEAD,
     Performer,
     _rect_distance,
     choose_place,
@@ -70,16 +79,21 @@ def test_a_pose_interrupts_the_behaviour_which_carries_on_where_it_left_off():
     clip = _clip()
     act = performer.perform(clip, 5.0, heading=0.0)
     assert act is not None and act.turn == pytest.approx(0.6)  # 90 degrees at 150 degrees per second
-    for t in (5.0, 5.3, 7.0, 12.0):
-        assert performer(t).position == pytest.approx((5.0, 0.0, 0.0))  # stays put while doing it
+    stop = 5.0 + LEAD / 2  # walking at 1 m/s, they slow to a stop over LEAD seconds
+    track = [performer(t).position[0] for t in np.arange(4.9, 5.0 + LEAD, 1 / 60)]
+    assert track[6] == pytest.approx(5.0) and 0.0 <= np.diff(track).min() and np.diff(track).max() <= 1 / 60 + 1e-9
+    for t in (5.0 + LEAD, 7.0, 12.0):
+        assert performer(t).position == pytest.approx((stop, 0.0, 0.0))  # stays put while doing it
     assert performer(5.6).heading == pytest.approx(0.0) and performer(5.6).head_yaw == pytest.approx(0.0)
     assert performer(7.6).layers[-1].time == pytest.approx(2.0)  # the clip runs after the turn
     assert act.end == pytest.approx(5.0 + 0.6 + 8.0)
     after = act.end + 2.0
-    assert performer(after).position == pytest.approx((5.0 + 2.0, 0.0, 0.0))  # walking on from where it stopped
+    # walking on from where it stopped (the behaviour's time ran on into the stop), starting from a standstill
+    # (which loses LEAD / 2 seconds)
+    assert performer(after).position == pytest.approx((stop + 2.0 - LEAD / 2, 0.0, 0.0))
     assert performer(after).heading == pytest.approx(90.0)
     times = [4.0, 6.0, 20.0]
-    assert np.allclose(performer.positions(times), [[4.0, 0.0], [5.0, 0.0], [20.0 - 8.6, 0.0]])
+    assert np.allclose(performer.positions(times), [[4.0, 0.0], [stop, 0.0], [20.0 - 8.6, 0.0]])
 
 
 def test_stopping_leaves_the_pose_the_quickest_way():
@@ -118,8 +132,8 @@ def test_holding_keeps_the_pose_until_stopped_and_a_new_pose_follows_the_current
     t = act.end + 0.01
     state = performer(t)
     assert performer.acts[-1].clip is second and performer.acts[-1].start == pytest.approx(act.end)
-    assert state.position == pytest.approx((0.0, 0.0, 0.0))
-    assert performer.positions([t])[0] == pytest.approx((0.0, 0.0))
+    assert state.position == pytest.approx((LEAD / 2, 0.0, 0.0))  # where the first one was done (after stopping)
+    assert performer.positions([t])[0] == pytest.approx((LEAD / 2, 0.0))
 
 
 def _line(length=1.5, n=7):
@@ -161,9 +175,12 @@ def test_a_new_pose_breaks_off_the_walk_back():
     act = performer.perform(_clip(), 0.0, heading=90.0, position=(3.0, 0.0, 0.0))
     t = act.clip_end + 0.5 * act.retreat.duration  # on the way back
     here = np.asarray(performer(t).position)
-    assert performer.free_at(t) == t
+    assert performer.free_at(t) == pytest.approx(t + LEAD / 2)  # once they have slowed to a stop
+    planned = performer.peek(performer.free_at(t)).position  # where a place for the pose is looked for
     second = performer.perform(_clip(view=0.0), t, heading=0.0, position=(2.0, 0.0, 1.0))
-    assert second is not None and act.end == t and np.allclose(second.before.position, here)
+    assert second is not None and act.end == t and np.allclose(performer(t).position, here)
+    stop = np.asarray(second.before.position)  # they walk on a little as they slow to a stop, towards home
+    assert 0.05 < here[0] - stop[0] < 0.4 and np.allclose(stop[[1, 2]], 0.0) and np.allclose(stop, planned)
     assert second.home == act.home
 
 
@@ -377,17 +394,248 @@ def test_a_pose_cut_short_on_the_way_walks_back_and_a_new_one_starts_where_the_l
     t = act.arrived * 0.5
     halfway = np.asarray(performer(t).position)
     assert performer.stop(t) and act.clip_end == t
-    assert np.allclose(act.retreat(0.0).position, halfway) and np.allclose(act.final().position, (0, 0, 0))
+    stop = np.asarray(act.retreat(0.0).position)  # where they come to a stop, a little further on
+    assert 0.05 < stop[0] - halfway[0] < 0.4 and np.allclose(act.final().position, (0, 0, 0))
     assert np.linalg.norm(np.asarray(performer(t + 1 / 30).position) - halfway) < 0.08
     first = Performer(stand((0.0, 0.0), 0.0, library=library))
     act = first.perform(_clip(), 0.0, heading=90.0, position=(2.0, 0.0, 0.0))
     holding = act.clip_start + 3.0
     assert first.perform(_clip(view=0.0), holding, heading=0.0, position=(2.6, 0.0, 0.0)) is None
     assert act.retreat is None  # no walk back in between
+    planned = first._planned(act.end)[-1]  # looked ahead to (e.g. by others finding a place) ...
+    assert planned is not act and first._planned(act.end + 1.0)[-1] is planned  # ... planned once
     second = first.current(act.end + 0.01)
-    assert second is not act and second.approach is not None and second.home == act.home
+    assert second is planned and second.approach is not None and second.home == act.home
     assert np.allclose(second.before.position, (2.0, 0.0, 0.0))
     assert np.allclose(first(second.end + 3.0).position, (0.0, 0.0, 0.0), atol=1e-6)
+
+
+# -- carrying on smoothly: the body's facing in turn clips, no standing starts, the camera on the way ----------------
+
+FRAME = 1 / 60
+JOINT_STEP = 0.065  # metres a joint may move in a frame (the feet of the synthetic walk itself move up to 0.056)
+
+
+def _pose_clip(view=90.0):
+    """A standing pose on the synthetic skeleton (so the body faces the heading), held from 2 s to 6 s of 8 s."""
+    clip = synthetic_clip("yoga_cow", "idle", 241)
+    clip.metadata.update(pose="cow", hold=(2.0, 6.0), view=view)
+    return clip
+
+
+def _turning_round():
+    """A walk_by turning round with a 180 degree turn clip at the far end, and a moment 60 % into that clip."""
+    library = MotionLibrary(synthetic_clips(full=True))
+    base = walk_by([(-3.0, 1.0), (3.0, 1.0)], library=library, offset=0.0)
+    for t in np.arange(0.0, base.duration, FRAME):
+        layer = base(t).layers[-1]
+        if layer.clip.name == "m_turn_right_180" and 0.6 * layer.clip.duration < layer.time:
+            return base, float(t)
+    raise AssertionError("no turn clip")
+
+
+def _run(performer, t0, t1, ops=()):
+    """Step a synthetic person driven by ``performer`` at 60 Hz from ``t0`` to ``t1``, doing each ``(time,
+    op(performer, t))`` then; per frame: the body's facing from the hips (world degrees) and the world joints."""
+    person = Character(synthetic_model(1.0), performer)
+    left, right = BONES.index("Bip01 L Thigh"), BONES.index("Bip01 R Thigh")
+    ops, facings, joints = sorted(ops, key=lambda op: op[0]), [], []
+    for t in np.arange(t0, t1, FRAME):
+        person.update(float(t))
+        model = person.matrices()[0]
+        world = person.pose[:, :3, 3] @ model[:3, :3].T + model[:3, 3]
+        d = world[left] - world[right]
+        facings.append(math.degrees(math.atan2(-d[2], d[0])))
+        joints.append(world)
+        while ops and ops[0][0] <= t + 1e-9:
+            ops.pop(0)[1](performer, float(t))
+    turns = np.abs((np.diff(facings) + 180.0) % 360.0 - 180.0)
+    return np.array(facings), turns, np.linalg.norm(np.diff(joints, axis=0), axis=-1).max(axis=-1)
+
+
+def _ahead(state, facing, distance, turn=0.0):
+    a = math.radians(facing + turn)
+    return (state.position[0] + distance * math.sin(a), 0.0, state.position[2] + distance * math.cos(a))
+
+
+@pytest.mark.parametrize("turn", [0.0, 90.0, 180.0, None])  # where the spot is from the way the body faces
+def test_a_pose_asked_for_while_turning_carries_on_from_the_way_the_body_faces(turn):
+    base, mid = _turning_round()
+    assert abs(((base(mid).heading - Performer(base).facing(mid)) + 180) % 360 - 180) > 90  # the heading lags
+    acts = []
+
+    def ask(p, t):
+        facing = p.facing(t)
+        spot = None if turn is None else _ahead(p(t), facing, 2.0, turn)
+        acts.append(p.perform(_pose_clip(), t, heading=facing + 120.0, position=spot))
+
+    performer = Performer(base)
+    facings, turns, moves = _run(performer, mid - 0.5, mid + 8.0, [(mid, ask)])
+    act = acts[0]
+    stop = act.before.heading + performer.turned(act.before.layers)  # where they face once the turn stops
+    if act.approach is not None:  # the walk starts from there, not from the heading
+        assert abs((act.approach.behaviour.start_heading - stop + 180) % 360 - 180) < 1e-6
+    else:  # as does the turn on the spot (and it takes as long as the body needs)
+        assert act.turn == pytest.approx(max(0.6, abs((act.heading - stop + 180) % 360 - 180) / 150.0))
+    assert turns.max() < 4.0 and moves.max() < JOINT_STEP  # per frame (240 degrees a second): no swing back, no flip
+    assert act.phase(mid + 8.0) in ("into", "holding", "out")  # in the pose by then, facing its way
+    assert abs((facings[-1] - act.heading + 180) % 360 - 180) < 1.0
+
+
+def test_a_new_pose_early_in_the_walk_back_and_a_stop_in_the_first_turn_carry_on_from_the_way_the_body_faces():
+    library = MotionLibrary(synthetic_clips(full=True))
+    performer = Performer(stand((0.0, 0.0), 0.0, library=library))
+    act = performer.perform(_pose_clip(), 0.0, heading=90.0, position=(3.0, 0.0, 0.0))
+    first = act.retreat.behaviour._pieces[0]
+    assert first.kind == "turn"  # the walk back starts by turning round
+    t = act.clip_end + 0.5 * (first.t1 - first.t0)
+    again = (t, lambda p, t: p.perform(_pose_clip(view=0.0), t, heading=0.0, position=(2.0, 0.0, 1.5)))
+    _, turns, moves = _run(performer, act.clip_end - 0.5, t + 4.0, [again])
+    assert turns.max() < 4.0 and moves.max() < JOINT_STEP
+    # 0 pressed while turning round to walk to a spot behind: they turn back as fast as the body needs, no faster
+    performer = Performer(stand((0.0, 0.0), 0.0, library=library))
+    act = performer.perform(_pose_clip(), 0.0, heading=90.0, position=(0.0, 0.0, -2.0))
+    first = act.approach.behaviour._pieces[0]
+    assert first.kind == "turn" and act.approach.behaviour._entries[0].clip.metadata["kind"] == "turn"
+    t = 0.7 * first.t1
+    facings, turns, moves = _run(performer, 0.0, t + 3.0, [(t, lambda p, t: p.stop(t))])
+    src, start, back = performer._take_over(act, performer.acts)
+    body = abs(((src.heading + performer.turned(src.layers)) - start.heading + 180) % 360 - 180)
+    assert body > 90.0 and back >= body / 150.0 - 1e-9 and turns.max() < 4.0 and moves.max() < JOINT_STEP
+    assert abs((facings[-1] - start.heading + 180) % 360 - 180) < 2.0
+
+
+def test_a_walking_person_asked_for_a_pose_slows_down_to_a_stop_and_walks_on_from_a_standstill():
+    library = MotionLibrary(synthetic_clips(full=True))
+    base = walk_by([(-6.0, 0.0), (6.0, 0.0)], library=library, offset=0.0, pause=(0.0, 0.0))
+    walking = 4.0  # in mid stride along +x
+    speed = np.linalg.norm(np.diff(base.positions([walking, walking + FRAME]), axis=0)) / FRAME
+    assert speed > 0.8
+    performer, track = Performer(base), []
+    for t in np.arange(walking - 0.2, walking + 0.8, FRAME):
+        track.append(performer(t))
+        if abs(t - walking) < 1e-9:
+            act = performer.perform(_pose_clip(), t, heading=0.0, position=(-1.0, 0.0, 2.0))
+    speeds = np.linalg.norm(np.diff([s.position for s in track], axis=0), axis=1) / FRAME
+    assert np.abs(np.diff(speeds)).max() < 0.1  # slowing down (and turning to go) at most 6 m/s^2, no dead stop
+    assert speeds[12:30].min() > 0.2 and speeds[12:30].max() < 1.1 * speed  # on for a moment, then stopping
+    stride = [next(layer.time for layer in s.layers if layer.clip.name.startswith("m_walk")) for s in track[12:24]]
+    assert np.all(np.diff(stride) > 0.0)  # the walk clip goes on meanwhile: the feet keep stepping
+    assert np.isclose(act.before.position[0] - track[12].position[0], speed * LEAD / 2, rtol=0.1)
+    # back into the walk afterwards: from a standstill, never faster than the walk itself
+    back = performer._take_over(act, performer.acts)[2]
+    times = np.arange(act.end - 0.5, act.end + back + 1.0, FRAME)
+    states = [performer(t) for t in times]
+    speeds = np.linalg.norm(np.diff([s.position for s in states], axis=0), axis=1) / FRAME
+    assert speeds.max() < 1.05 * speed and np.abs(np.diff(speeds)).max() < 0.1
+    facings = [s.heading + performer.turned(s.layers) for s in states]
+    assert np.abs((np.diff(facings) + 180) % 360 - 180).max() < 4.0  # at most 240 degrees per second
+    assert np.allclose(performer.positions(times), np.array([s.position for s in states])[:, [0, 2]], atol=1e-9)
+
+
+def _swaying_walks():
+    """The synthetic clips with walks whose hips swing 10 degrees either way, as real walks do (the root of a clip that
+    faces the heading turns a little: the turn clips' root yaw is no longer all of the root's turn)."""
+    clips = synthetic_clips(full=True)
+    for name, clip in list(clips.items()):
+        if clip.metadata["kind"] == "walk":
+            clips[name] = synthetic_clip(name, "walk", clip.frames, speed=clip.metadata["speed"],
+                                         root_yaw=lambda u: 10.0 * np.sin(2 * np.pi * u))
+    return MotionLibrary(clips)
+
+
+@pytest.mark.parametrize("late", [0.8, 0.88, 0.94])
+def test_a_pose_asked_for_late_in_a_turn_round_does_not_flip_the_body(late):
+    """Late in a 180 degree turn clip its root is about opposite to that of a walk facing the same way: crossfaded
+    as they are, the blend of the two roots flipped between the two ways round (by up to 115 degrees in a frame)."""
+    library = _swaying_walks()
+    base = walk_by([(-3.0, 1.0), (3.0, 1.0)], library=library, offset=0.0)
+    mid = next(float(t) for t in np.arange(0.0, base.duration, FRAME)
+               if (layer := base(t).layers[-1]).clip.name == "m_turn_right_180" and late * layer.clip.duration < layer.time)
+
+    def ask(p, t):  # a spot ahead of the way the body faces: the walk there starts with a walk
+        p.perform(_pose_clip(), t, heading=p.facing(t) + 120.0, position=_ahead(p(t), p.facing(t), 2.0))
+
+    performer = Performer(base)
+    _, turns, moves = _run(performer, mid - 0.5, mid + 4.0, [(mid, ask)])
+    assert performer.acts[0].approach.behaviour._pieces[0].kind == "walk"
+    assert turns.max() < 4.0 and moves.max() < JOINT_STEP
+    stop = performer.acts[0].before  # where the turn stops, handed over early to the clip's "@after" variant
+    assert stop.layers[-1].clip.name == "m_turn_right_180@after" and abs(performer.turned(stop.layers)) < 90.0
+
+
+@pytest.mark.skipif(not (CHARACTERS / "clips").is_dir(), reason="no prepared Rocketbox characters")
+def test_real_people_asked_for_a_pose_late_in_a_turn_round_do_not_flip():
+    from bifold_demo.characters.crowd import avatar_style
+    from bifold_demo.characters.library import CharacterLibrary
+
+    library = CharacterLibrary(CHARACTERS)
+    motions, available = library.motions(), library.available()
+    names = [next((n for n, e in sorted(available.items()) if e.get("sex") == sex and e.get("age_group") == "adult"),
+                  None) for sex in ("male", "female")]
+    if not library.is_ready() or None in names or not motions.has("turn_right_180"):
+        pytest.skip("the prepared library lacks clips or adult avatars")
+    idle = next(clip for clip in motions.clips.values() if clip.metadata.get("kind") == "idle")
+    pose = AnimationClip("yoga_idle", idle.fps, list(idle.bone_names), idle.rotations, idle.translations,
+                         root=idle.root, metadata={"pose": "idle", "hold": (1.0, 2.0), "view": 90.0})
+    worst = []
+    for name in names:
+        model = library.load(name, textures="none")
+        base = walk_by([(-4.0, 1.0), (4.0, 1.0)], library=motions, rng=1, style=avatar_style(available[name], model,
+                                                                                             motions), offset=0.0)
+        times = np.arange(0.0, base.duration, FRAME)
+        layers = [base(t).layers for t in times]
+        left, right = model.skeleton.find("Bip01 L Thigh"), model.skeleton.find("Bip01 R Thigh")
+        for late in (0.8, 0.88):  # the person, a woman most of all, flipped by up to 167 degrees in a frame
+            mid = next(float(t) for t, ls in zip(times, layers) if ls[-1].weight > 0.99
+                       and abs(turn_angle(ls[-1].clip)) > 150 and "@after" not in ls[-1].clip.name
+                       and late * ls[-1].clip.duration < ls[-1].time)
+            performer = Performer(base)
+            person, facings, asked = Character(model, performer), [], False
+            for t in np.arange(mid - 0.2, mid + 3.0, FRAME):
+                person.update(float(t))
+                world = person.pose[:, :3, 3] @ person.matrices()[0][:3, :3].T
+                d = world[left] - world[right]
+                facings.append(math.degrees(math.atan2(-d[2], d[0])))
+                if not asked and t >= mid - 1e-9:
+                    facing = performer.facing(float(t))
+                    performer.perform(pose, float(t), facing + 90.0, _ahead(performer(float(t)), facing, 2.0))
+                    asked = True
+            worst.append(float(np.abs((np.diff(facings) + 180.0) % 360.0 - 180.0).max()))
+    assert max(worst) < 6.0, worst
+
+
+def test_a_walking_person_does_the_pose_where_they_stop_and_walks_on_from_there():
+    """A walker slows to a stop LEAD / 2 seconds on: the place for the pose is looked for there (free_at, peek), the
+    pose without a place is done there, and their behaviour carries on from there, never going back."""
+    library = MotionLibrary(synthetic_clips(full=True))
+    base = walk_by([(-6.0, 0.0), (6.0, 0.0)], library=library, offset=0.0, pause=(0.0, 0.0))
+    walking = 4.0
+    for position in (None, "planned"):
+        performer = Performer(base)
+        assert performer.free_at(walking) == pytest.approx(walking + LEAD / 2)
+        planned = np.asarray(performer.peek(performer.free_at(walking)).position)
+        assert planned[0] - base(walking).position[0] > 0.2  # on along the walk
+        act = performer.perform(_pose_clip(), walking, heading=0.0,
+                                position=None if position is None else tuple(planned))
+        assert np.allclose(act.before.position, planned) and np.allclose(act.home, planned)
+        assert act.approach is None and act.retreat is None
+        times = np.arange(walking - 0.5, act.end + 3.0, FRAME)
+        track = performer.positions(times)
+        assert np.diff(track[:, 0]).min() > -1e-9  # never backwards
+        assert np.allclose(track[times >= act.end + 1.0][:, 1], 0.0)
+
+
+def test_the_walks_to_a_pose_and_back_keep_the_face_off_the_camera():
+    library = MotionLibrary(synthetic_clips(full=True))
+    base = walk_by([(-4.0, -2.0), (4.0, -2.0)], camera=CAMERA, library=library, rng=3, offset=0.0)
+    performer = Performer(base)
+    here = base(1.0)
+    towards = performer.walk(here.position, performer.facing(1.0), (0.3, 0.0, 3.5))  # straight at the camera
+    assert towards.behaviour.camera.nominal == (CAMERA[0], CAMERA[2]) and towards.behaviour.min_angle == base.min_angle
+    assert towards.behaviour.look_feasible
+    angles = [_angle_to_camera(towards.behaviour, u) for u in np.arange(0.0, towards.duration, 0.05)]
+    assert min(a for a in angles if a is not None) >= base.min_angle - 1e-6
 
 
 # -- selecting people -------------------------------------------------------------------------------------------
@@ -554,7 +802,10 @@ def _walking_scene(biped):
     return scene, walker
 
 
-def test_a_walking_person_stops_at_the_key_and_the_pose_starts_where_and_when_planned(biped, monkeypatch):
+def test_a_walking_person_stops_and_the_pose_starts_where_and_when_planned(biped, monkeypatch):
+    """A walker asked for a pose slows to a stop over LEAD (LEAD / 2 seconds on, at 1 m/s 0.25 m past the key),
+    stands there while the spot is found, and the search plans from there: the pose starts from there, and the
+    behaviour carries on from there afterwards."""
     import bifold_demo.selection as selection_module
 
     real = selection_module.choose_place
@@ -573,23 +824,27 @@ def test_a_walking_person_stops_at_the_key_and_the_pose_starts_where_and_when_pl
         selection.update(scene, SIZE)
         selection.selected = walker
         key = np.asarray(walker.state.position)
+        stop = key + (LEAD / 2, 0.0, 0.0)
         assert selection.do("warrior_2", t) is None
-        positions, planned, begin = [], [], time.perf_counter()
+        track, planned, begin = [], [], time.perf_counter()
         while not _posing(walker, t):  # scene time is real time, as in the demo
             time.sleep(1 / 60)
             dt, t = 0.5 + time.perf_counter() - begin - t, 0.5 + time.perf_counter() - begin
             scene.update(t, dt)
-            if id(walker) in selection._placing:
-                planned.append(selection._placing[id(walker)].start)
+            entry = selection._placing.get(id(walker))
+            if entry is not None and entry.future is not None:
+                planned.append((entry.start, np.asarray(entry.here)))
             selection.update(scene, SIZE)
-            positions.append(walker.state.position)
+            track.append((t, np.asarray(walker.state.position)))
             assert t < 30.0
         act = walker.behaviour.current(t)
         assert act.start - 0.5 > 0.6  # time enough to walk on a little ...
-        assert np.allclose(positions[:-1], key)  # ... but they stood still from the key on
-        assert np.allclose(act.before.position, key)
-        assert planned[-1] <= act.start <= planned[-1] + 0.6 + STALE  # not before it was planned for, nor much later
-        assert np.allclose(walker.behaviour.home(act.start), key)  # and carry on from there afterwards
+        times, positions = np.array([u for u, _ in track[:-1]]), np.array([p for _, p in track[:-1]])
+        assert np.diff(positions[:, 0]).min() >= -1e-9 and positions[:, 0].max() <= stop[0] + 1e-9  # slowing down
+        assert np.allclose(positions[times >= 0.5 + LEAD], stop)  # ... then they stood still where they stopped
+        assert np.allclose(planned[-1][1], stop) and np.allclose(act.before.position, stop)  # planned from there
+        assert planned[-1][0] <= act.start <= planned[-1][0] + 0.6 + STALE  # not before it was planned for, nor much later
+        assert np.allclose(walker.behaviour.home(act.start), stop)  # and carry on from there afterwards
     finally:
         selection.close()
 
@@ -612,7 +867,7 @@ def test_a_spot_found_long_ago_is_looked_for_again(biped):
         assert selection._placing[id(walker)].tries == 2 and not _posing(walker, t)  # the others moved on: again
         t, _ = _run_until(scene, selection, t, lambda t: _posing(walker, t))
         act = walker.behaviour.current(t)
-        assert np.allclose(act.before.position, key) and act.start >= 20.5
+        assert np.allclose(act.before.position, key + (LEAD / 2, 0.0, 0.0)) and act.start >= 20.5  # where they stopped
     finally:
         selection.close()
 

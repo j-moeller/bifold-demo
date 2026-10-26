@@ -15,7 +15,7 @@ from bifold_demo.characters import camera_play as cp
 from bifold_demo.characters.behaviour import MotionLibrary, approach, classify_clip, walk_by, watch
 from bifold_demo.characters.character import Character
 from bifold_demo.characters.model import AnimationClip
-from bifold_demo.characters.performer import Performer
+from bifold_demo.characters.performer import LEAD, Performer
 
 CHARACTERS = Path(os.environ.get("BIFOLD_CHARACTERS_TEST_DIR", "/nonexistent")).expanduser()
 CAMERA = (0.0, 1.6, 6.0)
@@ -276,6 +276,7 @@ def test_no_play_during_a_yoga_act(biped):
     start = move.start + 1.5  # in the middle of the bend
     person.update(start)
     act = performer.perform(clip, start, heading=performer(start).heading)
+    assert act.ran_on == 0.0  # bending over on the spot is standing still: they stop at once
     middle = act.clip_start + 1.0
     assert play.posed(person, middle) is None and cp.doing(person, middle) == ""
     alone = Character(biped, behaviour=Performer(play.inner), name="alone")
@@ -283,11 +284,34 @@ def test_no_play_during_a_yoga_act(biped):
     for who in (person, alone):
         who.update(middle)
     np.testing.assert_allclose(person.pose, alone.pose, atol=1e-9)  # the yoga clip alone
-    later = act.end + 1.0  # back: the move goes on where it was (the behaviour's time stood still)
-    base = performer._base_time(later)
-    assert base == pytest.approx(start + 1.0) and base < move.end
+    later = act.end + 1.0  # back: the move goes on where it was (the behaviour's time stood still), starting again
+    base = performer._base_time(later)  # from a standstill over LEAD, which loses LEAD / 2 seconds
+    assert base == pytest.approx(start + 1.0 - LEAD / 2) and base < move.end
     assert play.posed(person, later)[0] is move and base < later
     assert play.posed(person, later)[1] == play.sample(base)[1]
+
+
+def test_a_yoga_act_asked_for_mid_step_fades_the_play_out_where_the_person_slows_to_a_stop(biped):
+    """Someone stepping up to the camera slows to a stop over LEAD when a pose is asked for: their behaviour's own
+    clock, and with it the play's pose, runs on at the slowing pace meanwhile (it jumped LEAD / 2 seconds ahead)."""
+    person, play, move = _playing(biped, "closer", 2)
+    performer = Performer(play)
+    person.behaviour = performer
+    frames = 31
+    clip = AnimationClip("yoga_test", 10.0, ["Bip01"], np.tile((0.0, 0.0, 0.0, 1.0), (frames, 1, 1)),
+                         np.zeros((frames, 1, 3)), metadata={"pose": "cow", "hold": (0.5, 2.5), "view": 0.0})
+    press = round((move.start + 0.2 * (move.end - move.start)) * 60) / 60
+    joints, clock = [], []
+    for t in np.arange(press - 0.2, press + 1.0, 1 / 60):
+        person.update(float(t))
+        joints.append((person.matrices()[0] @ person.pose)[:, :3, 3])
+        clock.append(performer._base_time(float(t)))
+        if abs(t - press) < 1e-9:
+            act = performer.perform(clip, float(t), heading=performer.facing(float(t)))
+    assert act.ran_on == pytest.approx(LEAD / 2)  # on the move: they slow to a stop
+    assert np.linalg.norm(np.diff(joints, axis=0), axis=-1).max() < 0.05  # the move itself: up to 0.04 m a frame
+    assert np.diff(clock).min() >= 0.0 and np.diff(clock).max() <= 1 / 60 + 1e-9  # slowing, never jumping
+    assert clock[-1] == pytest.approx(press + LEAD / 2)
 
 
 # -- planning --------------------------------------------------------------------------------------------------------
