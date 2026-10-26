@@ -540,6 +540,32 @@ def test_child_sits_back_on_the_heels_with_the_forehead_on_the_floor(body):
     assert pose.knees_down and pose.left_leg.contact and pose.right_leg.contact
 
 
+def test_cobra_lifts_the_chest_with_the_hips_and_legs_on_the_floor(body):
+    spec = yoga.POSES["cobra"]
+    pose = yoga.settle(body, spec.steps(body)[spec.main].pose)
+    _, glob = yoga.solve(body, pose)
+    verts = yoga.skin(body, glob)
+    hips = glob[body.root, :3, 3]
+    assert verts[body.group(body.pelvis), 1].min() < 0.03  # the pelvis down (unlike Upward Dog) ...
+    assert hips[1] < 0.3 * body.leg
+    shoulders = 0.5 * (glob[body.sides["left"]["upper"], :3, 3] + glob[body.sides["right"]["upper"], :3, 3])
+    rise = math.degrees(math.atan2(shoulders[1] - hips[1], shoulders[2] - hips[2]))
+    assert 20.0 < rise < 65.0 and shoulders[1] - hips[1] > 0.15 * body.leg  # ... the chest lifted by a backbend
+    for side, s in body.sides.items():
+        assert verts[body.group(s["thigh"]), 1].min() < 0.01  # the thighs ...
+        assert abs(verts[body.knee_group(side), 1].min()) < 0.03  # ... and knees on the floor (unlike Upward Dog)
+        assert _bend(glob, s["thigh"], s["calf"], s["foot"]) < 25.0  # the legs long
+        toes = glob[s["foot"], :3, :3] @ body.rest_rot[s["foot"]].T @ s["foot_forward"]
+        assert toes[2] < -0.5  # the toes point back: the feet on their tops
+        shoulder, elbow, wrist = glob[s["upper"], :3, 3], glob[s["fore"], :3, 3], glob[s["hand"], :3, 3]
+        assert 45.0 < _bend(glob, s["upper"], s["fore"], s["hand"]) < 120.0  # the elbows bent ...
+        assert elbow[2] < shoulder[2] and abs(elbow[0] - shoulder[0]) < 0.1  # ... back along the body
+        assert -0.03 < wrist[2] - shoulder[2] < 0.15  # the hands under the shoulders or a little ahead
+    gaze = glob[body.head, :3, :3] @ body.rest_rot[body.head].T @ (0.0, 0.0, 1.0)
+    assert gaze[2] > 0.9  # looking forward
+    assert all(getattr(pose, limb).contact for limb in yoga.LIMBS) and not pose.knees_down
+
+
 # -- every pose on real avatars --------------------------------------------------------------------------------
 
 

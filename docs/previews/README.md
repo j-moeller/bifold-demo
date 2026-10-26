@@ -84,6 +84,11 @@ work goes on. The people are avatars from the
   the knees) while the hands slide a little forward, the torso folds over the
   thighs and the forehead comes to the floor, the arms stretched forward, palms
   down; and back up.
+- `yoga_cobra.jpg`: the Cobra Pose (Bhujangasana) clip: down to hands and
+  knees, a step back to plank, down to the floor through a low plank (the
+  elbows bending back, the feet rolling onto their tops), then the chest lifts
+  by a backbend on bent arms close to the body while the pelvis, thighs and
+  knees stay on the floor, the gaze forward; and back up the same way.
 - `selection.jpg`: selection mode in the fair: three of the audience doing Cow
   Pose, Downward Facing Dog and Upward Facing Dog (keys 2, 4 and 6), each at a
   spot they walked to where the camera sees the whole pose; the selected one is

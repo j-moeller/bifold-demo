@@ -1871,6 +1871,158 @@ def _child_steps(body: Body) -> list[Step]:
                    Step(table, seconds=3.0, hold=1.0, breathe=False, lift=lift)] + _up_from(down)
 
 
+LEG_LONG = 0.9995  # legs lying straight along the floor reach this share of their length (the knees straight)
+
+
+def _legs_long(body: Body, glob: np.ndarray, reach: dict | None = None, ankles: dict | None = None) -> dict:
+    """Both legs straight back along the floor from the hip joints of the global transforms ``glob`` (``reach[side]``
+    of their length, default :data:`LEG_LONG`, the knees pointing down), the tops of the feet down, the ankles
+    ``ankles[side]`` (default 0.06 m) above the floor."""
+    legs = {}
+    for side, s in body.sides.items():
+        hip, ankle = glob[s["thigh"], :3, 3], (ankles or {}).get(side, 0.06)
+        length = (reach or {}).get(side, LEG_LONG) * (s["thigh_length"] + s["shin_length"])
+        back = math.sqrt(max(length ** 2 - (hip[1] - ankle) ** 2, 0.0))
+        legs[f"{side}_leg"] = Limb((s["sign"] * 0.5 * body.hip_width, ankle, float(hip[2] - back)), (0.0, -1.0, 0.0),
+                                   (0.0, 0.0, -1.0), (0.0, -1.0, 0.0), contact=True)
+    return legs
+
+
+def _thighs(body: Body, within: float = 0.12) -> np.ndarray:
+    """The vertices of both thighs, but for those of their lower part further than ``within`` metres from the thigh
+    bone: a long skirt or dress does not count (trouser legs are closer)."""
+    ids = []
+    for s in body.sides.values():
+        hip, knee = body.rest_pos[s["thigh"]], body.rest_pos[s["calf"]]
+        thigh = body.group(s["thigh"])
+        axis, length = _unit(knee - hip), float(np.linalg.norm(knee - hip))
+        along = (body.vertices[thigh] - hip) @ axis
+        off = np.linalg.norm(body.vertices[thigh] - (hip + along[:, None] * axis), axis=1)
+        ids.append(thigh[(along < 0.35 * length) | (off < within)])
+    return np.concatenate(ids)
+
+
+def _front(body: Body) -> np.ndarray:
+    """The vertices of the trunk and the thighs (what rests on the floor lying face down)."""
+    return np.union1d(body.group(body.pelvis, *body.spine), _thighs(body))
+
+
+def _lie_down(body: Body, pose: BodyPose, shoulder_z: float | None = None, rounds: int = 4,
+              knees: bool = True) -> BodyPose:
+    """``pose`` lying face down: moved down until the lowest point of the trunk or the thighs touches the floor (and
+    along to put the shoulders at ``shoulder_z``), the legs straight back along the floor with the tops of the feet
+    on it. ``knees``: the feet just on the floor, and legs that would float (above a big belly) bend the knees a
+    little, which sinks them down."""
+    front = _front(body)
+    feet = {side: np.concatenate([body.foot_group(side), body.shin_group(side, within=0.12)])  # trouser cuffs too
+            for side in body.sides}
+    ankles = {side: 0.06 for side in body.sides}
+    _, glob = solve(body, pose)
+    for _ in range(rounds):
+        pose = replace(pose, **_legs_long(body, glob, None, ankles))
+        _, glob = solve(body, pose)
+        low = float(skin(body, glob, front)[:, 1].min())
+        if knees:  # the feet just on the floor
+            ankles = {side: max(ankles[side] - float(skin(body, glob, ids)[:, 1].min()), 0.0)
+                      for side, ids in feet.items()}
+        dz = 0.0
+        if shoulder_z is not None:
+            dz = shoulder_z - 0.5 * float(glob[body.sides["left"]["upper"], 2, 3] +
+                                          glob[body.sides["right"]["upper"], 2, 3])
+        pose = replace(pose, root=(pose.root[0], pose.root[1] - low, pose.root[2] + dz))
+        glob = glob.copy()
+        glob[:, :3, 3] += (0.0, -low, dz)  # the hips move with the root (the legs follow in the next round)
+    if not knees:
+        return replace(pose, **_legs_long(body, glob, None, ankles))
+    reach, thighs = {}, _thighs(body)
+    for side, s in body.sides.items():  # each leg on its own
+        thigh = np.concatenate([np.intersect1d(thighs, body.group(s["thigh"])), body.knee_group(side)])
+
+        def thigh_low(r, side=side, thigh=thigh):
+            return _lowest_of(body, replace(pose, **_legs_long(body, glob, {side: r}, ankles)), thigh)
+
+        reach[side] = LEG_LONG if thigh_low(LEG_LONG) <= 0.003 else _bisect(thigh_low, 0.96, LEG_LONG, 8)
+    return replace(pose, **_legs_long(body, glob, reach, ankles))
+
+
+def _gaze(body: Body, pose: BodyPose) -> np.ndarray:
+    """Where the face of ``pose`` looks (unit vector)."""
+    _, glob = solve(body, pose)
+    return glob[body.head, :3, :3] @ body.rest_rot[body.head].T @ (0.0, 0.0, 1.0)
+
+
+def cobra(body: Body, hands: BodyPose, spine: float = -55.0, bend: float = 0.72, ahead: float = 0.03,
+          gaze: float = 5.0) -> BodyPose:
+    """Bhujangasana with the hands of ``hands``: lying face down, the legs straight back with the tops of the feet
+    and the thighs on the floor, the pelvis down, the chest lifted by a backbend (``spine``) on bent arms (the wrists
+    ``bend`` of the arm's length from the shoulders and ``ahead`` metres in front of them), the elbows back along the
+    body, the shoulders low, the gaze forward (``gaze`` degrees up)."""
+    left = body.sides["left"]
+    hand = np.asarray(hands.left_arm.target, float)
+    reach = bend * (left["upper_length"] + left["fore_length"])
+    height = hand[1] + math.sqrt(max(reach ** 2 - ahead ** 2, 0.0))  # of the shoulders
+    arms = {}
+    for name in ("left_arm", "right_arm"):
+        sign = 1.0 if name == "left_arm" else -1.0  # the elbows back, hugging the body
+        arms[name] = replace(getattr(hands, name), pole=(sign * 0.2, 0.2, -1.0))
+    base = BodyPose((0.0, 0.2, 0.0), pelvis=(90.0, 0.0, 0.0), spine=(spine, 0.0, 0.0), head=(-35.0, 0.0, 0.0),
+                    flat_hands=True, spine_shares=(0.0, 0.55, 0.45), left_leg=hands.left_leg,
+                    right_leg=hands.right_leg, **arms)
+    shoulder_z = float(hand[2] - ahead)
+    base = _lie_down(body, base, shoulder_z, rounds=3, knees=False)  # (the searches start from there)
+
+    def lying(pitch):
+        return _lie_down(body, replace(base, pelvis=(pitch, 0.0, 0.0)), shoulder_z, rounds=2, knees=False)
+
+    pitch = _bisect(lambda p: _shoulders(body, lying(p))[1] - height, 60.0, 115.0, 10)  # the chest as high as the arms
+    pose = _lie_down(body, replace(base, pelvis=(pitch, 0.0, 0.0)), shoulder_z)
+    up = math.degrees(math.asin(float(_gaze(body, replace(pose, head=(0.0, 0.0, 0.0)))[1])))  # the head straight
+    pose = replace(pose, head=(up - gaze, 0.0, 0.0))  # (its pitch adds to the chest's)
+    return settle(body, pose)  # (the hands and feet exactly on the floor)
+
+
+def prone(body: Body, hands: BodyPose, hips: BodyPose, chin: float = 0.02) -> BodyPose:
+    """Lying face down with the hands of ``hands`` (beside the chest, the elbows bent up and back) and the hips where
+    they are in ``hips``: the pelvis, belly, chest and thighs on the floor (the pelvis tipped until the chest rests
+    as low as the pelvis: over a big belly, the two alike), the legs straight back with the tops of the feet down,
+    the head lifted a little, the chin ``chin`` metres above the floor."""
+    arms = {}
+    for name in ("left_arm", "right_arm"):
+        sign = 1.0 if name == "left_arm" else -1.0
+        arms[name] = replace(getattr(hands, name), pole=(sign * 0.3, 0.6, -1.0))
+    pose = replace(hips, spine=(0.0, 0.0, 0.0), **arms)
+    front = _front(body)
+    chest = np.isin(front, body.group(body.spine[1], body.spine[2]))
+    pelvis = np.isin(front, body.group(body.pelvis))
+
+    def level(pitch):
+        lying = _lie_down(body, replace(pose, pelvis=(pitch, 0.0, 0.0)), rounds=2, knees=False)
+        height = skin(body, solve(body, lying)[1], front)[:, 1]
+        return float(height[chest].min() - height[pelvis].min())
+
+    pose = _lie_down(body, replace(pose, pelvis=(_bisect(level, 80.0, 105.0, 10), 0.0, 0.0)))
+    face = body.group(body.head)
+    head = _bisect(lambda h: _lowest_of(body, replace(pose, head=(h, 0.0, 0.0)), face) - chin, -80.0, 10.0, 10)
+    return settle(body, replace(pose, head=(head, 0.0, 0.0)))
+
+
+def _cobra_steps(body: Body) -> list[Step]:
+    """From standing down to hands and knees, a step back to plank, down to the floor through a low plank (the
+    elbows bending back along the body, the feet rolling onto their tops), then the chest lifts into the cobra; back
+    the same way."""
+    down = _down_to_table(body)
+    table = settle(body, down[-1].pose)  # the hands where they will be
+    board = plank(body, table)
+    snake = cobra(body, table)
+    lying = prone(body, table, snake)
+    back = {"left_leg": 0.12, "right_leg": 0.12}  # stepping back from the knees
+    roll = {"left_leg": 0.05, "right_leg": 0.05}  # the feet roll over the toes
+    return down + [Step(board, seconds=2.0, hold=0.5, breathe=False, lift=back),
+                   Step(lying, seconds=2.0, lift=roll), Step(snake, seconds=2.5, hold=9.0), Step(lying, seconds=2.0),
+                   Step(board, seconds=2.0, hold=0.5, breathe=False, lift=roll),
+                   Step(table, seconds=2.0, hold=1.0, breathe=False, lift=back)] + _up_from(down)
+
+
 POSES: dict[str, PoseSpec] = {
     "yogi_squat": PoseSpec("Yogi Squat (Malasana)", _yogi_squat_steps, main=1, view=0.0),
     "cow": PoseSpec("Cow Pose (Bitilasana)", _cow_steps, main=5, view=90.0),
@@ -1887,4 +2039,5 @@ POSES: dict[str, PoseSpec] = {
     "plank": PoseSpec("Plank Pose (Phalakasana)", _plank_steps, main=8, view=90.0),
     "cat": PoseSpec("Cat Pose (Marjaryasana)", _cat_steps, main=5, view=90.0),
     "child": PoseSpec("Child's Pose (Balasana)", _child_steps, main=5, view=90.0),
+    "cobra": PoseSpec("Cobra Pose (Bhujangasana)", _cobra_steps, main=7, view=90.0),
 }
