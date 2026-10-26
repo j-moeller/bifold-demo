@@ -12,17 +12,20 @@ rigged human avatars and hundreds of shared animation clips. This module knows w
 
 from __future__ import annotations
 
+import collections
 import difflib
+import http.client
 import importlib
 import json
 import os
+import queue
 import ssl
 import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from http.client import HTTPException
 from pathlib import Path
@@ -374,15 +377,16 @@ def url_for(path: str, base_url: str = BASE_URL) -> str:
 class FetchError(RuntimeError):
     """Some files could not be downloaded; ``report.failed`` lists them (the rest was downloaded).
 
-    When the server could not be reached at all, ``report.stopped`` says so and the other files were not tried.
+    When the fetch gave up early (the server cannot be reached, or its TLS certificate cannot be verified),
+    ``report.stopped`` says why and what to do, and the other files were not tried.
     """
 
     def __init__(self, report: FetchReport):
         self.report = report
         if report.stopped:
             missing = len(report.files) - report.downloaded - report.skipped
-            super().__init__(f"{report.stopped}; check the network connection (and proxy settings), then run the "
-                             f"same command again ({missing} of {len(report.files)} files are still missing)")
+            super().__init__(f"{report.stopped}, then run the same command again ({missing} of {len(report.files)} "
+                             f"files are still missing)")
             return
         lines = [f"  {path}: {reason}" for path, reason in report.failed[:5]]
         more = f"\n  ... and {len(report.failed) - 5} more" if len(report.failed) > 5 else ""
@@ -397,22 +401,69 @@ class FetchReport:
     skipped: int = 0  # already complete
     bytes: int = 0  # downloaded bytes
     failed: list[tuple[str, str]] = field(default_factory=list)  # (repository path, reason)
-    stopped: str = ""  # why the fetch stopped before trying every file (the server cannot be reached), else ""
+    stopped: str = ""  # why the fetch gave up before trying every file, and what to do; else ""
 
 
-UNREACHABLE_AFTER = 3  # files in a row that cannot even connect before a fetch gives up on the rest
+UNREACHABLE_AFTER = 3  # files in a row that got no answer before a fetch gives up on the rest
+CONNECT_TIMEOUT = 15.0  # seconds for connecting (through a proxy, with TLS) and again for the answer to start
 
 
 class _Permanent(Exception):
     """A download error that retrying cannot fix."""
 
 
+class _Untrusted(_Permanent):
+    """The TLS certificate of the server cannot be verified: every file of the fetch would fail the same way."""
+
+
 class _Unreachable(RuntimeError):
-    """No attempt could connect to the server (no network, unknown host, refused connection, proxy error)."""
+    """No attempt got an answer (no network, unknown host, refused connection, proxy error, no answer in time)."""
 
 
 class _Cancelled(Exception):
     """The download was stopped from outside (Ctrl-C, or the fetch gave up); its ``.part`` file is kept."""
+
+
+class _QuickToAnswer:
+    """For an ``http.client`` connection: at most :data:`CONNECT_TIMEOUT` until the answer starts.
+
+    Connecting (through a proxy, with the TLS handshake) and receiving the status line and headers each wait at
+    most :data:`CONNECT_TIMEOUT`; the request's own (longer) timeout applies to reading the body.
+    """
+
+    def connect(self):
+        timeout = self.timeout
+        if isinstance(timeout, (int, float)):
+            self.timeout = min(timeout, CONNECT_TIMEOUT)
+        try:
+            super().connect()
+        finally:
+            self.timeout = timeout
+
+    def getresponse(self):
+        sock = self.sock
+        response = super().getresponse()
+        if sock is not None and isinstance(self.timeout, (int, float)):
+            sock.settimeout(self.timeout)  # the response reads the body from this socket
+        return response
+
+
+class _HTTPConnection(_QuickToAnswer, http.client.HTTPConnection):
+    pass
+
+
+class _HTTPSConnection(_QuickToAnswer, http.client.HTTPSConnection):
+    pass
+
+
+class _HTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_HTTPConnection, req)
+
+
+class _HTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_HTTPSConnection, req, context=self._context)
 
 
 def _default_opener():
@@ -424,31 +475,39 @@ def _default_opener():
             context.load_verify_locations(certifi.where())
         except (ImportError, OSError):
             pass
+    director = urllib.request.build_opener(_HTTPHandler(), _HTTPSHandler(context=context))  # proxies from the env
 
     def opener(request, timeout=60.0):
-        return urllib.request.urlopen(request, timeout=timeout, context=context)
+        return director.open(request, timeout=timeout)
 
     return opener
 
 
 def _download(url: str, target: Path, opener, retries: int, backoff: float, timeout: float,
-              stop: threading.Event | None = None) -> int:
+              stop: threading.Event | None = None, answered: threading.Event | None = None) -> int:
     """Download ``url`` to ``target`` via ``target.part`` (resumed with a Range request); returns the size.
 
-    Raises :class:`_Cancelled` soon after ``stop`` is set, :class:`_Unreachable` when no attempt could connect.
+    ``answered`` is set by the first answer of the server (it is shared by the files of a fetch). Raises
+    :class:`_Cancelled` soon after ``stop`` is set, :class:`_Untrusted` when the TLS certificate of the server
+    cannot be verified and :class:`_Unreachable` when no attempt got an answer. A timeout before ``answered`` is
+    set is not retried: nothing has answered yet (most likely there is no network) and every retry would wait as long.
     """
     stop = stop or threading.Event()
+    answered = answered or threading.Event()
     part = target.with_name(target.name + ".part")
     error: Exception | None = None
+    silent = False  # the latest attempt got no answer in time
     for attempt in range(retries + 1):
         if stop.wait(backoff * 2 ** (attempt - 1) if attempt else 0):
             raise _Cancelled(url)
+        response = None
         try:
             offset = part.stat().st_size if part.exists() else 0
             headers = {"User-Agent": "bifold-demo"}
             if offset:
                 headers["Range"] = f"bytes={offset}-"
             with opener(urllib.request.Request(url, headers=headers), timeout=timeout) as response:
+                answered.set()
                 status = getattr(response, "status", None) or response.getcode()
                 if offset and status != 206:
                     offset = 0  # the server sent the whole file
@@ -472,44 +531,58 @@ def _download(url: str, target: Path, opener, retries: int, backoff: float, time
             os.replace(part, target)
             return size
         except urllib.error.HTTPError as exc:
+            answered.set()
             if exc.code == 416:  # stale .part: start over
                 part.unlink(missing_ok=True)
             elif exc.code in (408, 429) or exc.code >= 500:
                 pass
             else:
                 raise _Permanent(f"HTTP {exc.code} {exc.reason} for {url}") from None
-            error = exc
+            error, silent = exc, False
         except (urllib.error.URLError, HTTPException, OSError, ValueError) as exc:
-            if isinstance(getattr(exc, "reason", None), ssl.SSLCertVerificationError):
-                raise _Permanent(f"TLS certificate check failed ({exc.reason}); install certificates for this "
-                                 f"Python (macOS: run 'Install Certificates.command'; or: pip install certifi)")
-            error = exc
-    if isinstance(error, urllib.error.HTTPError):
+            reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+            if isinstance(reason, ssl.SSLCertVerificationError):
+                raise _Untrusted(f"TLS certificate check failed ({getattr(reason, 'verify_message', '') or reason})") \
+                    from None
+            error, silent = exc, response is None and isinstance(reason, TimeoutError)
+            if silent and not answered.is_set():
+                break
+    attempts = attempt + 1
+    if silent:
+        reason = "no answer in time"
+    elif isinstance(error, urllib.error.HTTPError):
         reason = f"HTTP {error.code} {error.reason}"
     else:
         reason = str(getattr(error, "reason", None) or error) or type(error).__name__
     # urlopen wraps the errors of connecting (not those of reading a response) in a URLError
-    unreachable = isinstance(error, urllib.error.URLError) and not isinstance(error, urllib.error.HTTPError)
-    raise (_Unreachable if unreachable else RuntimeError)(f"{reason} (after {retries + 1} attempts)")
+    unreachable = silent or (isinstance(error, urllib.error.URLError) and not isinstance(error, urllib.error.HTTPError))
+    raise (_Unreachable if unreachable else RuntimeError)(f"{reason} (after {attempts} attempt"
+                                                          f"{'s' if attempts > 1 else ''})")
 
 
 def fetch(dest, avatars, clips, jobs: int = 8, progress=None, *, retries: int = 3, opener=None,
           base_url: str = BASE_URL, backoff: float = 1.0, timeout: float = 60.0) -> FetchReport:
-    """Download the files of ``avatars`` and ``clips`` (names; ``None`` = all) into ``dest`` (repository layout).
+    """Download the files of ``avatars`` and ``clips`` (names; ``None`` = all) into ``dest``.
 
-    Files that are already there are skipped, partial downloads (``*.part``) are resumed, each file appears
-    under its final name only when complete, and ``jobs`` files download in parallel with ``retries``
-    retries each. ``progress(done, total, path, status)`` is called after every file. Raises
-    :class:`FetchError` after the others finished when some files failed, or as soon as
-    :data:`UNREACHABLE_AFTER` files in a row could not even connect (no network). On ``KeyboardInterrupt`` the
-    queued files are dropped and the running downloads stop at their next block, so a rerun resumes them.
-    ``opener(request, timeout=...)`` replaces :func:`urllib.request.urlopen` (for tests).
+    ``dest`` gets the repository layout (``Assets/...``); an ``Assets`` folder (one that holds ``Avatars/`` or
+    ``Animations/``, under any name) gets the layout inside it, like :func:`prepare` reads it. Files that are
+    already there are skipped, partial downloads (``*.part``) are resumed, each file appears under its final name
+    only when complete, and ``jobs`` files download in parallel with ``retries`` retries each.
+    ``progress(done, total, path, status)`` is called after every file.
+
+    Raises :class:`FetchError` after the others finished when some files failed, or at once (without waiting for
+    the running downloads) when :data:`UNREACHABLE_AFTER` files in a row got no answer (no network) or when the TLS
+    certificate of the server cannot be verified. Connecting and waiting for an answer to start take at most
+    :data:`CONNECT_TIMEOUT` seconds each, ``timeout`` is for reading. On ``KeyboardInterrupt`` the queued files are
+    dropped and the running downloads stop at their next block, so a rerun resumes them; the downloads run in daemon
+    threads, so one that waits for the network does not keep the program alive. ``opener(request, timeout=...)``
+    replaces the default opener (for tests).
     """
     if jobs < 1 or retries < 0:
         raise ValueError("jobs must be at least 1 and retries at least 0")
-    dest = Path(dest).expanduser()
+    _, local = raw_files(dest)
     paths = files_for(AVATARS if avatars is None else avatars, CLIPS if clips is None else clips)
-    report = FetchReport(files=[dest / p for p in paths])
+    report = FetchReport(files=[local(p) for p in paths])
     opener = opener or _default_opener()
     todo = []
     for path, target in zip(paths, report.files):
@@ -519,54 +592,85 @@ def fetch(dest, avatars, clips, jobs: int = 8, progress=None, *, retries: int = 
                 progress(report.skipped, len(paths), path, "already there")
         else:
             todo.append((path, target))
-    done, stop, lock = report.skipped, threading.Event(), threading.Lock()
-    unreachable: list[str] = []  # the latest files in a row that could not connect
+    host = urllib.parse.urlsplit(base_url).netloc
+    stop, answered, lock = threading.Event(), threading.Event(), threading.Lock()
+    work, results = collections.deque(todo), queue.SimpleQueue()
+    unreachable: list[str] = []  # the latest files in a row that got no answer
+    stopped_by: list[str] = []  # the file whose failure made the fetch give up
 
-    def job(path: str, target: Path) -> int:
+    def give_up(path: str, why: str) -> None:  # with the lock held
+        if not stop.is_set():
+            report.stopped, stopped_by[:] = why, [path]
+            stop.set()  # the workers take no more files and the running downloads end (as cancelled)
+
+    def run(path: str, target: Path) -> None:
         try:
-            size = _download(url_for(path, base_url), target, opener, retries, backoff, timeout, stop)
+            outcome = _download(url_for(path, base_url), target, opener, retries, backoff, timeout, stop, answered)
+        except _Untrusted as exc:  # the same for every file: give up at once
+            with lock:  # (put with the lock held: the file that makes the fetch give up is the last one counted)
+                give_up(path, f"cannot download from {host}: {exc}; install certificates for this Python (macOS: "
+                              f"run 'Install Certificates.command'; or: pip install certifi), or, if this network "
+                              f"intercepts HTTPS (a Wi-Fi login page or a company proxy), log in to it first or set "
+                              f"SSL_CERT_FILE to its certificate")
+                results.put((path, exc))
+            return
         except _Unreachable as exc:
             with lock:
-                unreachable.append(str(exc))
-                if len(unreachable) >= UNREACHABLE_AFTER and not stop.is_set():
-                    report.stopped = f"cannot reach {urllib.parse.urlsplit(base_url).netloc}: {exc}"
-                    stop.set()  # no network: the other files end at once (as cancelled)
-            raise
-        except (_Permanent, RuntimeError):
+                unreachable.append(path)
+                if len(unreachable) >= UNREACHABLE_AFTER:
+                    give_up(path, f"cannot reach {host}: {exc}; check the network connection (and proxy settings)")
+                results.put((path, exc))
+            return
+        except BaseException as exc:  # noqa: BLE001 - the main thread reports it
+            outcome = exc
+        if not isinstance(outcome, _Cancelled):
             with lock:
                 unreachable.clear()
-            raise
-        with lock:
-            unreachable.clear()
-        return size
+        results.put((path, outcome))
 
-    pool = ThreadPoolExecutor(max_workers=jobs)
-    try:
-        futures = {}
-        for path, target in todo:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            futures[pool.submit(job, path, target)] = path
-        for future in as_completed(futures):
-            path = futures[future]
+    def worker() -> None:
+        while not stop.is_set():
             try:
-                size = future.result()
-            except _Cancelled:
+                path, target = work.popleft()
+            except IndexError:
+                return
+            run(path, target)
+
+    for folder in dict.fromkeys(target.parent for _, target in todo):
+        folder.mkdir(parents=True, exist_ok=True)
+    threads = [threading.Thread(target=worker, name=f"fetch-{i + 1}", daemon=True) for i in range(min(jobs, len(todo)))]
+    done, received = report.skipped, 0
+    try:
+        for thread in threads:
+            thread.start()
+        while received < len(todo):
+            try:
+                path, outcome = results.get(timeout=0.25)  # short waits: Ctrl-C gets through at once on every system
+            except queue.Empty:
                 continue
-            except (_Permanent, RuntimeError) as exc:
-                report.failed.append((path, str(exc)))
-                status = f"failed: {exc}"
+            received += 1
+            if isinstance(outcome, _Cancelled):
+                continue
+            if isinstance(outcome, (_Permanent, RuntimeError)):
+                report.failed.append((path, str(outcome)))
+                status = f"failed: {outcome}"
+            elif isinstance(outcome, BaseException):
+                raise outcome
             else:
                 report.downloaded += 1
-                report.bytes += size
-                status = f"downloaded {size / 1e6:.1f} MB"
+                report.bytes += outcome
+                status = f"downloaded {outcome / 1e6:.1f} MB"
             done += 1
             if progress:
                 progress(done, len(paths), path, status)
-    except BaseException:  # e.g. Ctrl-C: drop the queued files, stop the running ones at their next block
+            if stopped_by and path == stopped_by[0]:
+                break  # given up: the running downloads end by themselves (cancelled, or at their timeout)
+    except BaseException:  # e.g. Ctrl-C: the workers take no more files, the running ones stop at their next block
         stop.set()
-        pool.shutdown(wait=False, cancel_futures=True)
         raise
-    pool.shutdown()
+    if not stop.is_set():
+        for thread in threads:
+            thread.join()
     if report.failed:
         report.failed.sort()
         raise FetchError(report)
@@ -697,15 +801,18 @@ _PNG_START, _PNG_END = b"\x89PNG\r\n\x1a\n", b"IEND\xaeB`\x82"
 
 def _check_npz(path: Path, arrays) -> None:
     try:
-        with zipfile.ZipFile(path) as z:  # reads only the directory at the end, so a cut-off file fails here
+        with zipfile.ZipFile(path) as z:  # the directory is at the end: a cut-off file fails here
             names = {n.removesuffix(".npy") for n in z.namelist()}
+            missing = [a for a in arrays if a not in names]
+            bad = None if missing else z.testzip()  # reads every array (decodes nothing) and checks its CRC
     except FileNotFoundError:
         raise ValueError(f"{path.name} is missing") from None
     except Exception as exc:  # noqa: BLE001 - zipfile raises several kinds of errors for a damaged file
         raise ValueError(f"{path.name} is damaged ({type(exc).__name__}: {exc})") from None
-    missing = [a for a in arrays if a not in names]
     if missing:
         raise ValueError(f"{path.name} is damaged (no {missing[0]} array)")
+    if bad is not None:
+        raise ValueError(f"{path.name} is damaged (bad data in {bad})")
 
 
 def _check_png(path: Path) -> None:
@@ -725,8 +832,9 @@ def _check_png(path: Path) -> None:
 def check_avatar(cache_dir, name: str) -> dict:
     """The stored metadata of the prepared avatar ``name`` after a quick check of its files (nothing is decoded).
 
+    The arrays are read to compare them with their checksums; of the textures only the start and the end are read.
     Raises ``FileNotFoundError`` when it is not prepared, ``ValueError`` saying what is wrong when one of its files
-    is missing, damaged (e.g. cut off) or was written by another version.
+    is missing, damaged (e.g. cut off, or changed inside) or was written by another version.
     """
     folder = Path(cache_dir).expanduser() / "avatars"
     path = folder / f"{name}.json"
@@ -749,7 +857,7 @@ def check_avatar(cache_dir, name: str) -> dict:
 
 
 def check_clip(path) -> None:
-    """A quick check of a prepared clip file (nothing is decoded).
+    """A quick check of a prepared clip file (its arrays are compared with their checksums; nothing is decoded).
 
     Raises ``FileNotFoundError`` when it does not exist, ``ValueError`` saying what is wrong when it is damaged.
     """
@@ -787,11 +895,12 @@ class PrepareReport:
     failed: list[tuple[str, str]] = field(default_factory=list)  # (name, reason)
 
 
-def _raw_files(raw_dir):
+def raw_files(raw_dir):
     """``(root, local)``: ``local(path)`` is the file of a repository path (``Assets/...``) in ``raw_dir``.
 
     ``raw_dir`` may hold ``Assets/`` (a clone of the repository, or the fetch folder) or be an ``Assets``
-    folder itself, under any name (it holds ``Avatars/`` or ``Animations/``).
+    folder itself, under any name (it holds ``Avatars/`` or ``Animations/``). :func:`fetch` downloads to these
+    files and :func:`prepare` reads them, so both treat a folder the same way.
     """
     raw = Path(raw_dir).expanduser()
     if (raw / "Assets").is_dir() or not ((raw / "Avatars").is_dir() or (raw / "Animations").is_dir()):
@@ -817,7 +926,7 @@ def prepare(raw_dir, cache_dir, avatars=None, clips=None, delete_raw: bool = Fal
     once it is converted. Failures are collected in the report instead of stopping the run.
     ``progress(done, total, name, status)`` is called after every item.
     """
-    (root, local), cache = _raw_files(raw_dir), Path(cache_dir).expanduser()
+    (root, local), cache = raw_files(raw_dir), Path(cache_dir).expanduser()
     if avatars is None:
         avatars = [n for n, a in AVATARS.items() if local(a.fbx).is_file()]
     if clips is None:

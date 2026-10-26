@@ -64,8 +64,9 @@ def cmd_fetch(args) -> int:
     todo_avatars = [n for n in avatars if args.force or not rocketbox.is_prepared(dest, "avatar", n)]
     todo_clips = [n for n in clips if args.force or not rocketbox.is_prepared(dest, "clip", n)]
     paths = rocketbox.files_for(todo_avatars, todo_clips)
-    present = [p for p in paths if (raw / p).is_file()]
-    size = sum(rocketbox.estimate_size(p) for p in paths if not (raw / p).is_file())
+    _, local = rocketbox.raw_files(raw)  # what fetch and prepare use: --raw may also be an Assets folder
+    present = [p for p in paths if local(p).is_file()]
+    size = sum(rocketbox.estimate_size(p) for p in paths if not local(p).is_file())
     done = len(avatars) - len(todo_avatars) + len(clips) - len(todo_clips)
     print(f"[fetch] {len(avatars)} avatars and {len(clips)} animation clips"
           + (f" ({done} already prepared)" if done else "")
@@ -88,8 +89,8 @@ def cmd_fetch(args) -> int:
     print(f"[fetch] downloaded {report.downloaded} files ({_human(report.bytes)}) in "
           f"{time.monotonic() - start:.0f} s, {report.skipped} were already there")
     if failed:  # convert only what is complete; the error above already lists the rest
-        todo_avatars = [n for n in todo_avatars if all((raw / p).is_file() for p in rocketbox.AVATARS[n].files)]
-        todo_clips = [n for n in todo_clips if (raw / rocketbox.CLIPS[n].path).is_file()]
+        todo_avatars = [n for n in todo_avatars if all(local(p).is_file() for p in rocketbox.AVATARS[n].files)]
+        todo_clips = [n for n in todo_clips if local(rocketbox.CLIPS[n].path).is_file()]
         if not todo_avatars and not todo_clips:
             return 1
     code = _prepare(raw, dest, todo_avatars, todo_clips, args)
@@ -165,7 +166,8 @@ def build_parser() -> argparse.ArgumentParser:
         return p
 
     def convert_options(p):
-        p.add_argument("--raw", help="folder for the downloaded Rocketbox files (default DEST/raw)")
+        p.add_argument("--raw", help="folder for the downloaded Rocketbox files (default DEST/raw); also a clone of "
+                                     "the Rocketbox repository or its Assets folder")
         p.add_argument("--delete-raw", action="store_true", help="delete the downloaded files once converted")
         p.add_argument("--force", action="store_true", help="convert again even if already prepared")
         p.add_argument("--texture-size", type=int, default=1024,

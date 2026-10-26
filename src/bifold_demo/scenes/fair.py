@@ -28,7 +28,7 @@ import numpy as np
 
 from bifold_demo.characters.behaviour import approach, chat, fits_period, stand, walk_by, wander
 from bifold_demo.characters.crowd import age_group, describe_crowd, populate, sample_crowd
-from bifold_demo.characters.library import CharacterLibrary
+from bifold_demo.characters.library import CharacterLibrary, fetch_command
 from bifold_demo.people import people_for_scene
 from bifold_demo.scene import (
     Box,
@@ -226,8 +226,13 @@ def _add_3d_people_if_ready(scene: Scene) -> bool:
         try:
             library = shared_library()
             if not crowd_ready(library):
-                print("[fair] no 3D people prepared yet (run: bifold-characters fetch --set conference, or set "
-                      "BIFOLD_CHARACTERS to the folder you prepared them in); showing 2D cut-outs instead")
+                missing = library.missing() if hasattr(library, "missing") else ["avatars"]
+                if "avatars" in missing:
+                    print("[fair] no 3D people prepared yet (run: bifold-characters fetch --set conference, or set "
+                          "BIFOLD_CHARACTERS to the folder you prepared them in); showing 2D cut-outs instead")
+                else:  # avatars, but their walk or idle clips are missing or damaged
+                    print(f"[fair] the prepared 3D people have no {' or '.join(missing)} clips (run: "
+                          f"{fetch_command('--avatars --clips basic', library.folder)}); showing 2D cut-outs instead")
                 return False
             add_3d_people(scene, library, random.Random(CROWD_SEED))
             return True

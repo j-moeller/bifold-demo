@@ -203,6 +203,24 @@ def test_without_prepared_characters_the_hall_shows_2d_people(capsys, monkeypatc
     assert "bifold-characters fetch" in capsys.readouterr().out
 
 
+def test_avatars_without_walk_clips_say_what_to_fetch(capsys, monkeypatch, tmp_path):
+    class NoWalks(FakeLibrary):
+        folder = tmp_path
+
+        def roles(self):
+            return {k: v for k, v in super().roles().items() if k != "walk"}
+
+        def missing(self):
+            return ["walk"]
+
+    monkeypatch.setattr(fair, "CharacterLibrary", NoWalks)
+    monkeypatch.setattr(fair, "people_for_scene", lambda folder: [])
+    scene = fair.build_scene()
+    assert not any(hasattr(o, "skinned_model") for o in scene)
+    out = capsys.readouterr().out
+    assert "no walk clips" in out and "fetch --avatars --clips basic" in out
+
+
 def test_a_broken_character_cache_falls_back_to_2d_people(capsys, monkeypatch):
     def broken(*args, **kwargs):
         raise OSError("damaged avatar file")

@@ -60,6 +60,12 @@ def _clip_option(names) -> str:
     return "--avatars --clips " + ("basic" if set(names) <= set(rocketbox.clip_set("basic")) else "all")
 
 
+def _avatar_option(names) -> str:
+    # --clips basic: --avatars alone means all 74 clips; the basic ones are what a scene needs (and are skipped
+    # when they are prepared already)
+    return f"--avatars {' '.join(names)} --clips basic"
+
+
 def _summary(problems: dict[str, str], most: int = 3) -> str:
     text = "; ".join(f"{name}: {problem}" for name, problem in list(problems.items())[:most])
     return text + (f"; and {len(problems) - most} more" if len(problems) > most else "")
@@ -142,7 +148,7 @@ class CharacterLibrary:
         if cached is None or cached[0] != signature:
             try:
                 model = rocketbox.read_character(self.folder, name, textures, metadata=self.available()[name])
-            except Exception as exc:  # noqa: BLE001 - damage the quick check cannot see
+            except Exception as exc:  # damage the quick check cannot see
                 problem = f"{type(exc).__name__}: {exc}"
                 self._broken[("avatar", name)] = (signature, problem)
                 self._warn("avatar", {name: problem})
@@ -157,7 +163,7 @@ class CharacterLibrary:
             if problem:
                 return f"the prepared {kind} {name} is damaged ({problem}); to repair it: {self._repair(kind, [name])}"
         if name in rocketbox.AVATARS:
-            return f"avatar {name} is not prepared yet; run: {fetch_command('--avatars ' + name, self.folder)}"
+            return f"avatar {name} is not prepared yet; run: {fetch_command(_avatar_option([name]), self.folder)}"
         if name in rocketbox.CLIPS:
             return f"clip {name} is not prepared yet; run: {fetch_command(_clip_option([name]), self.folder)}"
         known = dict.fromkeys([*self._scan("avatar"), *rocketbox.AVATARS, *rocketbox.CLIPS])
@@ -182,7 +188,7 @@ class CharacterLibrary:
 
     def _repair(self, kind: str, names) -> str:
         names = list(names)
-        option = "--avatars " + " ".join(names) if kind == "avatar" else _clip_option(names)
+        option = _avatar_option(names) if kind == "avatar" else _clip_option(names)
         command = fetch_command(option, self.folder)
         broken = [n for n in names if (kind, n) in self._broken]
         if not broken:

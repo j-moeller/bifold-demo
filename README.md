@@ -165,8 +165,9 @@ download size first, and `--delete-raw` removes the originals after
 converting. To keep the cache elsewhere, `export BIFOLD_CHARACTERS=DIR` before
 running both `bifold-characters` and `bifold-demo`: the demo reads only that
 variable (default `~/.cache/bifold-demo/characters`), and `--dest DIR` changes
-only the folder `bifold-characters` works in. `prepare --raw DIR` converts a
-Rocketbox clone you already have.
+only the folder `bifold-characters` works in. `--raw DIR` uses a Rocketbox
+clone you already have, or its `Assets` folder: `prepare --raw DIR` converts
+it, and `fetch --raw DIR` downloads only the files it lacks.
 
 Using 3D people in your own scene:
 
