@@ -1,0 +1,48 @@
+{
+  "about": "Outfit recipes: region -> fill. A fill is a colour, a short description (see outfit/prompts.py) or a dict ({\"pattern\": ..., \"colors\": [primary, secondary], \"scale\": metres per repeat, \"rotation\": degrees}). Regions left out keep the avatar's own clothes.",
+  "presets": {
+    "business navy": {
+      "description": "a navy pinstripe suit, a white shirt, black shoes",
+      "fills": {"top": {"pattern": "pinstripe", "colors": ["navy", "#7d879e"], "scale": 0.014},
+                "shirt": "white", "bottoms": {"pattern": "pinstripe", "colors": ["navy", "#7d879e"], "scale": 0.014},
+                "shoes": "black"}
+    },
+    "charcoal suit": {
+      "description": "a charcoal suit, a light blue shirt, black shoes",
+      "fills": {"top": "charcoal", "shirt": "light blue", "bottoms": "charcoal", "shoes": "black"}
+    },
+    "casual denim": {
+      "description": "a light denim top, a white shirt, blue jeans, white trainers",
+      "fills": {"top": "light denim", "shirt": "white", "bottoms": "denim", "shoes": "white"}
+    },
+    "sporty": {
+      "description": "a royal blue top, white, black track trousers, white trainers",
+      "fills": {"top": "royal blue", "shirt": "white", "bottoms": "black", "shoes": "white"}
+    },
+    "trade-fair staff": {
+      "description": "the stand team: teal top, white shirt, charcoal trousers, black shoes",
+      "fills": {"top": "teal", "shirt": "white", "bottoms": "charcoal", "shoes": "black"}
+    },
+    "festival": {
+      "description": "orange and yellow stripes, light jeans, white trainers",
+      "fills": {"top": {"pattern": "stripes", "colors": ["#e8702a", "#f2d24b"], "scale": 0.05, "rotation": 90},
+                "shirt": "white", "bottoms": "light denim", "shoes": "white"}
+    },
+    "all black": {
+      "description": "black from head to toe",
+      "fills": {"top": "black", "shirt": "black", "bottoms": "black", "shoes": "black"}
+    },
+    "highland": {
+      "description": "a red tartan top, a white shirt, charcoal trousers",
+      "fills": {"top": "red tartan", "shirt": "white", "bottoms": "charcoal", "shoes": "black"}
+    },
+    "tweed": {
+      "description": "a brown herringbone jacket, a cream shirt, brown trousers",
+      "fills": {"top": "brown herringbone", "shirt": "cream", "bottoms": "chocolate", "shoes": "cognac"}
+    },
+    "camouflage": {
+      "description": "olive camouflage, khaki and brown boots",
+      "fills": {"top": "olive camo", "shirt": "khaki", "bottoms": "olive camo", "shoes": "brown"}
+    }
+  }
+}

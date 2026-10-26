@@ -111,3 +111,17 @@ work goes on. The people are avatars from the
   (thumbs at the temples, wiggling the fingers; the expressions come with
   `characters/faces.py`), stepping to the side, leaning sideways, leaning in
   towards the camera and stepping up closer.
+- `outfit_regions.jpg`: the garment regions `characters/outfit/regions.py`
+  finds on the body textures of all 20 prepared avatars, drawn over their own
+  texture (front and back): skin, top, shirt (an inner layer: a shirt front and
+  collar, a hood, long sleeves under a t-shirt, a shirt under a vest), bottoms,
+  shoes (also tall boots) and other (belts, a tie, sleeve stripes, a printed
+  number, the black top showing under a short jacket). The two marked `*` have
+  an override file: a long dress over trousers and a robe, whose skirts the leg
+  bones move.
+- `outfits.jpg`: four avatars (rows) in their own clothes, in four outfit
+  presets (business navy, casual denim, trade-fair staff, festival) and in two
+  descriptions ("red tartan jacket, black trousers" and "white polka dots on
+  black"), front and back. The folds, seams and stitching of the avatars' own
+  textures stay; the patterns keep one size across the body and run on round
+  it, along the sleeves and down the trouser legs.

@@ -1,0 +1,6 @@
+{
+  "note": "A long dress over trousers: what the leg bones move above the dress's hem is the dress (the top).",
+  "rules": [
+    {"region": "top", "where": {"label": "bottoms", "above": 0.36}}
+  ]
+}

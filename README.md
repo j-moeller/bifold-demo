@@ -175,6 +175,124 @@ everybody wearing it at once. In Python, `Wardrobe(folder, textures={"sign":
 Items fit the Rocketbox avatars (their Biped skeleton); a person can wear all
 four at once.
 
+## Outfits
+
+[`characters/outfit/`](src/bifold_demo/characters/outfit) gives the 3D people
+new clothes on their own body mesh and texture layout: preset outfits, a colour
+or a pattern per garment, and short descriptions such as "navy pinstripe" or
+"white polka dots on black". The folds, seams, buttons and stitching of the
+avatar's own clothes stay. This is the first step of the character creator
+(component 2 in
+[docs/research/outfit_textures.md](docs/research/outfit_textures.md)). The
+generative fabric, the creator screen and saving come later.
+
+```python
+from bifold_demo.characters.outfit import dress, undress
+
+dress(person, "business navy")                                   # a preset
+dress(person, "red tartan jacket, white shirt, black trousers")  # a description
+dress(person, {"top": "olive camo", "shoes": "#3b2a1e"})         # garment by garment
+undress(person)                                                  # their own clothes again
+```
+
+```bash
+bifold-characters outfit --presets                     # the presets
+bifold-characters outfit Business_Male_02 "white polka dots on black" -o body.png --views views.png
+bifold-characters outfit Female_Adult_06 --regions regions.png   # the garment regions it finds
+```
+
+**Garment regions.** Each texel of an avatar's body texture is labelled
+`skin`, `top` (the jacket or other outer layer; a shirt worn on its own),
+`shirt` (an inner layer seen under the top: a shirt front and collar, a hood,
+long sleeves under a t-shirt), `bottoms`, `shoes` or `other` (belts, ties,
+trims, printed numbers: an outfit leaves them alone). The labels come from:
+
+- the bones that move each texel and its UV island: in the Rocketbox atlases
+  an island is one piece of cloth, so a trouser hem stays with the trousers
+  though the foot bone moves it;
+- the avatar's own skin colour, sampled from its face and learnt on its hands;
+- colour clusters within the garments: the colour that covers the back is the
+  top, other large colours or colours at the collar are the shirt, a different
+  colour below the knee is boots, a small one at the waist a belt.
+
+On the 20 prepared avatars the labels are right on 18 by themselves
+([docs/previews/outfit_regions.jpg](docs/previews/outfit_regions.jpg)). The
+other two wear a long dress over trousers (`Female_Adult_06`) and a robe
+(`Male_Adult_21`): the leg bones move their skirts, so they would count as
+trousers. The package fixes them with small JSON override files
+(`characters/outfit/overrides/<avatar>.json`). Remaining small misses: the
+black top showing under a short jacket or vest is `other` rather than `shirt`
+(`Female_Adult_04`, `Female_Adult_13`), and stripes or zips on a jacket are
+`other`, so they keep their colour. An override is a list of rules that
+relabel texels by label, island, bone group, side, height or a box in the
+atlas, for example:
+
+```json
+{"rules": [{"region": "top", "where": {"label": "bottoms", "above": 0.36}}]}
+```
+
+Put your own as `<avatar>.json` in the outfit cache folder:
+`<characters folder>/outfit/`, or `$BIFOLD_OUTFIT_CACHE` if it is set. The
+labels are kept there too, as about 0.15 MB per avatar. The skin mask
+(`body_regions(model).skin`) is meant for matching the skin to a person's
+photos: outfits never write skin texels. Islands that share their texels with
+another part of the body are flagged (`flags["overlapping"]`); on these
+avatars they are earrings and a necklace stacked in the atlas, labelled
+`other`. Mirrored islands would be flagged too; there are none.
+
+**Keeping the look.** For each region the texture is split into a detail
+layer and a shading layer. The detail layer `D = L / blur(L)` holds the weave,
+stitching, seams and small wrinkles. The shading layer `S = blur(L) /
+reference` holds the folds and the ambient occlusion. `L` is the luminance,
+and the blur (12 texels) stays inside the region. The new texture is
+`fill × D × S`. A fill of the texture's own base colour gives the texture
+back. Garments cross-fade over 2-3 texels where they meet, and the new colours
+reach 8 texels past the islands so that mipmapping does not bleed the old ones
+in.
+
+**Fills.** A fill can be a colour: a name such as `navy`, `light grey` or
+`burgundy`, or `#1f2a44`. It can be a procedural pattern in two colours:
+stripes, pinstripe, checks, windowpane, gingham, tartan, houndstooth, polka
+dots, twill, herringbone, denim or camo. Or it can be an image swatch. The
+woven ones are woven: a thread grid with a weave, so gingham and tartan get
+their mixed tones like real cloth. Patterns and swatches are laid out on the
+body in metres, not in the texture atlas. The torso is unrolled like an
+elliptic cylinder from the middle of the front, each sleeve, trouser leg and
+shoe around its limb's joints, with the seams where real clothes have them:
+the middle of the back, under the arm, the inside leg. So a pattern keeps one
+size, runs on across UV cuts and matches front and back. Stripes run down the
+body and along the sleeves. `Pattern("tartan", "red", "navy", scale=0.15,
+rotation=45)` sets the repeat in metres and the angle. A `Swatch("fabric.png",
+scale=0.2)` tiles any seamless image the same way, and so will the generated
+fabrics.
+
+**Descriptions.** Keywords make the fills, and the same words always give the
+same result:
+
+- `"navy"` is a colour, and `"navy pinstripe"` a pattern with its usual
+  second colour;
+- `"red and black checks"` takes the first colour as the ground;
+- in `"white polka dots on black"`, the colour after `on` is the ground;
+- `light`, `dark`, `pale` and `deep` shade a colour;
+- `thin` or `large` scale a pattern, and `horizontal` or `diagonal` turn it;
+- garment words pick the region: `"red tartan jacket, white shirt and black
+  trousers"`, `"blue jeans with white trainers"`. A suit dresses the top and
+  the bottoms; a description without a garment word dresses the top.
+
+**Presets** (in `characters/outfit/presets.json`): business navy, charcoal
+suit, casual denim, sporty, trade-fair staff, festival, all black, highland,
+tweed and camouflage. Regions an outfit leaves out keep the avatar's own
+clothes.
+
+**Speed** (on this project's 4-CPU Linux sandbox; the textures are 1024×1024
+unless prepared larger): labelling an avatar takes about 3 s the first time,
+and under a second from the cache. The cloth coordinates and layers take
+another 0.7 s once per avatar. After that an outfit takes 50-150 ms at 1024
+and 0.2-0.5 s at 2048 (the first one about 50 ms more per garment). Dressing a
+person again reuses their texture, and the renderer uploads the new pixels.
+[docs/previews/outfits.jpg](docs/previews/outfits.jpg) shows four avatars in
+four presets and two descriptions.
+
 ## Funny faces
 
 [`characters/faces.py`](src/bifold_demo/characters/faces.py) makes the 3D people
@@ -807,6 +925,9 @@ src/bifold_demo/
                accessories.py (hats, glasses, signs, t-shirts),
                faces.py (funny faces with the face bones),
                face_photo.py (a photo's face painted on a 3D person),
+               uvbake.py (what each texel of a texture is on the body),
+               outfit/ (garment regions, cloth coordinates, fabrics, prompts,
+                        presets.json, the compositor: new clothes on an avatar),
                rocketbox.py + library.py + cli.py (bifold-characters),
                rocketbox_catalog.json (avatar labels)                   ← 3D people
   recognition/ engine.py (find and fingerprint faces), gallery.py (known people),
@@ -840,7 +961,8 @@ Some tests also check real data when you point them at it, and skip otherwise:
 - `BIFOLD_ROCKETBOX_TEST_DIR`: a folder with the Rocketbox `Avatars/` and
   `Animations/` folders (any name), for the FBX and asset tests.
 - `BIFOLD_CHARACTERS_TEST_DIR`: a prepared character library, for the tests
-  of real walk clips.
+  of real walk clips, yoga poses, faces and outfits (the outfit tests keep
+  their labels in a temporary folder, not in the library).
 - `BIFOLD_ROCKETBOX_FILES`: a fresh full file listing of the Rocketbox
   repository, instead of the committed `tests/rocketbox_files.txt`.
 

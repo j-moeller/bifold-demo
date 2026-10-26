@@ -1,0 +1,6 @@
+{
+  "note": "A long robe (a thobe): its lower half, which the leg bones move, belongs to the top, not to trousers.",
+  "rules": [
+    {"region": "top", "where": {"label": "bottoms"}}
+  ]
+}

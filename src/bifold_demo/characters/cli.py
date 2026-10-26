@@ -154,6 +154,93 @@ def cmd_info(args) -> int:
     return _error(library.explain(args.name), 1)
 
 
+def cmd_outfit(args) -> int:
+    import cv2
+
+    from .outfit import regions as outfit_regions
+    from .outfit.tailor import Outfit, presets, tailor_for
+
+    if args.presets:
+        for name, fills in presets().items():
+            print(f"{name:18s} " + "; ".join(f"{region}: {_describe_fill(spec)}" for region, spec in fills.items()))
+        return 0
+    if not args.avatar:
+        return _error("name an avatar (see: bifold-characters list), or use --presets")
+    dest, _ = _folders(args)
+    library = CharacterLibrary(dest)
+    if args.avatar not in library.available():
+        return _error(library.explain(args.avatar), 1)
+    model = library.load(args.avatar)
+    start = time.perf_counter()
+    regions = outfit_regions.body_regions(model)
+    tailor = tailor_for(model)
+    tailor.layers, tailor.surface  # noqa: B018 - made now, so the timing below is the outfit's alone
+    ready = time.perf_counter() - start
+    counts = regions.counts()
+    total = max(1, sum(counts.values()))
+    print(f"{args.avatar}: {regions.size}x{regions.size} texels ready in {ready:.2f} s; "
+          + ", ".join(f"{name} {n / total:.0%}" for name, n in counts.items()))
+    for flag in ("mirrored", "overlapping"):
+        if regions.flags.get(flag):
+            print(f"  {flag} islands: {', '.join(map(str, regions.flags[flag]))}")
+    for path in regions.flags.get("overrides", []):
+        print(f"  overrides from {path}")
+    atlas = tailor.original[..., :3]
+    if args.regions:
+        cv2.imwrite(args.regions, regions.image(atlas))
+        print(f"  regions -> {args.regions} (skin, top, shirt, bottoms, shoes, other: peach, red, yellow, blue, "
+              f"green, magenta)")
+    if args.description is None:
+        return 0
+    try:
+        outfit = Outfit.parse(args.description)
+    except (ValueError, KeyError) as exc:
+        return _error(str(exc))
+    start = time.perf_counter()
+    rgba = tailor.texture(outfit)
+    print(f"  {outfit.name}: " + "; ".join(f"{r}: {_describe_fill(f.spec())}" for r, f in outfit.fills.items())
+          + f" ({(time.perf_counter() - start) * 1000:.0f} ms)")
+    if args.output:
+        cv2.imwrite(args.output, cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA))
+        print(f"  body texture -> {args.output}")
+    if args.views:
+        image = _outfit_views(model, tailor.primitive.name, rgba)
+        cv2.imwrite(args.views, image)
+        print(f"  front and back -> {args.views}")
+    return 0
+
+
+def _describe_fill(spec) -> str:
+    if isinstance(spec, dict) and "pattern" in spec:
+        colours = " and ".join(spec.get("colors", []))
+        return f"{spec['pattern']} ({colours})" if colours else spec["pattern"]
+    return str(spec)
+
+
+def _outfit_views(model, primitive: str, rgba):
+    """The avatar in its rest pose from the front and the back, wearing the body texture ``rgba`` (needs OpenGL)."""
+    import numpy as np
+
+    from ..scene import Camera, Scene, Texture
+    from ..scene.renderer import Renderer
+    from .character import Character
+    from .model import CharacterState
+
+    texture = Texture(rgba, name="outfit")
+    height = float(model.metadata.get("height", 1.75))
+    renderer = Renderer(360, 640)
+    views = []
+    for heading in (0.0, 180.0):
+        person = Character(model, behaviour=lambda t, h=heading: CharacterState((0.0, 0.0, 0.0), h, []), name="p")
+        person.texture_overrides[primitive] = texture
+        scene = Scene(background=(235, 236, 240), ambient=0.55, light_direction=(-0.3, -0.6, -1.0))
+        scene.add(person)
+        scene.update(0.0, 0.0)
+        scene.camera = Camera(position=(0.0, height * 0.55, height * 1.9), target=(0.0, height * 0.5, 0.0), fov=32)
+        views.append(renderer.render(scene))
+    return np.hstack(views)
+
+
 def _pose_names() -> list[str]:
     from . import yoga
 
@@ -262,6 +349,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"only these poses (default: all of {', '.join(_pose_names())})")
     y.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1),
                    help="poses solved at the same time (default: one per CPU core but one)")
+
+    o = add("outfit", cmd_outfit, "dress an avatar in an outfit (a preset or a description) and write its new body "
+                                  "texture; also shows the garment regions found on its texture")
+    o.add_argument("avatar", nargs="?", help="avatar name, e.g. Business_Male_02")
+    o.add_argument("description", nargs="?", help='a preset ("business navy") or a description: "red tartan", '
+                                                  '"navy pinstripe suit, white shirt, black shoes"')
+    o.add_argument("-o", "--output", help="write the body texture here (PNG)")
+    o.add_argument("--regions", help="write a picture of the garment regions over the texture here")
+    o.add_argument("--views", help="write the avatar from the front and the back here (needs OpenGL)")
+    o.add_argument("--presets", action="store_true", help="list the outfit presets")
 
     i = add("info", cmd_info, "show the details of an avatar or animation clip")
     i.add_argument("name", help="avatar or clip name, e.g. Business_Female_01 or m_walk_neutral_01")
