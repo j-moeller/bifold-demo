@@ -123,7 +123,7 @@ void main() {
 """
 
 SHADOW_STRENGTH = 0.45  # darkening at the centre of a blob shadow (0-1)
-SHADOW_LIFT = 0.01  # metres above the floor, so a blob shadow never fights the floor for depth
+SHADOW_LIFT = 0.015  # metres above the feet: above the floor and flat floor decals (carpets) up to 1 cm high
 _SHADOW_CORNERS = np.array([(-1, -1), (1, -1), (1, 1), (-1, -1), (1, 1), (-1, 1)], dtype=np.float64)
 _UNSET = object()
 

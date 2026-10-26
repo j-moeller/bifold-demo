@@ -140,11 +140,11 @@ def add_booth_people(scene, cast: Cast) -> None:
     d = fair.BOOTH_DEPTH
     for index, origin, yaw in fair.booth_layout():
         at = fair._placer(origin, yaw)
-        cast.place(scene, cast.adult(), f"staff{index}", at((0.9, 0.0, d / 2 - 1.55)), yaw, "idle", "talk")
+        cast.place(scene, cast.adult(), f"staff{index}", at((0.9, fair.BOOTH_FLOOR, d / 2 - 1.75)), yaw, "idle", "talk")
         if index % 2:
             cast.place(scene, cast.adult(), f"guest{index}", at((0.7, 0.0, d / 2 + 0.45)), yaw + 180,
                        "listen", "idle")
 
 
 def add_speaker(scene, cast: Cast) -> None:
-    cast.place(scene, cast.adult(), "speaker", (2.5, 1.0, fair.STAGE_Z + 1.0), 30.0, "talk", "idle")
+    cast.place(scene, cast.adult(), "speaker", (2.5, fair.STAGE_HEIGHT, fair.STAGE_Z + 1.0), 30.0, "talk", "idle")
