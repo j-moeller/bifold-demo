@@ -4,6 +4,12 @@
     bifold-faces add "Ada Lovelace" a.jpg b.jpg   copy photos of a person into faces/Ada Lovelace/
     bifold-faces list                          the known people and how many photos each
     bifold-faces who photo.jpg                 who the faces in a photo are
+    bifold-faces landmarks [AVATAR ...]        MediaPipe's face landmarks on avatars' heads (head textures, stage 0)
+    bifold-faces register PHOTO[:VIEW] ... --avatar NAME [--out DIR] [--segment]
+                                               register photos of a head to an avatar's head (stage 1)
+
+``fetch --headtex`` also downloads MediaPipe's face landmarker and segmenter (MediaPipe itself is optional, see the
+README).
 """
 
 from __future__ import annotations
@@ -26,6 +32,11 @@ def _gallery(args) -> Gallery:
 def cmd_fetch(args) -> int:
     for name, path in models.ensure_all(args.models).items():
         print(f"{name}: {path}")
+    if args.headtex:
+        from ..characters.headtex import detect
+
+        for model in detect.FILES:
+            print(f"{model.name}: {detect.model_path(model, args.models)}")
     return 0
 
 
@@ -81,7 +92,9 @@ def main(argv=None) -> int:
     parser.add_argument("--threshold", type=float, default=None,
                         help="similarity a face needs to count as someone (default: 0.363)")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("fetch", help="download the face models").set_defaults(run=cmd_fetch)
+    fetch = sub.add_parser("fetch", help="download the face models")
+    fetch.add_argument("--headtex", action="store_true", help="also MediaPipe's models for head textures")
+    fetch.set_defaults(run=cmd_fetch)
     add = sub.add_parser("add", help="add photos of a person")
     add.add_argument("name")
     add.add_argument("photos", nargs="+")
@@ -90,6 +103,9 @@ def main(argv=None) -> int:
     who = sub.add_parser("who", help="who is in these photos")
     who.add_argument("photos", nargs="+")
     who.set_defaults(run=cmd_who)
+    from ..characters.headtex.cli import add_commands
+
+    add_commands(sub)
     args = parser.parse_args(argv)
     if args.threshold is None:
         from .gallery import THRESHOLD
@@ -97,7 +113,7 @@ def main(argv=None) -> int:
         args.threshold = THRESHOLD
     try:
         return args.run(args)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, ImportError) as exc:  # ImportError: MediaPipe is missing (the message says how)
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

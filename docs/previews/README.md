@@ -128,3 +128,16 @@ work goes on. The people are avatars from the
   sewn from grey, black and navy blocks, and a fill covers all of them; the
   last row's blouse goes on below her belt, over the skirt. A strong print in
   the original fabric (her diamonds) still shows through.
+- `headtex_register.jpg`: head textures from photos, stages 0 and 1
+  (`characters/headtex`). Top: MediaPipe's 478 face landmarks found on renders
+  of three avatars and lifted onto their head meshes, coloured by how well the
+  five renders agree (green: well, red: poorly), seen straight on and turned
+  30°. Middle: renders of an avatar from known cameras standing in for photos
+  (focal length given, as a phone's EXIF data would), registered back to its
+  head model, with the true and the found yaw, pitch and roll: three by their
+  landmarks, the side and the back (no face) by the head's outline; the blue
+  wireframe is the head mesh as the found camera sees it. Bottom: the
+  Ultralytics sample photo registered to an avatar (focal length searched),
+  the warp that moves the avatar's features onto his (arrows three times as
+  long), the avatar seen by the photo's camera, and the man on the left, whose
+  profile MediaPipe does not find.

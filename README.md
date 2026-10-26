@@ -719,6 +719,116 @@ turned 40°; similarity 0.37-0.58) and, from the fair camera with the faces abou
 [docs/previews/face_photo.jpg](docs/previews/face_photo.jpg) shows it with
 renders of other avatars as the "photos".
 
+## Head textures from photos
+
+Work in progress: [`characters/headtex/`](src/bifold_demo/characters/headtex)
+will turn photos of a person's head, taken from several angles (front,
+three-quarter, the sides, maybe the back; casual phone photos), into a texture
+for an avatar's own head mesh that blends into the whole body. The approach is
+the one of the literature review
+([docs/research/face_head_texture.md](docs/research/face_head_texture.md),
+section 3), in eight stages; stages 0 and 1 are done:
+
+0. **Landmarks on the head mesh**, once per head model. The avatar's head is
+   rendered with its own texture in the bind pose (flat light) from five
+   views: straight in front, turned 25° to each side, seen from 12° above and
+   below. MediaPipe's Face Landmarker puts its 478 landmarks on each render,
+   and each landmark is lifted onto the head mesh by casting the ray through
+   its pixel against the head's triangles. The views are combined landmark by
+   landmark (the median, then the mean of the views that agree, back onto the
+   surface). Each landmark keeps its triangle and barycentric coordinates, so
+   it follows the skinning, and a reliability (how many views agree, how
+   closely). If MediaPipe finds no face on the renders, MediaPipe's canonical
+   face model (read from the Face Landmarker's model file) is fitted to the
+   avatar's eye and mouth-corner bones and to its nose tip, chin and ears
+   found on the mesh. The result is cached next to the prepared characters
+   (`headtex/`, keyed by the head's geometry; `BIFOLD_HEADTEX_CACHE` puts it
+   elsewhere). It takes about 2 s per avatar.
+1. **Register each photo** (a `View`). The photo's landmarks and the avatar's
+   give the photo's camera: `cv2.solvePnPRansac` drops the landmarks that
+   disagree, then the camera is fitted to the rest, again without those on
+   the far side of the face. The camera is relative to the head in its bind
+   pose, with the head's yaw, pitch and roll. The focal length comes from the
+   photo's EXIF data, or is searched for with a firm preference for a 50°
+   view: MediaPipe's landmarks tell the perspective poorly, so photos of one
+   session share the most frontal photo's focal length. A thin-plate warp then
+   moves the photo so the person's eyes, brows, nose and mouth land on the
+   avatar's; it fades out around the face, so hair and background stay put.
+   Projected onto the mesh, the person's features then move with the avatar's
+   face bones. A photo without a face (the side or the back of the head) needs
+   its view named (`left`, `right`, `back`). The camera is then placed there,
+   at the distance of the photos with a face, and refined by fitting the
+   outline of the avatar's head and hair to the photo's head mask from
+   MediaPipe's segmenter; if the outline does not fit, the photo is reported
+   unusable with the reason. Every view has the segmentation masks (hair, face
+   and body skin, clothes), a quality score and warnings: an open mouth,
+   closed eyes, low resolution, blur, a large reprojection error, an unknown
+   focal length, a pose MediaPipe may get wrong.
+
+How well it works (`tests/test_headtex_avatars.py`; renders of avatars from
+known cameras stand in for photos):
+
+- Stage 0: on all 20 avatars of the test library MediaPipe found the face in
+  all five renders, including glasses, a headscarf and a keffiyeh; mean
+  reliabilities were 0.72-0.83. The fallback, forced on all 20, lands 6.9 mm
+  from MediaPipe's landmarks on average: about 5 mm at the eyes, mouth and
+  nose, 8 mm at the brows, 17 mm on the face's outline.
+- Stage 1 with landmarks: renders up to 30° of yaw come back within 3° and
+  3 pixels (median), at 60° within about 6° and 6 pixels. With the focal
+  length searched for, one more degree. Beyond about 65° MediaPipe still finds
+  a face but its pose can be 10-15° off, and the view gets a warning. The
+  test photos of real people (16 portraits from the web, not in the
+  repository) registered with plausible poses and reprojection errors of 1-3 %
+  of the face's size. A photo takes about 0.1 s.
+- Stage 1 by the outline (the avatars' own hair, so the best case): side views
+  within 6° of turn and 3° of nod, back views within 8° of turn but up to 13°
+  of nod; the segmenter took one child's ponytail for clothes from behind, and
+  those photos were rejected. A real person's hair is never the avatar's, so
+  expect it to be as good as the outlines agree. A fit takes 1-3 s.
+
+[docs/previews/headtex_register.jpg](docs/previews/headtex_register.jpg) shows
+both stages.
+
+**MediaPipe is optional.** The rest of the demo works without it; the head
+texture commands say how to install it when it is missing. Its package asks
+for `opencv-contrib-python`, which must not be installed beside the project's
+`opencv-python` (both provide `cv2`), so it goes in without its dependencies:
+
+```bash
+pip install -e ".[headtex]"                 # what MediaPipe needs besides numpy and OpenCV
+pip install --no-deps "mediapipe>=1.0"      # MediaPipe itself
+bifold-faces fetch --headtex                # the face landmarker (3.8 MB) and segmenter (16.4 MB), into models/
+```
+
+On Linux MediaPipe also needs libEGL and libGLESv2
+(`sudo apt install libegl1 libgles2`). The models come from Google's MediaPipe
+model bucket (Apache 2.0) and are checked by size and SHA-256.
+
+```bash
+bifold-faces landmarks                       # stage 0 on every prepared avatar (cached), and which way it went
+bifold-faces register front.jpg side.jpg:left back.jpg:back --avatar Male_Adult_05 --segment --out registered/
+```
+
+`register` prints each photo's pose, error, quality and warnings, and with
+`--out` draws the registration over each photo: the avatar's head mesh as the
+photo's camera sees it, through the warp, and the landmarks.
+
+```python
+from bifold_demo.characters.headtex import head_landmarks, register_photos
+from bifold_demo.characters.headtex.detect import Landmarker, Segmenter
+
+landmarker, segmenter = Landmarker(), Segmenter()
+head = head_landmarks(model, landmarker)              # stage 0 (rendered once, then cached)
+views = register_photos(["front.jpg", "left.jpg"], head, model, views=[None, "left"],
+                        landmarker=landmarker, segmenter=segmenter)
+for view in views:
+    print(view.summary())                             # yaw, pitch, roll, error, quality, warnings
+    pixels = view.photo_pixels(head.points)           # where each 3D point of the head is in the photo
+```
+
+Photos of people and textures made from them are personal data: keep them in
+git-ignored folders (like `faces/`) and never commit them.
+
 ## Generating 2D people
 
 The 2D alternative, used when no 3D people are prepared: `bifold-people`
@@ -969,6 +1079,7 @@ src/bifold_demo/
                uvbake.py (what each texel of a texture is on the body),
                outfit/ (garment regions, cloth coordinates, fabrics, prompts,
                         presets.json, the compositor: new clothes on an avatar),
+               headtex/ (head textures from photos: landmarks on the mesh, photos registered),
                rocketbox.py + library.py + cli.py (bifold-characters),
                rocketbox_catalog.json (avatar labels)                   ← 3D people
   recognition/ engine.py (find and fingerprint faces), gallery.py (known people),
@@ -1006,6 +1117,10 @@ Some tests also check real data when you point them at it, and skip otherwise:
   their labels in a temporary folder, not in the library).
 - `BIFOLD_ROCKETBOX_FILES`: a fresh full file listing of the Rocketbox
   repository, instead of the committed `tests/rocketbox_files.txt`.
+- `BIFOLD_FACE_PHOTOS_TEST_DIR`: a folder of portrait photos, for the test that
+  registers real photos to an avatar's head (with `BIFOLD_CHARACTERS_TEST_DIR`
+  and MediaPipe installed). The MediaPipe tests download the models into the
+  face models folder unless `BIFOLD_NO_DOWNLOADS` is set.
 
 ## Troubleshooting
 

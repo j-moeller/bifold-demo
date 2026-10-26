@@ -18,6 +18,10 @@ dependencies = [
 [project.optional-dependencies]
 # text-to-image models for generating people (bifold-people generate)
 people = ["diffusers>=0.42", "transformers>=4.51", "accelerate>=1.0", "safetensors"]
+# head textures from photos (characters/headtex): what MediaPipe needs besides numpy and OpenCV. MediaPipe itself goes
+# in with `pip install --no-deps "mediapipe>=1.0"`: it asks for opencv-contrib-python, which must not be installed
+# beside this project's opencv-python (both provide cv2). On Linux it also needs libEGL and libGLESv2.
+headtex = ["absl-py>=2.3", "flatbuffers>=25.9", "certifi", "matplotlib", "pillow"]
 dev = ["pytest>=7"]
 
 [project.scripts]

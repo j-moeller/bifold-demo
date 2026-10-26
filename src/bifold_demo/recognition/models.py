@@ -14,27 +14,19 @@ to use and good enough to tell a handful of known people apart.
 
 from __future__ import annotations
 
-import hashlib
 import os
-import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
+
+from .. import downloads
+from ..downloads import ModelFile
 
 BASE_URL = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/"
 
-
-@dataclass(frozen=True)
-class ModelFile:
-    name: str
-    path: str  # below BASE_URL
-    sha256: str
-    size: int
-
-
-DETECTOR = ModelFile("face_detection_yunet_2023mar.onnx", "face_detection_yunet/face_detection_yunet_2023mar.onnx",
+DETECTOR = ModelFile("face_detection_yunet_2023mar.onnx",
+                     BASE_URL + "face_detection_yunet/face_detection_yunet_2023mar.onnx",
                      "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4", 232_589)
 RECOGNIZER = ModelFile("face_recognition_sface_2021dec.onnx",
-                       "face_recognition_sface/face_recognition_sface_2021dec.onnx",
+                       BASE_URL + "face_recognition_sface/face_recognition_sface_2021dec.onnx",
                        "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79", 38_696_353)
 FILES = (DETECTOR, RECOGNIZER)
 
@@ -44,36 +36,9 @@ def models_dir(folder=None) -> Path:
     return Path(folder or os.environ.get("BIFOLD_FACE_MODELS") or "models").expanduser()
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def ensure(model: ModelFile, folder=None, download: bool = True, progress=print) -> Path:
     """The path of ``model`` in the models folder, downloading it first if it is missing (or damaged)."""
-    path = models_dir(folder) / model.name
-    if path.is_file() and path.stat().st_size == model.size:
-        return path
-    if not download:
-        raise FileNotFoundError(f"{path} is missing (run: bifold-faces fetch)")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    url = BASE_URL + model.path
-    if progress:
-        progress(f"[faces] downloading {model.name} ({model.size / 1e6:.1f} MB) from {url}")
-    try:
-        with urllib.request.urlopen(url, timeout=60) as response, open(tmp, "wb") as out:
-            while block := response.read(1 << 20):
-                out.write(block)
-        if _sha256(tmp) != model.sha256:
-            raise OSError(f"{model.name}: the download does not match its checksum (a proxy page or a cut-off file?)")
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
-    return path
+    return downloads.ensure(model, models_dir(folder), download, progress, fetch_hint="bifold-faces fetch", tag="faces")
 
 
 def ensure_all(folder=None, download: bool = True, progress=print) -> dict[str, Path]:
