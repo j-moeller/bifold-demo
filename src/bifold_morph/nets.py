@@ -187,6 +187,15 @@ class FairFace:
     @torch.inference_mode()
     def read(self, frame: np.ndarray, landmarks_list) -> list[Reading]:
         crops = [align.warp(frame, align.matrix(lm, self.template, self.size), self.size) for lm in landmarks_list]
+        return self._read(crops)
+
+    def read_many(self, frames, landmarks) -> list[Reading]:
+        """One reading per frame, each with the same face ``landmarks`` (e.g. generated, aligned faces)."""
+        m = align.matrix(landmarks, self.template, self.size)
+        return self._read([align.warp(f, m, self.size) for f in frames])
+
+    @torch.inference_mode()
+    def _read(self, crops) -> list[Reading]:
         if not crops:
             return []
         x = _to_tensor(np.stack(crops), self.device, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
@@ -206,12 +215,19 @@ class GenderAge:
         self.device = torch.device(device)
         self.net = load(path, self.device)
 
-    @torch.inference_mode()
     def read(self, frame: np.ndarray, boxes) -> list[Reading]:
-        crops = []
-        for x, y, w, h in boxes:
-            crop, _ = align.center_crop(frame, (x + w / 2, y + h / 2), max(w, h) * 1.5, self.size)
-            crops.append(crop)
+        return self._read([self._crop(frame, b) for b in boxes])
+
+    def read_many(self, frames, box) -> list[Reading]:
+        """One reading per frame, each with the same face ``box``."""
+        return self._read([self._crop(f, box) for f in frames])
+
+    def _crop(self, frame, box) -> np.ndarray:
+        x, y, w, h = box
+        return align.center_crop(frame, (x + w / 2, y + h / 2), max(w, h) * 1.5, self.size)[0]
+
+    @torch.inference_mode()
+    def _read(self, crops) -> list[Reading]:
         if not crops:
             return []
         x = _to_tensor(np.stack(crops), self.device, scale=1.0)  # the graph normalises itself

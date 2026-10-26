@@ -14,6 +14,7 @@ work of the 1024 px one.
 from __future__ import annotations
 
 import math
+import re
 
 import torch
 import torch.nn.functional as F
@@ -238,10 +239,14 @@ class Generator(nn.Module):
         z = torch.randn(n, self.style_dim, device=self.input.input.device)
         return self.style(z).mean(0)
 
-    def synthesis(self, latent: torch.Tensor, size: int | None = None, randomize_noise: bool = False) -> torch.Tensor:
+    def synthesis(self, latent: torch.Tensor, size: int | None = None, randomize_noise: bool = False,
+                  conditions: list[torch.Tensor] | None = None) -> torch.Tensor:
         """Images (B, 3, size, size) for ``w+`` codes ``latent`` (B, n_latent, 512), or for ``w`` (B, 512) used
         for every layer. ``size`` (a power of two up to :attr:`size`) stops the generator at that resolution. The
-        noise is the generator's own fixed noise unless ``randomize_noise``: the same code gives the same image."""
+        noise is the generator's own fixed noise unless ``randomize_noise``: the same code gives the same image.
+
+        ``conditions`` (GFPGAN's spatial feature transform): per resolution a scale and a shift applied to the
+        second half of the channels after the first convolution, ``[scale_8, shift_8, scale_16, shift_16, ...]``."""
         if latent.ndim == 2:
             latent = latent[:, None].expand(-1, self.n_latent, -1)
         stop = int(math.log2(size or self.size))
@@ -255,6 +260,9 @@ class Generator(nn.Module):
             if res > stop:
                 break
             out = conv1(out, latent[:, i], noise=noise[i])
+            if conditions is not None and i < len(conditions):
+                same, sft = torch.split(out, out.shape[1] // 2, dim=1)
+                out = torch.cat([same, sft * conditions[i - 1] + conditions[i]], dim=1)
             out = conv2(out, latent[:, i + 1], noise=noise[i + 1])
             skip = to_rgb(out, latent[:, i + 2], skip)
             i += 2
@@ -262,3 +270,17 @@ class Generator(nn.Module):
 
     def forward(self, latent: torch.Tensor, size: int | None = None) -> torch.Tensor:
         return self.synthesis(latent, size)
+
+
+def from_basicsr(state: dict) -> dict:
+    """A BasicSR ``StyleGAN2Generator`` state dict (as in GFPGAN's checkpoints) with this module's names."""
+    out = {}
+    for k, v in state.items():
+        k = (k.replace("style_mlp.", "style.").replace("constant_input.weight", "input.input")
+             .replace("style_conv1.", "conv1.").replace("style_convs.", "convs.").replace("modulated_conv.", "conv."))
+        if k.startswith("noises.noise"):
+            k = "noises.noise_" + k[len("noises.noise"):]
+        if re.fullmatch(r"conv1\.weight|convs\.\d+\.weight", k):
+            k = k[:-len("weight")] + "noise.weight"  # BasicSR keeps the noise strength on the style conv itself
+        out[k] = v
+    return out
