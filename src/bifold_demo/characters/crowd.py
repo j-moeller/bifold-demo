@@ -11,9 +11,11 @@ on the Monk scale 1-10, ``outfit``, ``conference_fit`` 0-3 and optionally an est
 * only avatars with ``conference_fit >= min_fit`` (2: casual to business clothes, no uniforms), except that an age
   group with too few of them for its share takes its best other avatars (fit 1, e.g. the children), and a pool of
   fewer than ``n / 2`` avatars admits lower fits, best first;
-* no avatar twice until every pooled avatar is used; then the repeats follow the shares too and are spread out over
-  the list (each name's copies about ``n / copies`` apart);
-* groups that are empty or too small give their share to the others; the result is deterministic for ``rng``.
+* no avatar twice until every pooled avatar is used; then the repeats follow the shares too, but no avatar appears
+  more than ``ceil(n / pool size) + 1`` times (a group with few avatars gives the rest of its share away), and they
+  are spread out over the list (each name's copies about ``n / copies`` apart);
+* groups that are empty or too small give their share to the others, also when ``weights`` cannot all be met: the
+  result always has ``n`` names, and it is deterministic for ``rng``.
 
 :func:`describe_crowd` counts what a list of names contains, :func:`avatar_style` turns catalog metadata into the
 ``style`` behaviours take, and :func:`populate` builds :class:`~bifold_demo.characters.character.Character` objects.
@@ -116,8 +118,9 @@ def sample_crowd(catalog: dict[str, dict], n: int, rng, weights=None, *, older_f
     taken = Counter()  # picks per cell so far (repeats cycle through the cell's avatars)
     first = min(n, len(pool))
     rounds = [(first, {key: len(names) for key, names in cells.items()})]  # everyone once before any repeat
-    if n > first:
-        rounds.append((n - first, {key: n for key in cells}))  # then repeats, as many per cell as the shares ask
+    if n > first:  # then repeats as the shares ask, but nobody more than ceil(n / pool) + 1 times
+        extra = math.ceil(n / len(pool))
+        rounds.append((n - first, {key: len(names) * extra for key, names in cells.items()}))
     for m, capacity in rounds:
         total = sum(counts.values()) + m
         targets = [{v: max(0.0, share.get(v, 0.0) * total - used[(a, v)]) for v in share}
@@ -182,13 +185,23 @@ def _allocate(m: int, capacity: dict[tuple, int], targets: list[dict], rng: rand
         before = math.floor(cumulative + start)
         cumulative += expected[key]
         counts[key] = min(capacity[key], math.floor(cumulative + start + 1e-9) - before)
-    error = sum(counts.values()) - m  # from floating-point rounding (and capping) only
+    error = sum(counts.values()) - m  # from rounding and capping
     for key in sorted(cells, key=lambda k: (counts[k] - expected[k]) * (1 if error < 0 else -1)):
         if error < 0 and counts[key] < capacity[key]:
             counts[key] += 1
             error += 1
         elif error > 0 and counts[key] > 0:
             counts[key] -= 1
+            error -= 1
+    while error:  # what one pass cannot place: one at a time, where the counts fall shortest of (exceed) expectations
+        if error < 0:
+            room = [key for key in cells if counts[key] < capacity[key]]
+            if not room:
+                raise ValueError(f"cannot place {m} picks in cells holding {sum(capacity[k] for k in cells)}")
+            counts[max(room, key=lambda k: expected[k] - counts[k])] += 1
+            error += 1
+        else:
+            counts[max((key for key in cells if counts[key] > 0), key=lambda k: counts[k] - expected[k])] -= 1
             error -= 1
     bands = sorted({key[2] for key in cells})
     if m >= len(bands):
@@ -207,7 +220,11 @@ def _allocate(m: int, capacity: dict[tuple, int], targets: list[dict], rng: rand
 
 
 def _fit_marginals(cells: list[tuple], m: float, targets: list[dict], fixed: dict[tuple, float]) -> dict:
-    """Iterative proportional fitting of ``m`` over ``cells`` to the marginal targets left after ``fixed``."""
+    """Iterative proportional fitting of ``m`` over ``cells`` to the marginal targets left after ``fixed``.
+
+    A value whose cells another attribute has emptied (e.g. older people when only women are wanted and all older
+    avatars are men) gives its share to the other values of its attribute, so the expectations always add up to ``m``.
+    """
     if not cells or m <= 0:
         return {key: 0.0 for key in cells}
     goals = []
@@ -225,9 +242,12 @@ def _fit_marginals(cells: list[tuple], m: float, targets: list[dict], fixed: dic
             sums: dict = {}
             for key in cells:
                 sums[key[a]] = sums.get(key[a], 0.0) + expected[key]
+            reachable = sum(g for v, g in goal.items() if sums[v] > 0.0)
+            if reachable <= 0.0:
+                continue
             for key in cells:
                 if sums[key[a]] > 0.0:
-                    new = expected[key] * goal[key[a]] / sums[key[a]]
+                    new = expected[key] * goal[key[a]] * (m / reachable) / sums[key[a]]
                     change = max(change, abs(new - expected[key]))
                     expected[key] = new
         if change < 1e-9:

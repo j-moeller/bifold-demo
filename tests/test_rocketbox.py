@@ -2,25 +2,30 @@ import importlib
 import io
 import json
 import os
+import struct
 import subprocess
 import sys
 import threading
 import time
 import types
 import urllib.error
+import warnings
+import zipfile
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
 
-from bifold_demo.characters import cli, rocketbox
-from bifold_demo.characters.library import CharacterLibrary, default_folder
+from bifold_demo.characters import cli, crowd, rocketbox
+from bifold_demo.characters.library import CharacterLibrary, DamagedFileWarning, default_folder
 from bifold_demo.characters.model import AnimationClip, CharacterModel, Skeleton, SkinnedPrimitive, quat_from_axis_angle
 
-SCRATCH = "/tmp/claude-0/-home-user-bifold-demo/44ad5b06-773f-5ffd-8306-515788fc8497/scratchpad"
-FILE_LIST = Path(os.environ.get("BIFOLD_ROCKETBOX_FILES", f"{SCRATCH}/rocketbox_files.txt"))
-ROCKETBOX = Path(os.environ.get("BIFOLD_ROCKETBOX_TEST_DIR", f"{SCRATCH}/rb/Assets"))
+# the Rocketbox file listing (default: the part of it committed next to this file) and a folder with downloaded
+# Rocketbox files (Avatars/ and Animations/, e.g. the Assets folder of a clone; the real-file tests skip without it)
+FILE_LIST = Path(os.environ.get("BIFOLD_ROCKETBOX_FILES") or Path(__file__).with_name("rocketbox_files.txt"))
+ROCKETBOX = Path(os.environ["BIFOLD_ROCKETBOX_TEST_DIR"]).expanduser() if os.environ.get("BIFOLD_ROCKETBOX_TEST_DIR") \
+    else None
 CONTRACT_ROLES = ("walk", "walk_slow", "stroll", "idle", "look_around", "talk", "listen", "phone",
                   "turn_left_90", "turn_right_90", "turn_left_180", "turn_right_180")
 BONES = ["Bip01", "Bip01 Pelvis", "Bip01 Spine", "Bip01 Head"]
@@ -44,7 +49,7 @@ def test_every_role_has_clips_for_men_and_women():
 def test_manifest_matches_the_repository_listing():
     if not FILE_LIST.is_file():
         pytest.skip(f"no Rocketbox file list at {FILE_LIST}")
-    listing = {line.strip() for line in FILE_LIST.read_text().splitlines()}
+    listing = {line.strip() for line in FILE_LIST.read_text().splitlines() if not line.startswith("#")}
     paths = rocketbox.files_for(rocketbox.AVATARS, rocketbox.CLIPS)
     assert not [p for p in paths if p not in listing]
     exported = {p.split("/")[3] for p in listing
@@ -61,6 +66,9 @@ def test_avatar_sets():
     small = [rocketbox.AVATARS[n] for n in rocketbox.avatar_set("small")]
     assert 10 <= len(small) <= 14
     assert {a.sex for a in small} == {"female", "male"} and any(a.age_group == "child" for a in small)
+    summary = crowd.describe_crowd(rocketbox.load_catalog(), rocketbox.avatar_set("small"))
+    assert summary["age_group"]["older"] >= 1 and summary["age_group"]["child"] >= 1  # by the catalog's ages
+    assert min(summary["sex"].values()) >= 5 and all(summary["skin_band"].get(b) for b in ("1-3", "4-6", "7-10"))
     fallback = rocketbox.avatar_set("conference", catalog={})
     assert "Business_Male_02" in fallback and "Female_Child_01" in fallback and "Fire_Male_01" not in fallback
     assert len(fallback) == 40 + 4 + 11
@@ -91,11 +99,14 @@ def test_names_sizes_and_urls():
 
 
 class FakeResponse:
-    def __init__(self, data: bytes, status=200, length=None):
-        self._data, self.status = io.BytesIO(data), status
+    def __init__(self, data: bytes, status=200, length=None, delay=0.0):
+        self._data, self.status, self.delay = io.BytesIO(data), status, delay
         self.headers = {"Content-Length": str(len(data) if length is None else length)}
 
     def read(self, n=-1):
+        if self.delay:  # a slow connection: small blocks
+            time.sleep(self.delay)
+            return self._data.read(500)
         return self._data.read(n)
 
     def __enter__(self):
@@ -106,10 +117,11 @@ class FakeResponse:
 
 
 class FakeOpener:
-    """Serves ``files`` (url -> bytes); ``failures[url]`` connection errors first; ``truncate`` halves bodies."""
+    """Serves ``files`` (url -> bytes); ``failures[url]`` connection errors first; ``truncate`` halves bodies;
+    ``delay``: seconds per 500-byte block."""
 
-    def __init__(self, files, failures=None, truncate=False):
-        self.files, self.failures, self.truncate = files, dict(failures or {}), truncate
+    def __init__(self, files, failures=None, truncate=False, delay=0.0):
+        self.files, self.failures, self.truncate, self.delay = files, dict(failures or {}), truncate, delay
         self.requests: list[tuple[str, str | None]] = []
         self._lock = threading.Lock()
 
@@ -127,7 +139,7 @@ class FakeOpener:
             data, status = data[int(byte_range.split("=")[1].rstrip("-")):], 206
         if self.truncate:
             return FakeResponse(data[: len(data) // 2], status, length=len(data))
-        return FakeResponse(data, status)
+        return FakeResponse(data, status, delay=self.delay)
 
     def count(self, url):
         return sum(u == url for u, _ in self.requests)
@@ -205,6 +217,63 @@ def test_incomplete_downloads_never_appear_under_the_final_name(tmp_path):
     html = {url: b"<html>rate limited</html>" for url in remote}
     with pytest.raises(rocketbox.FetchError, match="not a binary FBX"):
         _fetch(tmp_path / "html", FakeOpener(html), clips=())
+
+
+SOME_AVATARS = ("Female_Child_01", "Business_Male_02", "Male_Adult_05")
+
+
+def test_ctrl_c_stops_the_queued_and_the_running_downloads(tmp_path):
+    clips = rocketbox.clip_set("basic")
+    remote = _remote(avatars=SOME_AVATARS, clips=clips)  # 35 files
+    opener = FakeOpener(remote, delay=0.02)  # 0.1-0.3 s per file: about 3 s for all of them with 2 jobs
+
+    def interrupt(*_):
+        raise KeyboardInterrupt
+
+    threads, start = threading.active_count(), time.monotonic()
+    with pytest.raises(KeyboardInterrupt):
+        _fetch(tmp_path, opener, avatars=SOME_AVATARS, clips=clips, jobs=2, progress=interrupt)
+    assert time.monotonic() - start < 1.0
+    while threading.active_count() > threads and time.monotonic() - start < 3.0:
+        time.sleep(0.01)
+    assert threading.active_count() <= threads  # the running downloads stopped at their next block
+    requests = len(opener.requests)
+    time.sleep(0.2)
+    assert len(opener.requests) == requests <= 4  # and nothing downloads in the background
+    report = _fetch(tmp_path, FakeOpener(remote), avatars=SOME_AVATARS, clips=clips)
+    assert report.skipped >= 1 and report.skipped + report.downloaded == len(remote)  # resumes
+    assert all(local.read_bytes() == remote[rocketbox.url_for(str(local.relative_to(tmp_path)))]
+               for local in report.files)
+
+
+def _refusing(calls: list):
+    def opener(request, timeout=None):
+        calls.append(request.full_url)
+        raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+
+    return opener
+
+
+def test_fetch_gives_up_soon_when_the_server_cannot_be_reached(tmp_path):
+    calls, clips = [], rocketbox.clip_set("basic")
+    with pytest.raises(rocketbox.FetchError, match="cannot reach raw.githubusercontent.com: .*Connection refused") \
+            as info:
+        _fetch(tmp_path, _refusing(calls), avatars=SOME_AVATARS, clips=clips, jobs=2, retries=2)
+    report = info.value.report
+    assert report.stopped and report.downloaded == 0
+    assert rocketbox.UNREACHABLE_AFTER <= len(report.failed) <= rocketbox.UNREACHABLE_AFTER + 1  # + one running
+    assert len(calls) <= 3 * (rocketbox.UNREACHABLE_AFTER + 1)  # not 3 attempts for every one of the 35 files
+    assert "check the network connection" in str(info.value) and "35 of 35 files are still missing" in str(info.value)
+
+
+def test_cli_fetch_without_a_network_ends_soon_with_one_clear_error(tmp_path, monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(rocketbox, "_default_opener", lambda: _refusing(calls))
+    monkeypatch.setitem(rocketbox.fetch.__kwdefaults__, "backoff", 0.0)
+    assert cli.main(["fetch", "--set", "small", "--dest", str(tmp_path)]) == 1
+    out, err = capsys.readouterr()
+    assert "error: cannot reach raw.githubusercontent.com" in err and "[prepare]" not in out
+    assert len((out + err).splitlines()) < 20 and len(calls) <= 4 * (rocketbox.UNREACHABLE_AFTER + 8)  # of 69 files
 
 
 # -- prepare and load ------------------------------------------------------------------------------
@@ -312,7 +381,9 @@ def test_prepare_and_load_round_trip(tmp_path, stub_convert):
     assert np.allclose(clip.translations, source.translations, atol=1e-6)
     assert clip.metadata["kind"] == "turn" and clip.metadata["turn"] == 90.0
     assert (clip.metadata["role"], clip.metadata["sex"]) == ("turn_left_90", "male")
-    assert library.is_ready() and library.describe().endswith("ready")
+    text = library.describe()
+    assert library.is_ready() and "\n  ready\n" in text and "none for" not in text
+    assert f"export BIFOLD_CHARACTERS={cache}" in text  # not the folder bifold-demo uses
 
 
 def test_prepare_skips_prepared_items_and_reports_missing_files(tmp_path, stub_convert):
@@ -341,6 +412,134 @@ def test_prepare_can_delete_the_raw_files(tmp_path, stub_convert):
     assert [p.name for p in raw.rglob("*") if p.is_file()] == ["keep.txt"]
     assert not (raw / "Assets" / "Avatars").exists()
     assert CharacterLibrary(cache).is_ready()
+
+
+def test_prepare_reads_an_assets_folder_under_any_name(tmp_path, stub_convert):
+    raw = _raw_tree(tmp_path / "clone", clips=["m_walk_neutral_01"])
+    assets = (raw / "Assets").rename(tmp_path / "rocketbox_files")  # holds Avatars/ and Animations/
+    report = rocketbox.prepare(assets, tmp_path / "cache", delete_raw=True)
+    assert sorted(report.avatars) == sorted(AVATARS) and report.clips == ["m_walk_neutral_01"] and not report.failed
+    assert assets.is_dir() and not [p for p in assets.rglob("*") if p.is_file()]
+
+
+@pytest.fixture
+def prepared(tmp_path, stub_convert):
+    """``(raw, cache)``: a cache with the two test avatars and the basic clips, and the raw files behind it."""
+    raw, cache = _raw_tree(tmp_path / "raw"), tmp_path / "cache"
+    assert not rocketbox.prepare(raw, cache).failed
+    return raw, cache
+
+
+def _cut(path: Path, fraction: float) -> None:
+    data = path.read_bytes()
+    path.write_bytes(data[: int(len(data) * fraction)])
+
+
+def _older_format(path: Path) -> None:
+    path.write_text(json.dumps({**json.loads(path.read_text()), "format": rocketbox.FORMAT - 1}))
+
+
+def _spoil(npz: Path, member: str) -> None:
+    """Flip the last byte of one array in ``npz``: its zip directory stays intact, only reading the array fails."""
+    with zipfile.ZipFile(npz) as z:
+        info = z.getinfo(member)
+    with open(npz, "r+b") as f:
+        f.seek(info.header_offset + 26)
+        name_length, extra_length = struct.unpack("<HH", f.read(4))
+        f.seek(info.header_offset + 30 + name_length + extra_length + info.compress_size - 1)
+        last = f.read(1)[0]
+        f.seek(-1, os.SEEK_CUR)
+        f.write(bytes([last ^ 0xFF]))
+
+
+AVATAR_DAMAGE = {
+    "arrays cut off": lambda folder: _cut(folder / "Business_Male_02.npz", 0.5),
+    "arrays empty": lambda folder: _cut(folder / "Business_Male_02.npz", 0.0),
+    "arrays missing": lambda folder: (folder / "Business_Male_02.npz").unlink(),
+    "texture missing": lambda folder: (folder / "Business_Male_02.tex0.png").unlink(),
+    "texture cut off": lambda folder: _cut(folder / "Business_Male_02.tex1.png", 0.6),
+    "metadata cut off": lambda folder: _cut(folder / "Business_Male_02.json", 0.5),
+    "older format": lambda folder: _older_format(folder / "Business_Male_02.json"),
+}
+
+
+@pytest.mark.parametrize("damage", list(AVATAR_DAMAGE))
+def test_a_damaged_avatar_is_left_out_with_one_warning_and_fetch_repairs_it(prepared, damage):
+    raw, cache = prepared
+    AVATAR_DAMAGE[damage](cache / "avatars")
+    library = CharacterLibrary(cache)
+    with pytest.warns(DamagedFileWarning, match="Business_Male_02") as caught:
+        assert sorted(library.available()) == ["Female_Child_01"]
+    assert len(caught) == 1 and "repair: bifold-characters fetch --avatars Business_Male_02" in str(caught[0].message)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DamagedFileWarning)  # only one warning
+        assert library.is_ready() and list(library.damaged()) == ["Business_Male_02"]
+        assert "left out, damaged: Business_Male_02" in library.describe()
+        with pytest.raises(KeyError, match="Business_Male_02 is damaged .*fetch --avatars Business_Male_02"):
+            library.load("Business_Male_02")
+    assert not rocketbox.is_prepared(cache, "avatar", "Business_Male_02")
+    assert rocketbox.is_prepared(cache, "avatar", "Female_Child_01")
+    report = rocketbox.prepare(raw, cache, clips=[])  # what fetch runs after downloading (nothing to download here)
+    assert report.avatars == ["Business_Male_02"] and report.skipped == ["Female_Child_01"]
+    assert sorted(library.available()) == sorted(AVATARS) and not library.damaged()
+    assert library.load("Business_Male_02").name == "Business_Male_02"
+
+
+@pytest.mark.parametrize("damage", ["cut off", "empty", "not a zip file"])
+def test_a_damaged_clip_is_left_out_with_one_warning(prepared, damage):
+    raw, cache = prepared
+    clip = cache / "clips" / "m_walk_neutral_01.npz"
+    if damage == "not a zip file":
+        clip.write_bytes(b"something else" * 20)
+    else:
+        _cut(clip, 0.5 if damage == "cut off" else 0.0)
+    library = CharacterLibrary(cache)
+    with pytest.warns(DamagedFileWarning, match="m_walk_neutral_01") as caught:
+        assert library.roles()["walk"] == ["f_walk_neutral_01"]
+    assert len(caught) == 1 and "fetch --avatars --clips basic" in str(caught[0].message)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DamagedFileWarning)
+        assert len(library.clips()) == 23 and library.is_ready() and "m_walk_neutral_01" in library.damaged()
+    assert not rocketbox.is_prepared(cache, "clip", "m_walk_neutral_01")
+    assert rocketbox.prepare(raw, cache, avatars=[], clips=["m_walk_neutral_01"]).clips == ["m_walk_neutral_01"]
+    assert "m_walk_neutral_01" in library.clips() and len(library.roles()["walk"]) == 2 and not library.damaged()
+
+
+def test_damage_found_only_when_loading_leaves_the_file_out(prepared):
+    raw, cache = prepared
+    _spoil(cache / "avatars" / "Business_Male_02.npz", "p0_positions.npy")
+    _spoil(cache / "clips" / "f_idle_neutral_01.npz", "rotations.npy")
+    library = CharacterLibrary(cache)
+    assert sorted(library.available()) == sorted(AVATARS)  # the quick check cannot see this
+    with pytest.warns(DamagedFileWarning, match="Business_Male_02"):
+        with pytest.raises(ValueError, match="is damaged .*delete .*Business_Male_02.json, then run: bifold-char"):
+            library.load("Business_Male_02")
+    assert sorted(library.available()) == ["Female_Child_01"] and "Business_Male_02" in library.damaged()
+    assert library.load("Female_Child_01").name == "Female_Child_01"
+    with pytest.warns(DamagedFileWarning, match="f_idle_neutral_01"):
+        assert "f_idle_neutral_01" not in library.clips()
+    assert library.roles()["idle"] == ["m_idle_neutral_01"] and library.is_ready()
+    rocketbox.prepare(raw, cache, avatars=["Business_Male_02"], clips=["f_idle_neutral_01"], force=True)
+    assert sorted(library.available()) == sorted(AVATARS) and "f_idle_neutral_01" in library.clips()
+    assert library.load("Business_Male_02").name == "Business_Male_02" and not library.damaged()
+
+
+def test_load_says_how_to_get_an_avatar_that_is_not_prepared(tmp_path, stub_convert):
+    raw, cache = _raw_tree(tmp_path / "raw", avatars=("Male_Adult_04",), clips=[]), tmp_path / "cache"
+    rocketbox.prepare(raw, cache)
+    library = CharacterLibrary(cache)
+    with pytest.raises(KeyError, match="Male_Adult_01 is not prepared yet; run: bifold-characters fetch --avatars "
+                                       "Male_Adult_01 --dest"):
+        library.load("Male_Adult_01")  # not "did you mean Male_Adult_04?"
+    with pytest.raises(KeyError, match="did you mean Male_Adult_04"):
+        library.load("Male_Adlt_04")
+
+
+def test_shared_library_is_one_per_folder(tmp_path, monkeypatch):
+    monkeypatch.setenv("BIFOLD_CHARACTERS", str(tmp_path / "a"))
+    shared = CharacterLibrary.shared()
+    assert shared is CharacterLibrary.shared(tmp_path / "a") is CharacterLibrary.shared(str(tmp_path / "a"))
+    assert shared.folder == (tmp_path / "a").resolve() and CharacterLibrary.shared(tmp_path / "b") is not shared
 
 
 def test_catalog_is_merged_into_the_metadata(tmp_path, stub_convert, monkeypatch):
@@ -378,9 +577,14 @@ def test_motions_register_the_roles(tmp_path, stub_convert, monkeypatch):
                                                                    "m_idle_neutral_01", "f_turn_left_90"}
     assert motions.roles == {"walk": ["m_walk_neutral_01", "f_walk_neutral_01"], "idle": ["m_idle_neutral_01"],
                              "turn_left_90": ["f_turn_left_90"]}
-    assert not library.is_ready()
-    assert library.missing() == ["turn_right_90", "turn_left_180", "turn_right_180"]
-    assert "turn_right_90" in library.describe()
+    assert library.is_ready() and library.missing() == []  # walking and standing is all a scene needs
+    text = library.describe()
+    ready = next(line for line in text.splitlines() if line.startswith("  ready"))
+    assert "not ready" not in text and "optional clips" in ready and "phone, turn_right_90" in ready
+    assert "turn_left_90" not in ready
+    (cache / "clips" / "m_idle_neutral_01.npz").unlink()
+    assert not library.is_ready() and library.missing() == ["idle"]
+    assert "not ready, missing: idle; run: bifold-characters fetch --avatars --clips basic" in library.describe()
 
 
 def test_loading_is_fast_and_needs_no_fbx_code(tmp_path, stub_convert):
@@ -455,7 +659,7 @@ def test_cli_fetch_downloads_prepares_and_lists(tmp_path, stub_convert, monkeypa
     assert cli.main(["fetch", "--avatars", "Female_Child_01", "--clips", "basic", "--dest", str(dest),
                      "--delete-raw"]) == 0
     out = capsys.readouterr().out
-    assert "27 files" in out and "[prepare]" in out and out.rstrip().endswith("ready")
+    assert "27 files" in out and "[prepare]" in out and "\n  ready\n" in out
     assert not [p for p in (dest / "raw").rglob("*") if p.is_file()]
     assert cli.main(["fetch", "--avatars", "Female_Child_01", "--clips", "basic", "--dest", str(dest)]) == 0
     assert "25 already prepared" in capsys.readouterr().out
@@ -467,6 +671,43 @@ def test_cli_fetch_downloads_prepares_and_lists(tmp_path, stub_convert, monkeypa
     assert "turn_left_90" in capsys.readouterr().out
 
 
+def test_cli_fetch_repairs_what_the_library_leaves_out(tmp_path, stub_convert, monkeypatch, capsys):
+    remote = _remote(avatars=["Female_Child_01"], clips=rocketbox.clip_set("basic"))
+    monkeypatch.setattr(rocketbox, "_default_opener", lambda: FakeOpener(remote))
+    dest = tmp_path / "characters"
+    fetch = ["fetch", "--avatars", "Female_Child_01", "--clips", "basic", "--dest", str(dest)]
+    assert cli.main([*fetch, "--delete-raw"]) == 0
+    (dest / "avatars" / "Female_Child_01.npz").unlink()
+    _cut(dest / "clips" / "m_walk_neutral_01.npz", 0.5)
+    capsys.readouterr()
+    assert cli.main(["info", "Female_Child_01", "--dest", str(dest)]) == 1
+    err = capsys.readouterr().err
+    assert "damaged (Female_Child_01.npz is missing)" in err and "fetch --avatars Female_Child_01" in err
+    assert cli.main(["info", "m_walk_neutral_01", "--dest", str(dest)]) == 1
+    assert "clip m_walk_neutral_01 is damaged" in capsys.readouterr().err
+    assert cli.main(["list", "--dest", str(dest)]) == 0
+    out = capsys.readouterr().out
+    assert "left out, damaged: Female_Child_01" in out and "left out, damaged: m_walk_neutral_01" in out
+    assert cli.main(fetch) == 0
+    out = capsys.readouterr().out
+    assert "(23 already prepared): 4 files" in out and "[prepare] 1 avatars and 1 clips converted" in out
+    assert cli.main(["list", "--dest", str(dest)]) == 0
+    out = capsys.readouterr().out
+    assert "Female_Child_01" in out and "damaged" not in out and "\n  ready\n" in out
+
+
+def test_cli_says_how_to_make_the_demo_use_another_folder(tmp_path, monkeypatch, capsys):
+    mine = tmp_path / "mine"
+    monkeypatch.setenv("BIFOLD_CHARACTERS", str(tmp_path / "default"))
+    assert cli.main(["list", "--dest", str(mine)]) == 0
+    out = capsys.readouterr().out
+    assert f"export BIFOLD_CHARACTERS={mine}" in out and f"fetch --set small --dest {mine}" in out
+    monkeypatch.setenv("BIFOLD_CHARACTERS", str(mine))
+    assert cli.main(["list", "--dest", str(mine)]) == 0
+    out = capsys.readouterr().out
+    assert "export" not in out and "--dest" not in out and "fetch --set small" in out
+
+
 # -- the real Rocketbox files (when downloaded) ----------------------------------------------------
 
 
@@ -475,8 +716,11 @@ REAL_AVATARS = ("Business_Female_01", "Business_Male_02", "Male_Adult_05", "Fema
 
 @pytest.fixture(scope="module")
 def real_cache(tmp_path_factory):
-    if not all((ROCKETBOX.parent / rocketbox.AVATARS[n].fbx).is_file() for n in REAL_AVATARS):
-        pytest.skip(f"no local Rocketbox avatars in {ROCKETBOX}")
+    if ROCKETBOX is None:
+        pytest.skip("set BIFOLD_ROCKETBOX_TEST_DIR to a folder with Rocketbox Avatars/ and Animations/")
+    _, local = rocketbox._raw_files(ROCKETBOX)
+    if not all(local(rocketbox.AVATARS[n].fbx).is_file() for n in REAL_AVATARS):
+        pytest.skip(f"no local Rocketbox avatars {', '.join(REAL_AVATARS)} in {ROCKETBOX}")
     try:
         converter = importlib.import_module("bifold_demo.characters.fbx_convert")
     except ImportError as exc:

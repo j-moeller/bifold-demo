@@ -10,9 +10,13 @@ a seed; the same arguments give the same behaviour.
 Locomotion. Walks follow a polyline with rounded corners, parametrised by arc length; the heading follows the
 tangent and blends in from the previous heading. Speed eases in and out at both ends. People walk at their walk
 clip's own speed times ``stride_scale`` times a random pace (about +-10 %) unless a speed is given, and the clip's
-time is ``distance / (clip.metadata["speed"] * stride_scale)``, so the feet never slide whatever the speed
-(``stride_scale`` is the size ratio the :class:`~bifold_demo.characters.model.Poser` applies to the clip; see
-:func:`stride_scale`). Turns of 45 degrees or more play the turn clip closest in angle (same direction, at most
+time is ``distance / (clip.metadata["speed"] * stride_scale)`` (plus a phase), so the feet do not slide while walking
+whatever the speed (``stride_scale`` is the size ratio the :class:`~bifold_demo.characters.model.Poser` applies to
+the clip; see :func:`stride_scale`). The phase, and a stretch of the clip by at most ``STRIDE_STRETCH`` (5 %), make
+each walk start and stop in the walk pose closest to the clip before and after it (compared by the toes of the
+clips' own skeletons, :meth:`MotionLibrary.feet`), so the crossfades between standing and walking move the feet on
+the floor as little as the clips allow; a walk right after another one carries on with its stride. Turns of 45
+degrees or more play the turn clip closest in angle (same direction, at most
 ``max(45, angle / 2)`` off) and add its ``metadata["turn"]`` to the heading when it ends (the contract of the clip
 loader), with the rest of the angle turned procedurally during the clip; smaller turns, or turns without a fitting
 clip, rotate the heading procedurally while an idle clip plays. Position is continuous everywhere except inside
@@ -84,7 +88,7 @@ _SHARP = 120.0  # corners sharper than this (degrees of deflection) stop and tur
 _MAX_TURN = 300.0  # the longest way round a turn may be made to keep the face off the camera
 _PACE = {"child": (1.0, 1.25), "adult": (0.92, 1.1), "older": (0.85, 1.0)}  # walking speed / the clip's own speed
 _STRIDE = {"child": 0.72, "adult": 1.0, "older": 0.97}  # default stride_scale when the style gives none
-STRIDE_STRETCH = 0.05  # walk clips play at most this much faster or slower than the body moves (to stop on a pass)
+STRIDE_STRETCH = 0.05  # walk clips play at most this much faster or slower than the body moves (to end well)
 _LEG = (("thigh", "upleg", "upperleg"), ("calf", "leg", "lowerleg", "shin"), ("foot",), ("toe0", "toebase", "toe"))
 
 
@@ -965,10 +969,10 @@ class Behaviour:
             self._t, self._pos, self._heading = piece.t1, (px[-1], pz[-1]), piece.ph[-1]
 
     def _time_walks(self) -> None:
-        """Where each walk clip starts and how fast it plays (module docs): from the pose closest to the clip before
-        (or where the same clip left off), and up to ``STRIDE_STRETCH`` faster or slower so that it ends in the
-        pose closest to the clip after, so the crossfades barely move the feet on the floor (:func:`_foot_slide`).
-        Walks next to a hidden part or without clips with recognisable legs keep their random phase there."""
+        """Choose each walk clip's start and speed: start in the walk pose closest to the clip before (or where the
+        same clip left off) and play up to ``STRIDE_STRETCH`` faster or slower to end in the pose closest to the clip
+        after, so the crossfades barely move the feet on the floor (:func:`_foot_slide`). Walks between hidden parts,
+        or whose clip has no recognisable legs, keep their random phase."""
         lib, entries = self.library, self._entries
         for j, entry in enumerate(entries):
             clip, piece = entry.clip, entry.walk
@@ -983,15 +987,16 @@ class Behaviour:
                 if standing is not None:
                     cost = _foot_slide(lib.feet(clip, starts), standing)[:, None]
             advance = piece.length * entry.scale  # clip seconds the walk takes unstretched
-            stretch = np.linspace(-STRIDE_STRETCH, STRIDE_STRETCH, 41) if STRIDE_STRETCH > 0 else np.zeros(1)
+            stretch = np.linspace(-STRIDE_STRETCH, STRIDE_STRETCH, 41)
             ends = starts[:, None] + advance * (1.0 + stretch)
             standing = None
             if after.clip is not None and after.walk is None:
                 standing = lib.feet(*after.sample(entry.t1 if j + 1 < len(entries) else 0.0)[:2])
             if standing is not None:
-                cost = cost + _foot_slide(lib.feet(clip, ends), standing) + 0.25 * np.abs(stretch) * piece.length
-            if np.ndim(cost) == 0:
+                cost = cost + _foot_slide(lib.feet(clip, ends), standing)
+            elif np.ndim(cost) == 0:
                 continue  # nothing to match on either side: keep the random phase
+            cost = cost + 0.25 * np.abs(stretch) * piece.length  # stretching makes the feet slip a little
             i, k = np.unravel_index(int(np.argmin(np.broadcast_to(cost, ends.shape))), ends.shape)
             entry.scale = (ends[i, k] - starts[i]) / piece.length
             entry.phase = starts[i] / entry.scale

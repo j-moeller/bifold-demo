@@ -1,5 +1,7 @@
 import functools
 import json
+import math
+import random
 from collections import Counter
 from pathlib import Path
 
@@ -117,6 +119,42 @@ def test_repeats_only_after_the_pool_and_spread_out():
         positions = [i for i, n in enumerate(names) if n == name]
         assert min(np.diff(positions)) >= 4  # copies about 21 / copies apart
     assert describe_crowd(catalog, names)["most_repeats"] == 3
+
+
+def test_repeats_are_capped_and_follow_the_shares():
+    # the only dark-skinned avatar among twelve used to take its band's whole share: 5 or 6 of 33 people
+    catalog = {f"A{i:02d}": {"sex": ("female", "male")[i % 2], "age_group": "adult", "skin_tone": (2, 5)[i % 2] if i
+                             else 8, "conference_fit": 3} for i in range(12)}
+    for seed in range(10):
+        names = sample_crowd(catalog, 33, seed)
+        counts = Counter(names)
+        assert len(names) == 33 and len(counts) == 12 and max(counts.values()) <= math.ceil(33 / 12) + 1
+    # the repeats follow the shares, not the pool's make-up (6 women, 4 men)
+    catalog = {f"{sex[0]}{i}": {"sex": sex, "age_group": "adult", "skin_tone": 2 + 3 * (i % 3), "conference_fit": 3}
+               for sex, k in (("female", 6), ("male", 4)) for i in range(k)}
+    for seed in range(10):
+        names = sample_crowd(catalog, 30, seed)
+        assert describe_crowd(catalog, names)["sex"] == {"female": 15, "male": 15}
+        assert max(Counter(names).values()) <= 4
+
+
+def test_always_n_names_even_when_the_shares_cannot_be_met():
+    catalog = make_catalog(older_women=False)  # all older people are men
+    for n in (14, 20, 33, 60, 150):
+        names = sample_crowd(catalog, n, 0, weights={"sex": {"female": 1.0}})
+        female = describe_crowd(catalog, names)["sex"]["female"]
+        assert len(names) == n and female >= (min(n, 28) if n <= 60 else 0.75 * n)  # all 28 women before repeats
+        assert len(sample_crowd(catalog, n, 1, weights={"sex": {"female": 0.9, "male": 0.1}})) == n
+    real = json.loads(CATALOG_FILE.read_text(encoding="utf-8")) if CATALOG_FILE.is_file() else catalog
+    rng = random.Random(0)
+    for trial in range(300):  # random subsets and (often impossible) weights
+        sub = {k: real[k] for k in rng.sample(sorted(real), rng.randint(1, len(real)))}
+        weights = {"sex": {k: rng.choice((0, 0.3, 1)) for k in ("female", "male")},
+                   "age_group": {k: rng.choice((0, 0.05, 0.2, 1)) for k in ("child", "adult", "older")},
+                   "skin_band": {k: rng.choice((0, 0.2, 1)) for k in ("1-3", "4-6", "7-10")}}
+        weights = {key: value for key, value in weights.items() if any(value.values()) and rng.random() < 0.6}
+        n = rng.randint(1, 80)
+        assert len(sample_crowd(sub, n, trial, weights=weights or None)) == n, (trial, len(sub), n, weights)
 
 
 def test_sampling_is_deterministic():

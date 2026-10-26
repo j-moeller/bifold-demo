@@ -17,10 +17,11 @@ import importlib
 import json
 import os
 import ssl
-import time
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from http.client import HTTPException
@@ -263,8 +264,9 @@ CLIPS: dict[str, Clip] = _parse_clips()
 ROLE_CLIPS: dict[str, tuple[str, ...]] = {role: tuple(c.name for c in CLIPS.values() if c.role == role)
                                           for role in _CLIP_MANIFEST}
 
-# A quick start: women and men, a girl and a boy, older people, several ethnicities, mostly conference outfits.
-SMALL_SET = ("Business_Female_01", "Business_Male_02", "Male_Adult_05", "Female_Child_01", "Male_Child_02",
+# A quick start: 6 women and 6 men, a girl and a boy, an older man (Male_Adult_03, about 58: the catalog's oldest),
+# all three skin-tone bands, mostly conference outfits.
+SMALL_SET = ("Business_Female_01", "Business_Male_02", "Male_Adult_03", "Female_Child_01", "Male_Child_02",
              "Business_Female_02", "Male_Adult_12", "Female_Adult_03", "Business_Male_05", "Female_Adult_06",
              "Female_Adult_15", "Male_Adult_21")
 AVATAR_SETS = ("conference", "all", "small")
@@ -370,10 +372,18 @@ def url_for(path: str, base_url: str = BASE_URL) -> str:
 
 
 class FetchError(RuntimeError):
-    """Some files could not be downloaded; ``report.failed`` lists them (the rest was downloaded)."""
+    """Some files could not be downloaded; ``report.failed`` lists them (the rest was downloaded).
+
+    When the server could not be reached at all, ``report.stopped`` says so and the other files were not tried.
+    """
 
     def __init__(self, report: FetchReport):
         self.report = report
+        if report.stopped:
+            missing = len(report.files) - report.downloaded - report.skipped
+            super().__init__(f"{report.stopped}; check the network connection (and proxy settings), then run the "
+                             f"same command again ({missing} of {len(report.files)} files are still missing)")
+            return
         lines = [f"  {path}: {reason}" for path, reason in report.failed[:5]]
         more = f"\n  ... and {len(report.failed) - 5} more" if len(report.failed) > 5 else ""
         super().__init__(f"{len(report.failed)} of {len(report.files)} files could not be downloaded:\n"
@@ -387,10 +397,22 @@ class FetchReport:
     skipped: int = 0  # already complete
     bytes: int = 0  # downloaded bytes
     failed: list[tuple[str, str]] = field(default_factory=list)  # (repository path, reason)
+    stopped: str = ""  # why the fetch stopped before trying every file (the server cannot be reached), else ""
+
+
+UNREACHABLE_AFTER = 3  # files in a row that cannot even connect before a fetch gives up on the rest
 
 
 class _Permanent(Exception):
     """A download error that retrying cannot fix."""
+
+
+class _Unreachable(RuntimeError):
+    """No attempt could connect to the server (no network, unknown host, refused connection, proxy error)."""
+
+
+class _Cancelled(Exception):
+    """The download was stopped from outside (Ctrl-C, or the fetch gave up); its ``.part`` file is kept."""
 
 
 def _default_opener():
@@ -409,13 +431,18 @@ def _default_opener():
     return opener
 
 
-def _download(url: str, target: Path, opener, retries: int, backoff: float, timeout: float) -> int:
-    """Download ``url`` to ``target`` via ``target.part`` (resumed with a Range request); returns the size."""
+def _download(url: str, target: Path, opener, retries: int, backoff: float, timeout: float,
+              stop: threading.Event | None = None) -> int:
+    """Download ``url`` to ``target`` via ``target.part`` (resumed with a Range request); returns the size.
+
+    Raises :class:`_Cancelled` soon after ``stop`` is set, :class:`_Unreachable` when no attempt could connect.
+    """
+    stop = stop or threading.Event()
     part = target.with_name(target.name + ".part")
     error: Exception | None = None
     for attempt in range(retries + 1):
-        if attempt:
-            time.sleep(backoff * 2 ** (attempt - 1))
+        if stop.wait(backoff * 2 ** (attempt - 1) if attempt else 0):
+            raise _Cancelled(url)
         try:
             offset = part.stat().st_size if part.exists() else 0
             headers = {"User-Agent": "bifold-demo"}
@@ -428,8 +455,10 @@ def _download(url: str, target: Path, opener, retries: int, backoff: float, time
                 length = response.headers.get("Content-Length")
                 expected = offset + int(length) if length is not None else None
                 with open(part, "ab" if offset else "wb") as out:
-                    while block := response.read(1 << 20):
+                    while block := response.read(1 << 16):
                         out.write(block)
+                        if stop.is_set():
+                            raise _Cancelled(url)
             size = part.stat().st_size
             if expected is not None and size != expected:
                 raise OSError(f"incomplete download ({size} of {expected} bytes)")
@@ -459,7 +488,9 @@ def _download(url: str, target: Path, opener, retries: int, backoff: float, time
         reason = f"HTTP {error.code} {error.reason}"
     else:
         reason = str(getattr(error, "reason", None) or error) or type(error).__name__
-    raise RuntimeError(f"{reason} (after {retries + 1} attempts)")
+    # urlopen wraps the errors of connecting (not those of reading a response) in a URLError
+    unreachable = isinstance(error, urllib.error.URLError) and not isinstance(error, urllib.error.HTTPError)
+    raise (_Unreachable if unreachable else RuntimeError)(f"{reason} (after {retries + 1} attempts)")
 
 
 def fetch(dest, avatars, clips, jobs: int = 8, progress=None, *, retries: int = 3, opener=None,
@@ -469,8 +500,10 @@ def fetch(dest, avatars, clips, jobs: int = 8, progress=None, *, retries: int = 
     Files that are already there are skipped, partial downloads (``*.part``) are resumed, each file appears
     under its final name only when complete, and ``jobs`` files download in parallel with ``retries``
     retries each. ``progress(done, total, path, status)`` is called after every file. Raises
-    :class:`FetchError` after the others finished when some files failed. ``opener(request, timeout=...)``
-    replaces :func:`urllib.request.urlopen` (for tests).
+    :class:`FetchError` after the others finished when some files failed, or as soon as
+    :data:`UNREACHABLE_AFTER` files in a row could not even connect (no network). On ``KeyboardInterrupt`` the
+    queued files are dropped and the running downloads stop at their next block, so a rerun resumes them.
+    ``opener(request, timeout=...)`` replaces :func:`urllib.request.urlopen` (for tests).
     """
     if jobs < 1 or retries < 0:
         raise ValueError("jobs must be at least 1 and retries at least 0")
@@ -486,17 +519,39 @@ def fetch(dest, avatars, clips, jobs: int = 8, progress=None, *, retries: int = 
                 progress(report.skipped, len(paths), path, "already there")
         else:
             todo.append((path, target))
-    done = report.skipped
-    with ThreadPoolExecutor(max_workers=jobs) as pool:
+    done, stop, lock = report.skipped, threading.Event(), threading.Lock()
+    unreachable: list[str] = []  # the latest files in a row that could not connect
+
+    def job(path: str, target: Path) -> int:
+        try:
+            size = _download(url_for(path, base_url), target, opener, retries, backoff, timeout, stop)
+        except _Unreachable as exc:
+            with lock:
+                unreachable.append(str(exc))
+                if len(unreachable) >= UNREACHABLE_AFTER and not stop.is_set():
+                    report.stopped = f"cannot reach {urllib.parse.urlsplit(base_url).netloc}: {exc}"
+                    stop.set()  # no network: the other files end at once (as cancelled)
+            raise
+        except (_Permanent, RuntimeError):
+            with lock:
+                unreachable.clear()
+            raise
+        with lock:
+            unreachable.clear()
+        return size
+
+    pool = ThreadPoolExecutor(max_workers=jobs)
+    try:
         futures = {}
         for path, target in todo:
             target.parent.mkdir(parents=True, exist_ok=True)
-            futures[pool.submit(_download, url_for(path, base_url), target, opener, retries, backoff,
-                                timeout)] = path
+            futures[pool.submit(job, path, target)] = path
         for future in as_completed(futures):
-            path, done = futures[future], done + 1
+            path = futures[future]
             try:
                 size = future.result()
+            except _Cancelled:
+                continue
             except (_Permanent, RuntimeError) as exc:
                 report.failed.append((path, str(exc)))
                 status = f"failed: {exc}"
@@ -504,8 +559,14 @@ def fetch(dest, avatars, clips, jobs: int = 8, progress=None, *, retries: int = 
                 report.downloaded += 1
                 report.bytes += size
                 status = f"downloaded {size / 1e6:.1f} MB"
+            done += 1
             if progress:
                 progress(done, len(paths), path, status)
+    except BaseException:  # e.g. Ctrl-C: drop the queued files, stop the running ones at their next block
+        stop.set()
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    pool.shutdown()
     if report.failed:
         report.failed.sort()
         raise FetchError(report)
@@ -542,7 +603,7 @@ def save_character(model: CharacterModel, cache_dir, metadata: dict | None = Non
     textures: dict[int, str] = {}
     primitives = []
     for i, p in enumerate(model.primitives):
-        for key in ("positions", "normals", "uvs", "indices", "joints", "weights"):
+        for key in _PRIMITIVE_ARRAYS:
             arrays[f"p{i}_{key}"] = np.asarray(getattr(p, key))
         file = None
         if isinstance(p.texture, np.ndarray):
@@ -601,8 +662,8 @@ def read_character(cache_dir, name: str, textures: str = "path", metadata: dict 
         images = {f: (str(folder / f) if textures == "path" else None) for f in files}
     primitives = []
     for i, p in enumerate(meta["primitives"]):
-        primitives.append(SkinnedPrimitive(p["name"], *(arrays[f"p{i}_{k}"] for k in (
-            "positions", "normals", "uvs", "indices", "joints", "weights")), texture=images.get(p.get("texture"))))
+        primitives.append(SkinnedPrimitive(p["name"], *(arrays[f"p{i}_{k}"] for k in _PRIMITIVE_ARRAYS),
+                                           texture=images.get(p.get("texture"))))
     return CharacterModel(name, skeleton, primitives, arrays["inverse_bind"], dict(meta))
 
 
@@ -628,6 +689,93 @@ def read_clip(path) -> AnimationClip:
                              loop=info["loop"], root=info["root"], metadata=info["metadata"])
 
 
+_SKELETON_ARRAYS = ("names", "parents", "rest_local", "inverse_bind")
+_PRIMITIVE_ARRAYS = ("positions", "normals", "uvs", "indices", "joints", "weights")
+_CLIP_ARRAYS = ("bone_names", "rotations", "translations", "info")
+_PNG_START, _PNG_END = b"\x89PNG\r\n\x1a\n", b"IEND\xaeB`\x82"
+
+
+def _check_npz(path: Path, arrays) -> None:
+    try:
+        with zipfile.ZipFile(path) as z:  # reads only the directory at the end, so a cut-off file fails here
+            names = {n.removesuffix(".npy") for n in z.namelist()}
+    except FileNotFoundError:
+        raise ValueError(f"{path.name} is missing") from None
+    except Exception as exc:  # noqa: BLE001 - zipfile raises several kinds of errors for a damaged file
+        raise ValueError(f"{path.name} is damaged ({type(exc).__name__}: {exc})") from None
+    missing = [a for a in arrays if a not in names]
+    if missing:
+        raise ValueError(f"{path.name} is damaged (no {missing[0]} array)")
+
+
+def _check_png(path: Path) -> None:
+    try:
+        with open(path, "rb") as f:
+            start = f.read(len(_PNG_START))
+            f.seek(max(path.stat().st_size - len(_PNG_END), 0))
+            end = f.read()
+    except FileNotFoundError:
+        raise ValueError(f"{path.name} is missing") from None
+    except OSError as exc:
+        raise ValueError(f"cannot read {path.name} ({exc})") from None
+    if start != _PNG_START or end != _PNG_END:
+        raise ValueError(f"{path.name} is damaged (cut off, or not a PNG file)")
+
+
+def check_avatar(cache_dir, name: str) -> dict:
+    """The stored metadata of the prepared avatar ``name`` after a quick check of its files (nothing is decoded).
+
+    Raises ``FileNotFoundError`` when it is not prepared, ``ValueError`` saying what is wrong when one of its files
+    is missing, damaged (e.g. cut off) or was written by another version.
+    """
+    folder = Path(cache_dir).expanduser() / "avatars"
+    path = folder / f"{name}.json"
+    try:
+        meta = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{path.name} is damaged ({exc})") from None
+    primitives = meta.get("primitives") if isinstance(meta, dict) else None
+    if not isinstance(primitives, list) or not all(isinstance(p, dict) for p in primitives):
+        raise ValueError(f"{path.name} is damaged (no list of primitives)")
+    if meta.get("format") != FORMAT:
+        raise ValueError(f"prepared by another version (format {meta.get('format')!r}, this version reads {FORMAT})")
+    _check_npz(folder / f"{name}.npz",
+               [*_SKELETON_ARRAYS, *(f"p{i}_{k}" for i in range(len(primitives)) for k in _PRIMITIVE_ARRAYS)])
+    for file in sorted({p["texture"] for p in primitives if p.get("texture")}):
+        _check_png(folder / file)
+    return meta
+
+
+def check_clip(path) -> None:
+    """A quick check of a prepared clip file (nothing is decoded).
+
+    Raises ``FileNotFoundError`` when it does not exist, ``ValueError`` saying what is wrong when it is damaged.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"no clip file {path}")
+    _check_npz(path, _CLIP_ARRAYS)
+
+
+def is_prepared(cache_dir, kind: str, name: str) -> bool:
+    """Whether the ``kind`` (``"avatar"`` or ``"clip"``) ``name`` is in the cache and passes the quick check.
+
+    The one test for "prepared" that :func:`prepare`, ``bifold-characters fetch`` and :mod:`.library` share: a
+    damaged item counts as not prepared, so preparing (or fetching) it again repairs it.
+    """
+    cache = Path(cache_dir).expanduser()
+    try:
+        if kind == "avatar":
+            check_avatar(cache, name)
+        else:
+            check_clip(cache / "clips" / f"{name}.npz")
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 # -- conversion ------------------------------------------------------------------------------------
 
 
@@ -639,15 +787,20 @@ class PrepareReport:
     failed: list[tuple[str, str]] = field(default_factory=list)  # (name, reason)
 
 
-def _assets_root(raw_dir) -> Path:
-    """The folder that contains ``Assets/`` (``raw_dir`` may be that folder or ``Assets`` itself)."""
+def _raw_files(raw_dir):
+    """``(root, local)``: ``local(path)`` is the file of a repository path (``Assets/...``) in ``raw_dir``.
+
+    ``raw_dir`` may hold ``Assets/`` (a clone of the repository, or the fetch folder) or be an ``Assets``
+    folder itself, under any name (it holds ``Avatars/`` or ``Animations/``).
+    """
     raw = Path(raw_dir).expanduser()
-    return raw.parent if raw.name == "Assets" and not (raw / "Assets").is_dir() else raw
+    if (raw / "Assets").is_dir() or not ((raw / "Avatars").is_dir() or (raw / "Animations").is_dir()):
+        return raw, lambda path: raw / path
+    return raw, lambda path: raw / path.removeprefix("Assets/")
 
 
-def _delete(root: Path, paths: list[str]) -> None:
-    for path in paths:
-        file = root / path
+def _delete(root: Path, files: list[Path]) -> None:
+    for file in files:
         file.unlink(missing_ok=True)
         folder = file.parent
         while folder != root and folder.is_dir() and not any(folder.iterdir()):
@@ -659,24 +812,24 @@ def prepare(raw_dir, cache_dir, avatars=None, clips=None, delete_raw: bool = Fal
             max_texture_size: int = 1024, progress=None) -> PrepareReport:
     """Convert downloaded avatars and clips (names; ``None`` = all that are in ``raw_dir``) into the cache.
 
-    Needs :mod:`.fbx_convert` (imported here only). Items already in the cache are skipped unless ``force``.
-    ``delete_raw`` removes each item's downloaded files once it is converted. Failures are collected in the
-    report instead of stopping the run. ``progress(done, total, name, status)`` is called after every item.
+    Needs :mod:`.fbx_convert` (imported here only). Items already in the cache (see :func:`is_prepared`; damaged
+    ones are converted again) are skipped unless ``force``. ``delete_raw`` removes each item's downloaded files
+    once it is converted. Failures are collected in the report instead of stopping the run.
+    ``progress(done, total, name, status)`` is called after every item.
     """
-    root, cache = _assets_root(raw_dir), Path(cache_dir).expanduser()
+    (root, local), cache = _raw_files(raw_dir), Path(cache_dir).expanduser()
     if avatars is None:
-        avatars = [n for n, a in AVATARS.items() if (root / a.fbx).is_file()]
+        avatars = [n for n, a in AVATARS.items() if local(a.fbx).is_file()]
     if clips is None:
-        clips = [n for n, c in CLIPS.items() if (root / c.path).is_file()]
+        clips = [n for n, c in CLIPS.items() if local(c.path).is_file()]
     items = [("avatar", n) for n in check_names(avatars, AVATARS, "avatar")]
     items += [("clip", n) for n in check_names(clips, CLIPS, "clip")]
     report, converter, catalog = PrepareReport(), None, load_catalog()
     for done, (kind, name) in enumerate(items, 1):
         files = AVATARS[name].files if kind == "avatar" else [CLIPS[name].path]
-        out = cache / "avatars" / f"{name}.json" if kind == "avatar" else cache / "clips" / f"{name}.npz"
-        missing = [p for p in files if not (root / p).is_file()]
+        missing = [p for p in files if not local(p).is_file()]
         ok = False
-        if out.is_file() and not force:
+        if not force and is_prepared(cache, kind, name):
             report.skipped.append(name)
             status, ok = "already prepared", True
         elif missing:
@@ -690,7 +843,7 @@ def prepare(raw_dir, cache_dir, avatars=None, clips=None, delete_raw: bool = Fal
                     raise ImportError(f"converting Rocketbox files needs {__package__}.fbx_convert: {exc}") from exc
             try:
                 if kind == "avatar":
-                    model = converter.load_character(root / files[0], max_texture_size=max_texture_size)
+                    model = converter.load_character(local(files[0]), max_texture_size=max_texture_size)
                     model.name = name
                     meta = {**avatar_metadata(name, catalog), "source": files[0], "license": LICENSE}
                     save_character(model, cache, meta)
@@ -698,7 +851,7 @@ def prepare(raw_dir, cache_dir, avatars=None, clips=None, delete_raw: bool = Fal
                     status = (f"prepared ({meta.get('sex', '?')}, {model.height:.2f} m, "
                               f"{sum(len(p.indices) for p in model.primitives)} triangles)")
                 else:
-                    clip = converter.load_clip(root / files[0], name=name)
+                    clip = converter.load_clip(local(files[0]), name=name)
                     save_clip(clip, cache, {"role": CLIPS[name].role, "sex": CLIPS[name].sex, "source": files[0]})
                     report.clips.append(name)
                     status = f"prepared ({clip.frames} frames, {clip.duration:.1f} s)"
@@ -707,7 +860,7 @@ def prepare(raw_dir, cache_dir, avatars=None, clips=None, delete_raw: bool = Fal
                 report.failed.append((name, f"{type(exc).__name__}: {exc}"))
                 status = f"failed: {type(exc).__name__}: {exc}"
         if delete_raw and ok:
-            _delete(root, files)
+            _delete(root, [local(p) for p in files])
         if progress:
             progress(done, len(items), name, status)
     return report

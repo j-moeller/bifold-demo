@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import difflib
 import sys
 import time
+import warnings
 from pathlib import Path
 
 from . import rocketbox
-from .library import CharacterLibrary, default_folder
+from .library import CharacterLibrary, DamagedFileWarning, default_folder
 
 
 def _human(n: float) -> str:
@@ -61,8 +61,8 @@ def cmd_fetch(args) -> int:
         clips = rocketbox.clip_set(args.clips or ("basic" if args.set == "small" and not chosen else "all"))
     except ValueError as exc:
         return _error(f"{exc} (see: bifold-characters list --all)")
-    todo_avatars = [n for n in avatars if args.force or not (dest / "avatars" / f"{n}.json").is_file()]
-    todo_clips = [n for n in clips if args.force or not (dest / "clips" / f"{n}.npz").is_file()]
+    todo_avatars = [n for n in avatars if args.force or not rocketbox.is_prepared(dest, "avatar", n)]
+    todo_clips = [n for n in clips if args.force or not rocketbox.is_prepared(dest, "clip", n)]
     paths = rocketbox.files_for(todo_avatars, todo_clips)
     present = [p for p in paths if (raw / p).is_file()]
     size = sum(rocketbox.estimate_size(p) for p in paths if not (raw / p).is_file())
@@ -87,6 +87,11 @@ def cmd_fetch(args) -> int:
         return _error(str(exc))
     print(f"[fetch] downloaded {report.downloaded} files ({_human(report.bytes)}) in "
           f"{time.monotonic() - start:.0f} s, {report.skipped} were already there")
+    if failed:  # convert only what is complete; the error above already lists the rest
+        todo_avatars = [n for n in todo_avatars if all((raw / p).is_file() for p in rocketbox.AVATARS[n].files)]
+        todo_clips = [n for n in todo_clips if (raw / rocketbox.CLIPS[n].path).is_file()]
+        if not todo_avatars and not todo_clips:
+            return 1
     code = _prepare(raw, dest, todo_avatars, todo_clips, args)
     return 1 if failed else code
 
@@ -109,7 +114,7 @@ def cmd_list(args) -> int:
     available = library.available()
     names = list(rocketbox.AVATARS) if args.all else list(available)
     if not names:
-        print(f"{dest} has no prepared avatars yet. Try: bifold-characters fetch --set small")
+        print(f"{dest} has no prepared avatars yet.\n{library.describe()}")
         return 0
     print(f"{'avatar':22s} {'sex':6s} {'age':6s} {'skin':4s} {'outfit':12s} {'fit':3s} {'height':>6s} {'tris':>6s}")
     for name in names:
@@ -137,21 +142,14 @@ def cmd_info(args) -> int:
             print(f"  part {p['name']}: {p['vertices']} vertices, {p['triangles']} triangles, "
                   f"texture {p['texture'] or '-'}")
         return 0
-    clip_path = dest / "clips" / f"{args.name}.npz"
-    if clip_path.is_file():
-        clip = rocketbox.read_clip(clip_path)
+    clip = None if args.name in rocketbox.AVATARS else library.clips().get(args.name)
+    if clip is not None:
         print(f"clip {clip.name}: {clip.frames} frames at {clip.fps:g} fps ({clip.duration:.2f} s), "
               f"{len(clip.bone_names)} bones, loop {clip.loop}, root {clip.root}")
         for key, value in sorted(clip.metadata.items()):
             print(f"{key:15s} {value}")
         return 0
-    if args.name in rocketbox.AVATARS or args.name in rocketbox.CLIPS:
-        option = f"--avatars {args.name}" if args.name in rocketbox.AVATARS else "--avatars --clips all"
-        return _error(f"{args.name} is not prepared yet; run: bifold-characters fetch {option}", 1)
-    known = dict.fromkeys([*available, *rocketbox.AVATARS, *rocketbox.CLIPS])
-    close = difflib.get_close_matches(args.name, list(known), n=3)
-    hint = f"; did you mean {' or '.join(close)}?" if close else "; see: bifold-characters list --all"
-    return _error(f"no avatar or clip {args.name!r}{hint}", 1)
+    return _error(library.explain(args.name), 1)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -198,7 +196,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        return args.func(args)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DamagedFileWarning)  # the commands report damaged files themselves
+            return args.func(args)
     except KeyboardInterrupt:
         print("\ninterrupted; run the same command again to resume", file=sys.stderr)
         return 130

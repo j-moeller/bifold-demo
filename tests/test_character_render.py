@@ -199,6 +199,64 @@ def test_fast_poser_matches_poser():
     layers = [Layer(clips[0], 0.05, 0.7), Layer(clips[1], 0.11, 0.3)]
     character = Character(model, _behaviour(layers=layers))
     np.testing.assert_allclose(character.pose, Poser(model).global_pose(layers), atol=1e-9)
+    clips[0].rotations = clips[0].rotations * rng.choice([-1.0, 1.0], size=(5, 21, 1))  # replaced, signs not aligned
+    character.update(0.0)
+    np.testing.assert_allclose(character.pose, Poser(model).global_pose(layers), atol=1e-9)
+
+
+def _path_textures(tmp_path):
+    """``_model()`` with its textures as PNG files (the prepared library's default), two parts sharing one file."""
+    import cv2
+
+    model = _model()
+    for i, (prim, color) in enumerate(zip(model.primitives, (RED, BLUE, BLUE))):
+        path = tmp_path / f"part{min(i, 1)}.png"
+        cv2.imwrite(str(path), np.full((4, 4, 3), color[::-1], np.uint8))
+        prim.texture = str(path)
+    return model
+
+
+def _count_decodes(monkeypatch, folder) -> list:
+    """``(file name, thread id)`` of every image file in ``folder`` decoded from now on."""
+    import threading
+
+    from bifold_demo.scene import textures
+
+    decoded, read = [], textures._read_image
+
+    def counting(path, size):
+        if path.parent == folder.resolve():
+            decoded.append((path.name, threading.get_ident()))
+        return read(path, size)
+
+    monkeypatch.setattr(textures, "_read_image", counting)
+    return decoded
+
+
+def test_texture_files_are_decoded_when_a_character_is_made(tmp_path, monkeypatch):
+    import threading
+
+    from bifold_demo.scene import as_texture
+
+    model = _path_textures(tmp_path)
+    decoded = _count_decodes(monkeypatch, tmp_path)
+    hidden = Character(model, lambda t: CharacterState((0, 0, 0), 0.0, [], visible=False))  # never drawn yet
+    twin = Character(model)
+    assert twin.texture_jobs == hidden.texture_jobs and len(hidden.texture_jobs) == 2  # each file once
+    textures = [job.result(timeout=10) for job in hidden.texture_jobs]
+    assert sorted(name for name, _ in decoded) == ["part0.png", "part1.png"]
+    assert all(thread != threading.get_ident() for _, thread in decoded)  # not on the calling (render) thread
+    assert [as_texture(p.texture) for p in model.primitives[:2]] == textures  # the renderer's lookup finds them
+    assert len(decoded) == 2 and tuple(textures[0].rgba[0, 0]) == (*RED, 255)
+
+
+def test_first_frame_decodes_no_texture_files(render, tmp_path, monkeypatch):
+    character = Character(_path_textures(tmp_path))
+    for job in character.texture_jobs:
+        job.result(timeout=10)
+    decoded = _count_decodes(monkeypatch, tmp_path)
+    image = render(_scene(character))
+    assert not decoded and image[80, 80].tolist() == [0, 0, 255]  # red body, from the decoded file
 
 
 def test_model_matrix_follows_the_contract():

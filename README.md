@@ -151,8 +151,11 @@ bifold-characters info Business_Female_01
 
 Re-running `fetch` skips what is already there. `--dry-run` shows the
 download size first, and `--delete-raw` removes the originals after
-converting. Set `BIFOLD_CHARACTERS=DIR` (or `--dest DIR`) to keep the cache
-elsewhere. `prepare --raw DIR` converts a Rocketbox clone you already have.
+converting. To keep the cache elsewhere, `export BIFOLD_CHARACTERS=DIR` before
+running both `bifold-characters` and `bifold-demo`: the demo reads only that
+variable (default `~/.cache/bifold-demo/characters`), and `--dest DIR` changes
+only the folder `bifold-characters` works in. `prepare --raw DIR` converts a
+Rocketbox clone you already have.
 
 Using 3D people in your own scene:
 

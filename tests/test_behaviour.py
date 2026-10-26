@@ -1,5 +1,7 @@
 import math
+import os
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -19,9 +21,16 @@ from bifold_demo.characters.model import (
 )
 
 CAMERA = (0.0, 1.6, 6.0)
-BONES = ["Bip01", "Bip01 Pelvis", "Bip01 Spine", "Bip01 Neck", "Bip01 Head", "Bip01 L Thigh", "Bip01 R Thigh"]
-PARENTS = [-1, 0, 1, 2, 3, 1, 1]
+SCRATCH = "/tmp/claude-0/-home-user-bifold-demo/44ad5b06-773f-5ffd-8306-515788fc8497/scratchpad"
+CHARACTERS = Path(os.environ.get("BIFOLD_CHARACTERS_TEST_DIR", f"{SCRATCH}/charcache"))  # a prepared library
+BONES = ["Bip01", "Bip01 Pelvis", "Bip01 Spine", "Bip01 Neck", "Bip01 Head", "Bip01 L Thigh", "Bip01 R Thigh",
+         "Bip01 L Calf", "Bip01 L Foot", "Bip01 L Toe0", "Bip01 R Calf", "Bip01 R Foot", "Bip01 R Toe0"]
+PARENTS = [-1, 0, 1, 2, 3, 1, 1, 5, 7, 8, 6, 10, 11]
 ROOT_HEIGHT = 0.95
+# bone offsets from the parent in character axes (the root's is its height); straight legs put the toes on the floor
+OFFSETS = [(0, ROOT_HEIGHT, 0), (0, 0, 0), (0, 0.15, 0), (0, 0.45, 0), (0, 0.1, 0), (0.1, -0.05, 0), (-0.1, -0.05, 0),
+           (0, -0.45, 0), (0, -0.4, 0), (0, -0.05, 0.12), (0, -0.45, 0), (0, -0.4, 0), (0, -0.05, 0.12)]
+TOES = [BONES.index("Bip01 L Toe0"), BONES.index("Bip01 R Toe0")]
 # Like a Biped, the root bone's own axes are not the character's: every clip and the model carry this rotation.
 FIX = quat_from_axis_angle([1.0, 1.0, 1.0], 120.0)
 FIX_M = quat_to_matrix(FIX)
@@ -46,6 +55,7 @@ def synthetic_clip(name, kind, frames, speed=0.0, turn=0.0, head=None, pitch=Non
     rotations[:, 5] = quat_from_axis_angle(_local_axis([1, 0, 0]), swing)
     rotations[:, 6] = quat_from_axis_angle(_local_axis([1, 0, 0]), -swing)
     translations = np.zeros((frames, len(BONES), 3))
+    translations[:, 1:] = [_local_axis(offset) for offset in OFFSETS[1:]]  # the rig the clip was made for
     translations[:, 0, 1] = ROOT_HEIGHT + (0.02 * np.cos(4 * np.pi * u) if kind == "walk" else 0.0)
     return AnimationClip(name, 30.0, list(BONES), rotations, translations, loop=kind != "turn", root="Bip01",
                          metadata={"kind": kind, "speed": speed, "turn": turn})
@@ -84,13 +94,11 @@ def synthetic_model(size=0.9):
     """A two-box person on the clip skeleton, ``size`` times the clips' proportions (so ``stride_scale = size``)."""
     from bifold_demo.scene.geometry import box_mesh
 
-    offsets = [(0, ROOT_HEIGHT * size, 0), (0, 0, 0), (0, 0.15, 0), (0, 0.45, 0), (0, 0.1, 0), (0.1, -0.05, 0),
-               (-0.1, -0.05, 0)]
     rest = np.repeat(np.eye(4)[None], len(BONES), axis=0)
     rest[0, :3, :3] = FIX_M
-    rest[0, :3, 3] = offsets[0]
+    rest[0, :3, 3] = np.multiply(OFFSETS[0], size)
     for i in range(1, len(BONES)):
-        rest[i, :3, 3] = _local_axis(offsets[i]) * (size if i > 2 else 1.0)
+        rest[i, :3, 3] = _local_axis(OFFSETS[i]) * (size if i > 2 else 1.0)
     skeleton = Skeleton(BONES, PARENTS, rest)
     primitives = []
     for bone, lo, hi in ((1, (-0.2, 0.0, -0.12), (0.2, 1.4, 0.12)), (4, (-0.1, 1.45, -0.1), (0.1, 1.7, 0.1))):
@@ -277,9 +285,114 @@ def test_feet_do_not_slide(sparse):
         if len(a.layers) == 1 and len(b.layers) == 1 and a.layers[0].clip is clip and b.layers[0].clip is clip:
             moved = math.dist(a.position, b.position)
             stepped = (b.layers[0].time - a.layers[0].time) * clip.metadata["speed"] * style["stride_scale"]
-            assert stepped == pytest.approx(moved, rel=0.02, abs=1e-5)
+            assert stepped == pytest.approx(moved, rel=B.STRIDE_STRETCH + 1e-3, abs=1e-5)
             checked += 1
     assert checked > 100
+
+
+def test_feet_are_the_clips_toe_positions(sparse):
+    """``MotionLibrary.feet`` is the forward kinematics of the clip's own skeleton, found from the bone names."""
+    poser = Poser(synthetic_model(1.0))  # the proportions the clips were made for
+    for name in ("m_walk_neutral_01", "m_idle_neutral_01", "m_turn_left_180"):
+        clip = sparse.clips[name]
+        times = np.arange(0, clip.frames, 5) / clip.fps
+        expected = np.array([poser.global_pose([B.Layer(clip, t)])[TOES, :3, 3] for t in times])
+        assert np.allclose(sparse.feet(clip, times), expected, atol=1e-9)
+        between = poser.global_pose([B.Layer(clip, times[3] + 0.4 / clip.fps)])[TOES, :3, 3]
+        assert np.allclose(sparse.feet(clip, times[3] + 0.4 / clip.fps), between, atol=1e-3)  # interpolated
+    # in a Biped the thighs hang from the spine: the bone that puts the feet on the floor
+    parents, offsets = list(PARENTS), list(OFFSETS)
+    parents[5] = parents[6] = 2
+    offsets[5], offsets[6] = (0.1, -0.2, 0.0), (-0.1, -0.2, 0.0)
+    rest = np.repeat(np.eye(4)[None], len(BONES), axis=0)
+    rest[0, :3, :3], rest[0, :3, 3] = FIX_M, offsets[0]
+    rest[1:, :3, 3] = [_local_axis(offset) for offset in offsets[1:]]
+    skeleton = Skeleton(BONES, parents, rest)
+    biped = Poser(CharacterModel("biped", skeleton, [], np.linalg.inv(skeleton.rest_global)))
+    clip = synthetic_clip("m_walk_neutral_01", "walk", 37, speed=1.0)
+    clip.translations[:, 1:] = [_local_axis(offset) for offset in offsets[1:]]
+    clip.rotations[:, 2] = quat_from_axis_angle(_local_axis([1, 0, 0]), 8.0 * np.sin(np.linspace(0, 2 * np.pi, 37)))
+    times = np.arange(0, clip.frames, 4) / clip.fps
+    expected = np.array([biped.global_pose([B.Layer(clip, t)])[TOES, :3, 3] for t in times])
+    assert np.allclose(MotionLibrary({}).feet(clip, times), expected, atol=1e-9)
+    legless = AnimationClip("legless", 30.0, BONES[:5], np.tile([0.0, 0.0, 0.0, 1.0], (3, 5, 1)), np.zeros((3, 5, 3)))
+    assert sparse.feet(legless, 0.0) is None
+    mixamo = AnimationClip("mixamo", 30.0, ["mixamorig:Hips", "mixamorig:LeftUpLeg", "mixamorig:LeftLeg",
+                                            "mixamorig:LeftFoot", "mixamorig:LeftToeBase", "mixamorig:LeftHand"],
+                           np.zeros((1, 6, 4)), np.zeros((1, 6, 3)))
+    assert B._leg(mixamo, "l") == [1, 2, 3, 4] and B._leg(mixamo, "r") == []
+
+
+def _toe_mismatch(behaviour, poser, toes=TOES):
+    """``(walk length, "start" or "stop", (less, more))`` for each crossfade between walking and standing: how far
+    each toe is (on the floor plane, in character space) between the two poses the crossfade blends, in metres."""
+    out, entries = [], behaviour._entries
+    for j, entry in enumerate(entries):
+        before = entries[j - 1]
+        if not entry.fade or entry.clip is None or before.clip is None or (entry.walk is None) == (before.walk is None):
+            continue
+        a, b = (poser.global_pose([B.Layer(*e.sample(t)[:2])])[toes][:, [0, 2], 3]
+                for e, t in ((before, entry.t0 if j else entry.t0 + behaviour.duration), (entry, entry.t0)))
+        walk = entry if entry.walk is not None else before
+        out.append((walk.walk.length, "start" if walk is entry else "stop", sorted(np.linalg.norm(b - a, axis=1))))
+    return out
+
+
+def test_walks_start_and_stop_in_the_pose_they_blend_with(sparse):
+    """Walks start where the walk clip's legs are together, like standing, and are stretched (by at most
+    ``STRIDE_STRETCH``) to stop there too, so the crossfades do not drag the feet over the floor."""
+    poser = Poser(synthetic_model())
+    found = [m for _, behaviour in _factories(sparse) for m in _toe_mismatch(behaviour, poser)]
+    assert len(found) > 20 and {kind for _, kind, _ in found} == {"start", "stop"}
+    assert max(m[1] for length, _, m in found if length > 6.5) < 0.03  # a random phase: up to 0.4 m
+    assert np.mean([m[1] for _, _, m in found]) < 0.05  # short walks may not stretch enough to stop in step
+    for _, behaviour in _factories(sparse):
+        for entry in behaviour._entries:
+            if entry.walk is not None and entry.clip is not None:
+                stretch = entry.scale * entry.clip.metadata["speed"] * behaviour.style.stride - 1.0
+                assert abs(stretch) <= B.STRIDE_STRETCH + 1e-9
+    on = Behaviour([Walk([(0, 4)]), Walk([(0, 9)])], sparse, rng=1)  # straight on: one stop and go, in step
+    first, second = [e for e in on._entries if e.walk is not None][:2]
+    assert second.t0 == first.t1 and second.sample(second.t0)[1] == pytest.approx(first.sample(first.t1)[1])
+
+
+@pytest.mark.skipif(not (CHARACTERS / "clips").is_dir(), reason="no prepared Rocketbox characters")
+def test_real_walks_start_and_stop_with_the_feet_in_place(monkeypatch):
+    """With the Rocketbox clips ``feet`` finds the Biped's legs (toes on the floor in every clip), and the
+    crossfades between standing and walking move the toes about half as far as random walk phases did (the rest
+    is the clips' wider stance when standing)."""
+    from bifold_demo.characters.crowd import avatar_style
+    from bifold_demo.characters.library import CharacterLibrary
+
+    library = CharacterLibrary(CHARACTERS)
+    motions, available = library.motions(), library.available()
+    avatars = [next((n for n, e in sorted(available.items()) if e.get("sex") == sex and e.get("age_group") == "adult"),
+                    None) for sex in ("male", "female")]
+    if not library.is_ready() or None in avatars:
+        pytest.skip("the prepared library lacks clips or adult avatars")
+    for clip in motions.clips.values():
+        feet = motions.feet(clip, np.arange(clip.frames) / clip.fps)
+        assert feet is not None and np.abs(feet[..., 1].min(axis=1)).mean() < 0.03, clip.name
+
+    def mismatch():
+        found = []
+        for name in avatars:
+            model = library.load(name, textures="none")
+            toes = [model.skeleton.find("Bip01 L Toe0"), model.skeleton.find("Bip01 R Toe0")]
+            style = avatar_style(available[name], model, motions)
+            for seed in range(3):
+                for behaviour in (B.approach((-1, 0, -14), camera=CAMERA, library=motions, rng=seed, style=style),
+                                  B.walk_by([(-9, 0, -7), (9, 0, -7)], camera=CAMERA, library=motions, rng=seed,
+                                            style=style)):
+                    found += [m for _, _, m in _toe_mismatch(behaviour, Poser(model), toes)]
+        return np.array(found)
+
+    aligned = mismatch()
+    monkeypatch.setattr(B.Behaviour, "_time_walks", lambda self: None)  # the walk clips at random phases
+    random_phase = mismatch()
+    assert len(aligned) >= 20
+    assert aligned[:, 0].mean() < 0.5 * random_phase[:, 0].mean() and aligned[:, 0].mean() < 0.09  # planted toe
+    assert aligned[:, 1].mean() < 0.7 * random_phase[:, 1].mean()
 
 
 def test_default_walking_speed_follows_the_clip(sparse):

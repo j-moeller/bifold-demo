@@ -334,7 +334,7 @@ def root_scale(skeleton: Skeleton, clip: AnimationClip) -> float:
         chain = _leg_chain(skeleton, joints, names)
         if len(chain) < 3:
             continue
-        clip_offsets = np.median(translations[:, [names[skeleton.names[b]] for b in chain[1:]]], axis=0)
+        clip_offsets = translations[:, [names[skeleton.names[b]] for b in chain[1:]]].mean(axis=0)
         model_leg = _leg_height(skeleton, chain, skeleton.rest_local[chain[1:], :3, 3])
         clip_leg = _leg_height(skeleton, chain, clip_offsets)
         if model_leg > 1e-3 and clip_leg > 1e-3:

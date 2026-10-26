@@ -87,6 +87,15 @@ def _clip(degrees, root_heights=(1.0, 1.0)):
     return AnimationClip("bend", fps=10, bone_names=["root", "lower"], rotations=rot, translations=tr, root="root")
 
 
+def test_clip_quaternions_are_made_continuous_on_construction():
+    q = quat_from_axis_angle(np.tile([0, 0, 1.0], (6, 1)), np.linspace(0, 100, 6))[:, None]
+    flipped = q * np.array([1, -1, -1, 1, -1, 1.0])[:, None, None]
+    clip = AnimationClip("signs", 10, ["b"], flipped, np.zeros((6, 1, 3)))
+    assert np.all(np.sum(clip.rotations[1:] * clip.rotations[:-1], axis=-1) >= 0)  # neighbours blend as they are
+    np.testing.assert_allclose(quat_to_matrix(clip.rotations), quat_to_matrix(q), atol=1e-12)  # same rotations
+    assert flipped[1, 0, 3] < 0  # the caller's array is left alone
+
+
 def test_clip_sampling_interpolates_and_loops():
     clip = _clip([0, 90, 0])
     assert clip.duration == pytest.approx(0.2)
