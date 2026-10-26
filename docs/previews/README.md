@@ -115,13 +115,16 @@ work goes on. The people are avatars from the
   finds on the body textures of all 20 prepared avatars, drawn over their own
   texture (front and back): skin, top, shirt (an inner layer: a shirt front and
   collar, a hood, long sleeves under a t-shirt, a shirt under a vest), bottoms,
-  shoes (also tall boots) and other (belts, a tie, sleeve stripes, a printed
-  number, the black top showing under a short jacket). The two marked `*` have
-  an override file: a long dress over trousers and a robe, whose skirts the leg
-  bones move.
-- `outfits.jpg`: four avatars (rows) in their own clothes, in four outfit
+  shoes (also tall boots) and other (belts, a tie and its knot, sleeve stripes,
+  a printed number, the black top showing under a short jacket). The three
+  marked `*` have an override file: a long dress over trousers and a robe,
+  whose skirts the leg bones move, and the loose end of a belt.
+- `outfits.jpg`: six avatars (rows) in their own clothes, in four outfit
   presets (business navy, casual denim, trade-fair staff, festival) and in two
   descriptions ("red tartan jacket, black trousers" and "white polka dots on
   black"), front and back. The folds, seams and stitching of the avatars' own
   textures stay; the patterns keep one size across the body and run on round
-  it, along the sleeves and down the trouser legs.
+  it, along the sleeves and down the trouser legs. The fifth row's hoodie is
+  sewn from grey, black and navy blocks, and a fill covers all of them; the
+  last row's blouse goes on below her belt, over the skirt. A strong print in
+  the original fabric (her diamonds) still shows through.

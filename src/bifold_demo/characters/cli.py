@@ -214,6 +214,10 @@ def _describe_fill(spec) -> str:
     if isinstance(spec, dict) and "pattern" in spec:
         colours = " and ".join(spec.get("colors", []))
         return f"{spec['pattern']} ({colours})" if colours else spec["pattern"]
+    if isinstance(spec, dict) and ("swatch" in spec or "atlas" in spec):
+        kind = "swatch" if "swatch" in spec else "atlas"
+        source = str(spec[kind])
+        return f"{kind} ({'an image' if source.startswith('data:') else source})"
     return str(spec)
 
 

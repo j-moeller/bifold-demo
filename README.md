@@ -213,27 +213,44 @@ trims, printed numbers: an outfit leaves them alone). The labels come from:
 - the avatar's own skin colour, sampled from its face and learnt on its hands;
 - colour clusters within the garments: the colour that covers the back is the
   top, other large colours or colours at the collar are the shirt, a different
-  colour below the knee is boots, a small one at the waist a belt.
+  colour below the knee is boots;
+- a few shapes: a tie (a narrow island hanging in front of the chest) and its
+  knot (a small island of its colour just above it) are `other`; at the waist,
+  an island or a colour of an upper garment is that garment, however large (a
+  blouse worn over a skirt, whose lower part the hip bones move), and a band
+  of a colour of its own round the top of the trousers is a belt (`other`);
+- thin colours where two garments meet in the atlas (the blurred edge of a
+  t-shirt's hem against the long sleeve under it) go to the garment each texel
+  looks like, instead of making lines of `other`.
 
-On the 20 prepared avatars the labels are right on 18 by themselves
-([docs/previews/outfit_regions.jpg](docs/previews/outfit_regions.jpg)). The
-other two wear a long dress over trousers (`Female_Adult_06`) and a robe
+On the 20 prepared avatars the labels are right on 17 by themselves
+([docs/previews/outfit_regions.jpg](docs/previews/outfit_regions.jpg)). Two
+wear a long dress over trousers (`Female_Adult_06`) and a robe
 (`Male_Adult_21`): the leg bones move their skirts, so they would count as
-trousers. The package fixes them with small JSON override files
-(`characters/outfit/overrides/<avatar>.json`). Remaining small misses: the
-black top showing under a short jacket or vest is `other` rather than `shirt`
-(`Female_Adult_04`, `Female_Adult_13`), and stripes or zips on a jacket are
-`other`, so they keep their colour. An override is a list of rules that
-relabel texels by label, island, bone group, side, height or a box in the
-atlas, for example:
+trousers. The loose end of `Female_Party_02`'s belt is an island of its own
+that the hip bones move, so it would count as her skirt. The package fixes
+these three with small JSON override files
+(`characters/outfit/overrides/<avatar>.json`). Remaining small misses:
+
+- the black top showing under a short jacket or vest is `other` rather than
+  `shirt` (`Female_Adult_04`, `Female_Adult_13`);
+- belt buckles count as the trousers, and the belt across `Female_Party_02`'s
+  blouse is painted on the blouse, so it takes the blouse's fill as a dark
+  line;
+- stripes or zips on a jacket are `other`, so they keep their colour.
+
+An override is a list of rules that relabel texels by label, island, bone
+group, side, height or a box in the atlas, for example:
 
 ```json
 {"rules": [{"region": "top", "where": {"label": "bottoms", "above": 0.36}}]}
 ```
 
 Put your own as `<avatar>.json` in the outfit cache folder:
-`<characters folder>/outfit/`, or `$BIFOLD_OUTFIT_CACHE` if it is set. The
-labels are kept there too, as about 0.15 MB per avatar. The skin mask
+`<characters folder>/outfit/`, or `$BIFOLD_OUTFIT_CACHE` if it is set. A file
+that is no valid JSON or has a bad rule is left out with a warning. The labels
+are kept there too, as about 0.15 MB per avatar; a damaged cache file is made
+again. The skin mask
 (`body_regions(model).skin`) is meant for matching the skin to a person's
 photos: outfits never write skin texels. Islands that share their texels with
 another part of the body are flagged (`flags["overlapping"]`); on these
@@ -248,7 +265,14 @@ and the blur (12 texels) stays inside the region. The new texture is
 `fill × D × S`. A fill of the texture's own base colour gives the texture
 back. Garments cross-fade over 2-3 texels where they meet, and the new colours
 reach 8 texels past the islands so that mipmapping does not bleed the old ones
-in.
+in. A garment sewn from blocks of different colours, such as
+`Male_Adult_17`'s hoodie with its grey body, black yoke and navy sleeves,
+would keep its dark blocks dark under any fill. So each colour block has its
+own reference: the luminance is first divided by its block's, and a fill
+covers the whole hoodie evenly, with a thin dark seam where the blocks meet.
+A strong print in the original fabric still shows through a new fill, because
+the detail layer carries it (`Female_Party_02`'s diamonds, `Business_Male_05`'s
+check).
 
 **Fills.** A fill can be a colour: a name such as `navy`, `light grey` or
 `burgundy`, or `#1f2a44`. It can be a procedural pattern in two colours:
@@ -276,8 +300,14 @@ same result:
 - `light`, `dark`, `pale` and `deep` shade a colour;
 - `thin` or `large` scale a pattern, and `horizontal` or `diagonal` turn it;
 - garment words pick the region: `"red tartan jacket, white shirt and black
-  trousers"`, `"blue jeans with white trainers"`. A suit dresses the top and
-  the bottoms; a description without a garment word dresses the top.
+  trousers"`, `"blue jeans with white trainers"`, `"a white shirt under a navy
+  blazer"`. The last garment word counts (a "white dress shirt" is a shirt). A
+  suit dresses the top and the bottoms, and a fabric without a garment word
+  dresses the top, unless another part names it. After `with` a fabric tells
+  more about the garment before it (`"a white shirt with navy stripes"`);
+- parts it understands nothing of (`"please"`), or that are about details it
+  cannot dress (`"with gold buttons"`), are left out. It only gives up when it
+  understands no part at all.
 
 **Presets** (in `characters/outfit/presets.json`): business navy, charcoal
 suit, casual denim, sporty, trade-fair staff, festival, all black, highland,
@@ -286,11 +316,22 @@ clothes.
 
 **Speed** (on this project's 4-CPU Linux sandbox; the textures are 1024×1024
 unless prepared larger): labelling an avatar takes about 3 s the first time,
-and under a second from the cache. The cloth coordinates and layers take
-another 0.7 s once per avatar. After that an outfit takes 50-150 ms at 1024
-and 0.2-0.5 s at 2048 (the first one about 50 ms more per garment). Dressing a
-person again reuses their texture, and the renderer uploads the new pixels.
-[docs/previews/outfits.jpg](docs/previews/outfits.jpg) shows four avatars in
+and about 0.5 s from the cache. The cloth coordinates and layers take another
+0.6-0.9 s once per avatar. After that an outfit takes 60-200 ms at 1024 and
+0.3-0.7 s at 2048. The first outfit on an avatar also sorts out the texels of
+each garment it fills: about 50 ms a garment at 1024, 1 s in all at 2048.
+Dressing a person again reuses their texture, and the renderer uploads the new
+pixels.
+The prepared layers of the last three avatars dressed stay in memory (about
+140 MB each at 1024), so going back and forth between a few avatars costs
+only the fills.
+
+`dress()` puts the outfit on the body texture the person wears: the avatar's
+own, or one that something else gave them, such as a skin matched to a
+person's photos. The texels the outfit leaves alone keep that texture, and
+`undress()` gives it back. `dress(person, outfit, base=texture)` names another
+texture to start from.
+[docs/previews/outfits.jpg](docs/previews/outfits.jpg) shows six avatars in
 four presets and two descriptions.
 
 ## Funny faces

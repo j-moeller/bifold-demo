@@ -1,0 +1,6 @@
+{
+  "note": "The belt across the blouse is painted on the blouse, but its loose end and keeper are islands of their own that the hip bones move: they are the belt (other), not the skirt.",
+  "rules": [
+    {"region": "other", "where": {"label": "bottoms", "above": 1.0}}
+  ]
+}

@@ -13,10 +13,15 @@ Pattern words and their synonyms are in :data:`PATTERN_WORDS` (``plaid`` is tart
 ``camouflage`` camo, ``jeans`` denim, ...). The same words always give the same fill: it is the instant,
 deterministic "describe a design" (a generative model plugs in later as another :class:`~.fills.Fill`).
 
-:func:`parse_outfit` reads a whole outfit, split at commas, ``;``, ``with`` and ``and`` between garments:
-``"red tartan jacket, white shirt and black trousers"``. Garment words name the region (:data:`GARMENT_WORDS`); a
-part without one dresses the top, a suit dresses the top and the bottoms. A garment word may imply a fabric (``jeans``
-are denim). Words it does not know are left out, so ``"a nice navy pinstripe suit, please"`` still works.
+:func:`parse_outfit` reads a whole outfit, split into parts at commas, ``;``, ``with``, layer words (``over``,
+``under``) and ``and`` between garments: ``"red tartan jacket, white shirt and black trousers"``, ``"a white shirt
+under a navy blazer"``. A garment word names the region of its part (:data:`GARMENT_WORDS`; the last one, as in ``"a
+white dress shirt"``), a suit dresses the top and the bottoms, and a garment word may imply a fabric (``jeans`` are
+denim). A part without a garment word dresses the top, unless another part names the top; after ``with`` it tells
+more about the garment before it (``"a white shirt with navy stripes"``). Words it does not know are left out, and so
+are parts it understands nothing of (``"please"``) or that are about details it cannot dress (:data:`DETAIL_WORDS`:
+``"with gold buttons"``): ``"a nice navy pinstripe suit, please"`` works. It raises ``ValueError`` only when it
+understands no part at all.
 """
 
 from __future__ import annotations
@@ -61,6 +66,10 @@ GARMENT_WORDS = {
     "other": ("belt", "tie", "trims", "trim", "details"),
 }
 _IMPLIED = {"jeans": "denim"}
+DETAIL_WORDS = {"button", "buttons", "pocket", "pockets", "zip", "zips", "zipper", "zippers", "logo", "logos", "lapel",
+                "lapels", "lining", "sleeve", "sleeves", "cuff", "cuffs", "hood", "patch", "patches", "badge", "badges",
+                "embroidery", "lettering", "stitching"}  # (not "print": "a red floral print dress" is a fabric)
+SEPARATORS = r"[,;&+]|\b(?:with|over|under|underneath|beneath|plus)\b"
 
 
 def _tokens(text: str) -> list[str]:
@@ -136,42 +145,69 @@ def parse_fill(text: str) -> Fill:
 
 
 def _garment(words: list[str]) -> tuple[str | None, list[str]]:
-    """The region a phrase names, and the phrase without the garment word (but with a fabric it implies)."""
+    """The region a phrase names, and the phrase without that garment word (but with a fabric it implies). The last
+    garment word names it, the longer one when two end together: a "dress shirt" is a shirt, a "t shirt" a top; the
+    other garment words stay with the fabric ("jeans jacket": a jacket of denim)."""
+    best = None  # (end, length, region, start, name)
     for region, names in GARMENT_WORDS.items():
-        for name in sorted(names, key=lambda n: -len(n.split())):
+        for name in names:
             parts = name.split()
             for k in range(len(words) - len(parts) + 1):
-                if words[k:k + len(parts)] == parts:
-                    rest = words[:k] + words[k + len(parts):]
-                    if name in _IMPLIED and _IMPLIED[name] not in rest:
-                        rest.append(_IMPLIED[name])
-                    return region, rest
-    return None, words
+                if words[k:k + len(parts)] == parts and (best is None or (k + len(parts), len(parts)) > best[:2]):
+                    best = (k + len(parts), len(parts), region, k, name)
+    if best is None:
+        return None, words
+    end, _, region, start, name = best
+    rest = words[:start] + words[end:]
+    if name in _IMPLIED and _IMPLIED[name] not in rest:
+        rest.append(_IMPLIED[name])
+    return region, rest
+
+
+def _pieces(text: str) -> list[tuple[list[str], str | None]]:
+    """The parts of a description of an outfit: ``(words, the separator before it)``."""
+    pieces = []
+    split = re.split(f"({SEPARATORS})", text.lower())
+    for k in range(0, len(split), 2):
+        before = split[k - 1].strip() if k else None
+        words = _tokens(split[k])
+        # "and" between two garments splits them; "black and white stripes" stays one fabric
+        current = []
+        for i, word in enumerate(words):
+            if word == "and" and _garment(current)[0] is not None and _garment(words[i + 1:])[0] is not None:
+                pieces.append((current, before))
+                current, before = [], "and"
+            else:
+                current.append(word)
+        if current:
+            pieces.append((current, before))
+    return pieces
 
 
 def parse_outfit(text: str) -> dict[str, Fill]:
     """``{region: fill}`` from a description of an outfit (see the module docs)."""
-    pieces = []
-    for part in re.split(r"[,;]|\bwith\b|\bover\b", text.lower()):
-        words = _tokens(part)
-        # "and" between two garments splits them; "black and white stripes" stays one fabric
-        current = []
-        for k, word in enumerate(words):
-            if word == "and" and _garment(current)[0] is not None and _garment(words[k + 1:])[0] is not None:
-                pieces.append(current)
-                current = []
-            else:
-                current.append(word)
-        if current:
-            pieces.append(current)
     out: dict[str, Fill] = {}
-    for words in pieces:
+    loose: list[Fill] = []  # fabrics without a garment: the top's, unless a part names the top
+    previous = None  # (region, fabric words) of the last part that named a garment
+    for words, before in _pieces(text):
+        if DETAIL_WORDS.intersection(words):
+            continue  # "with gold buttons": a detail it cannot dress
         region, rest = _garment(words)
-        if not rest:
+        if region is None and before == "with" and previous is not None:
+            region, rest = previous[0], previous[1] + rest  # "a white shirt with navy stripes"
+        try:
+            fill = parse_fill(" ".join(rest))
+        except ValueError:
+            continue  # nothing it knows: "please", "a jacket"
+        if region is None:
+            loose.append(fill)
             continue
-        fill = parse_fill(" ".join(rest))
-        for name in ("top", "bottoms") if region == "suit" else (region or "top",):
+        for name in ("top", "bottoms") if region == "suit" else (region,):
             out[name] = fill
+        previous = (region, rest)
+    if loose and "top" not in out:
+        out["top"] = loose[0]
     if not out:
-        raise ValueError(f"cannot make an outfit of {text!r}")
+        raise ValueError(f"cannot make an outfit of {text!r}: no colour or pattern I know "
+                         f"(patterns: {', '.join(patterns.PATTERNS)}; colours like {', '.join(list(COLORS)[:8])})")
     return out

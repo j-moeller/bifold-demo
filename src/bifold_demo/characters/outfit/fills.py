@@ -13,13 +13,18 @@ detail of the avatar's own texture back on top, so it does not matter to a fill 
 * :class:`Atlas`: colours already laid out in the texture atlas (the avatar's own albedo, or a painted texture).
 * :class:`Keep`: leaves the region as the avatar has it.
 
+Images (a swatch, an atlas) may be a path, an RGB(A) or grey array (``uint8``, ``uint16``, or floats in 0-1 or 0-255,
+as an image pipeline gives them) or a PIL image.
+
 A tiled fill is filtered like a mipmap: each texel reads the tile at the level where one tile pixel is about one
 texel on the body, so pinstripes finer than a texel blend into their mixed colour instead of flickering.
-Fills turn into small JSON-friendly specs and back (:meth:`Fill.spec`, :func:`from_spec`), for outfit recipes.
+Fills turn into small JSON-friendly specs and back (:meth:`Fill.spec`, :func:`from_spec`), for outfit recipes; an
+image that came as an array is kept in its spec as a PNG ``data:`` URI.
 """
 
 from __future__ import annotations
 
+import base64
 import math
 import re
 from dataclasses import dataclass
@@ -163,11 +168,51 @@ class Solid(Fill):
         return f"Solid({self.spec()!r})"
 
 
-class Atlas(Fill):
-    """Colours already in the atlas' layout: ``rgb`` is ``(H, W, 3)`` (resized to the atlas when it differs)."""
+def image_rgb(image) -> np.ndarray:
+    """float32 RGB 0-255 ``(H, W, 3)`` of an image: a path (or a ``data:`` URI), an RGB(A) or grey array (``uint8``,
+    ``uint16``, or floats in 0-1 or in 0-255) or a PIL image."""
+    if isinstance(image, (str, Path)):
+        text = str(image)
+        if text.startswith("data:"):
+            data = cv2.imdecode(np.frombuffer(base64.b64decode(text.partition(",")[2]), np.uint8), cv2.IMREAD_COLOR)
+        else:
+            data = cv2.imread(text, cv2.IMREAD_COLOR)
+        if data is None:
+            raise FileNotFoundError(f"cannot read the image {text[:80]}")
+        return cv2.cvtColor(data, cv2.COLOR_BGR2RGB).astype(np.float32)
+    a = np.asarray(image.convert("RGB") if hasattr(image, "convert") and hasattr(image, "size") else image)
+    if a.ndim == 2:
+        a = a[..., None]
+    if a.ndim != 3 or a.shape[2] not in (1, 2, 3, 4) or a.size == 0:
+        raise ValueError(f"an image is (H, W), (H, W, 3) or (H, W, 4), not {a.shape}")
+    a = np.repeat(a[..., :1], 3, axis=2) if a.shape[2] < 3 else a[..., :3]
+    if a.dtype == np.uint16:
+        return a.astype(np.float32) / 257.0
+    rgb = a.astype(np.float32)
+    if a.dtype.kind == "f" and float(np.nanmax(rgb)) <= 1.0:
+        rgb *= 255.0  # a float image in 0-1
+    return np.clip(np.nan_to_num(rgb), 0.0, 255.0)
 
-    def __init__(self, rgb: np.ndarray, name: str = "atlas"):
-        self.rgb = np.asarray(rgb, np.float32)
+
+def data_uri(rgb: np.ndarray) -> str:
+    """A PNG ``data:`` URI of an RGB 0-255 image (see :func:`image_rgb`)."""
+    ok, png = cv2.imencode(".png", cv2.cvtColor(np.clip(rgb + 0.5, 0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR))
+    if not ok:
+        raise ValueError("cannot encode the image")
+    return "data:image/png;base64," + base64.b64encode(png.tobytes()).decode("ascii")
+
+
+class Atlas(Fill):
+    """Colours already in the atlas' layout: ``image`` (see :func:`image_rgb`) is resized to the atlas when it differs.
+    Its spec names the file it came from, or holds the image (``uint8``: values beyond 0-255 are clipped there)."""
+
+    def __init__(self, image, name: str = "atlas"):
+        self.source = str(image) if isinstance(image, (str, Path)) else None
+        if isinstance(image, np.ndarray) and image.dtype.kind == "f" and image.ndim == 3 and image.shape[2] >= 3 \
+                and np.nanmax(image) > 1.0:
+            self.rgb = image[..., :3].astype(np.float32)  # colours in 0-255 (an albedo may go past 255)
+        else:
+            self.rgb = image_rgb(image)
         self.name = name
 
     def colors(self, where: Where) -> np.ndarray:
@@ -177,22 +222,21 @@ class Atlas(Fill):
         return rgb[where.rows, where.cols, :3]
 
     def spec(self):
-        return {"atlas": self.name}
+        return {"atlas": self.source if self.source is not None else data_uri(self.rgb)}
+
+    def __repr__(self) -> str:
+        return f"Atlas({self.name!r}, {self.rgb.shape[1]}x{self.rgb.shape[0]})"
 
 
 class Swatch(Fill):
-    """An image of fabric (``image``: a path, or an RGB ``uint8``/float array), tiled over the cloth at ``scale`` metres
-    per repeat (its width), turned by ``rotation`` degrees. ``seamless=False`` mirrors the image at its edges so a
-    swatch that does not tile shows no hard seams (at the price of a mirror symmetry)."""
+    """An image of fabric (``image``: a path or an array, see :func:`image_rgb`), tiled over the cloth at ``scale``
+    metres per repeat (its width), turned by ``rotation`` degrees. ``seamless=False`` mirrors the image at its edges
+    so a swatch that does not tile shows no hard seams (at the price of a mirror symmetry). :attr:`image` is the
+    image as RGB 0-255; the spec names its file, or holds it (a PNG ``data:`` URI) when it came as an array."""
 
     def __init__(self, image, scale: float = 0.25, rotation: float = 0.0, seamless: bool = True):
-        self.source = image if isinstance(image, (str, Path)) else None
-        if self.source is not None:
-            data = cv2.imread(str(image), cv2.IMREAD_COLOR)
-            if data is None:
-                raise FileNotFoundError(f"cannot read the swatch {image}")
-            image = cv2.cvtColor(data, cv2.COLOR_BGR2RGB)
-        rgb = np.asarray(image, np.float32)[..., :3]
+        self.source = str(image) if isinstance(image, (str, Path)) else None
+        rgb = self.image = image_rgb(image)
         if not seamless:
             rgb = np.concatenate([rgb, rgb[:, ::-1]], axis=1)
             rgb = np.concatenate([rgb, rgb[::-1]], axis=0)
@@ -205,7 +249,7 @@ class Swatch(Fill):
         return _sample(self._levels, where.uv, where.footprint, self.scale, self.rotation)
 
     def spec(self):
-        out = {"swatch": str(self.source) if self.source is not None else "image", "scale": self.scale}
+        out = {"swatch": self.source if self.source is not None else data_uri(self.image), "scale": self.scale}
         if self.rotation:
             out["rotation"] = self.rotation
         if not self.seamless:
@@ -227,7 +271,8 @@ class Pattern(Swatch):
         self.scale = float(scale) if scale is not None else patterns.PATTERNS[kind][1]
         self.rotation = float(rotation)
         self.source, self.seamless = None, True
-        self._levels = _pyramid(patterns.tile(kind, self.primary, self.secondary))
+        self.image = patterns.tile(kind, self.primary, self.secondary)
+        self._levels = _pyramid(self.image)
 
     def spec(self):
         out = {"pattern": self.kind, "colors": [hex_color(self.primary), hex_color(self.secondary)],
@@ -244,8 +289,8 @@ class Pattern(Swatch):
 def from_spec(spec) -> Fill:
     """A fill from a spec: a :class:`Fill`, ``"keep"``, a colour (name, hex, ``[r, g, b]``), a short description
     (``"navy pinstripe"``, see :func:`.prompts.parse_fill`), or a dict: ``{"color": ...}``,
-    ``{"pattern": "tartan", "colors": ["red", "navy"], "scale": 0.15, "rotation": 45}`` or
-    ``{"swatch": "fabric.png", "scale": 0.2}``."""
+    ``{"pattern": "tartan", "colors": ["red", "navy"], "scale": 0.15, "rotation": 45}``,
+    ``{"swatch": "fabric.png", "scale": 0.2}`` (a path or a ``data:`` URI) or ``{"atlas": "painted.png"}``."""
     if isinstance(spec, Fill):
         return spec
     if isinstance(spec, dict):
@@ -258,6 +303,8 @@ def from_spec(spec) -> Fill:
         if "swatch" in spec:
             return Swatch(spec["swatch"], spec.get("scale", 0.25), spec.get("rotation", 0.0),
                           spec.get("seamless", True))
+        if "atlas" in spec:
+            return Atlas(spec["atlas"])
         if "prompt" in spec:
             from .prompts import parse_fill
 
