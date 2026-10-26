@@ -165,6 +165,28 @@ def test_unknown_poses_and_skeletons_are_refused(body):
         yoga.Body(other)
 
 
+def test_cow_hollows_the_back_on_hands_and_knees(body):
+    spec = yoga.POSES["cow"]
+    steps = spec.steps(body)
+    table = yoga.settle(body, steps[spec.main - 1].pose)
+    cow = yoga.settle(body, steps[spec.main].pose)
+    shapes = []
+    for pose in (table, cow):
+        _, glob = yoga.solve(body, pose)
+        left = body.sides["left"]
+        hips, chest = glob[body.root, :3, 3], glob[body.spine[2], :3, 3]
+        shoulder, wrist = glob[left["upper"], :3, 3], glob[left["hand"], :3, 3]
+        knee, hip_joint = glob[left["calf"], :3, 3], glob[left["thigh"], :3, 3]
+        assert abs(wrist[2] - shoulder[2]) < 0.12 and shoulder[1] > wrist[1] + 0.8 * body.arm  # arms under the shoulders
+        assert abs(knee[2] - hip_joint[2]) < 0.15 and hip_joint[1] > knee[1] + 0.8 * left["thigh_length"]  # thighs up
+        middle = glob[body.spine[1], :3, 3]  # how far the middle of the back sags below the hips-chest line
+        line = hips + (chest - hips) * np.dot(middle - hips, chest - hips) / np.dot(chest - hips, chest - hips)
+        shapes.append((line[1] - middle[1], glob[body.head, :3, :3] @ (0, 1, 0)))
+    assert shapes[1][0] > shapes[0][0] + 0.01  # the belly sinks
+    assert np.allclose(table.left_arm.target, cow.left_arm.target) and table.knees_down and cow.knees_down
+    assert np.isclose(cow.left_arm.target[1], table.left_arm.target[1])
+
+
 def test_yogi_squat_is_deep_with_wide_knees_and_palms_together(body):
     pose = yoga.settle(body, yoga.POSES["yogi_squat"].steps(body)[1].pose)
     _, glob = yoga.solve(body, pose)
@@ -220,5 +242,10 @@ def test_real_avatars_do_every_pose_on_the_floor(name):
             if getattr(pose, limb).contact:
                 side = limb.split("_")[0]
                 group = body.hand_group(side) if limb.endswith("arm") else body.foot_group(side)
-                assert abs(verts[group, 1].min()) < 0.01, (avatar, limb)  # resting on the floor
+                kneeling = pose.knees_down and limb.endswith("leg") and yoga._dorsum_down(getattr(pose, limb))
+                limit = 0.025 if kneeling else 0.01  # the top of a kneeling foot can only point down so far
+                assert abs(verts[group, 1].min()) < limit, (avatar, limb)  # resting on the floor
+        if pose.knees_down:
+            for side in body.sides:
+                assert abs(verts[body.knee_group(side), 1].min()) < 0.015, (avatar, side)  # knees on the floor
         assert math.isfinite(clip.metadata["root_height"])

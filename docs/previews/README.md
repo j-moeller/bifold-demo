@@ -34,3 +34,5 @@ work goes on. The people are avatars from the
 - `yoga_yogi_squat.jpg`: the Yogi Squat (Malasana) clip on two avatars: the
   held pose from five sides, and the sequence from standing into the squat and
   back.
+- `yoga_cow.jpg`: the Cow Pose (Bitilasana) clip: down from standing to hands
+  and knees, the back hollowing with the chest and gaze lifting, and back up.

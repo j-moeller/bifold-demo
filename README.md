@@ -212,6 +212,7 @@ starting pose into the pose, holding it for two breaths, and back.
 | Pose | `yoga_clip(model, ...)` | Starts from |
 |------|-------------------------|-------------|
 | Yogi Squat (Malasana) | `"yogi_squat"` | standing |
+| Cow Pose (Bitilasana) | `"cow"` | standing, down to hands and knees (crouch, kneel with toes tucked, tabletop) |
 
 ```python
 from bifold_demo.characters.character import Character
@@ -229,7 +230,9 @@ hips are, how the pelvis, spine and head turn, where each hand and foot goes and
 which way the elbows and knees point. A solver turns that into bone rotations
 for each avatar's own skeleton, so the same pose fits a child and a tall man,
 and the hands, feet and knees that rest on the floor touch it exactly (checked
-on the skinned mesh).
+on the skinned mesh). Every clip starts and ends standing, so they can follow
+one another. Long skirts, dresses and robes are skinned to the legs: they pass
+through the floor when the person kneels.
 
 ## Generating 2D people
 

@@ -29,10 +29,10 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from .character import skin_vertices
-from .model import AnimationClip, CharacterModel, quat_from_matrix
+from .model import AnimationClip, CharacterModel, quat_from_matrix, quat_to_matrix
 
-SPINE_SHARES = (0.1, 0.45, 0.45)  # how a spine bend is spread over Spine, Spine1 and Spine2 (the thighs hang from Spine)
 BREATH = 4.5  # seconds per breath while holding a pose
+HAND_REACH = 0.95  # arms on the floor reach this share of their length (straight, the elbows soft, room to breathe)
 FPS = 15.0  # frames per second of the clips (they are interpolated when played)
 
 
@@ -46,7 +46,8 @@ class Limb:
     ``target``: the wrist or ankle joint. ``pole``: the direction the elbow or knee points (only its part across
     the limb counts). ``forward``: where the fingers or toes point; ``up``: the back of the hand or the top of the
     foot. ``contact``: the hand or foot rests on the floor (:func:`settle` moves the target until it just touches).
-    ``shrug``: arms only, the shoulder raised by that many degrees (arms overhead).
+    ``shrug``: arms only, the shoulder raised by that many degrees (arms overhead). ``toes``: legs only, the toes bent
+    up towards the top of the foot by that many degrees (tucked under when kneeling).
     """
 
     target: tuple
@@ -55,6 +56,7 @@ class Limb:
     up: tuple
     contact: bool = False
     shrug: float = 0.0
+    toes: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,7 @@ class BodyPose:
     head: tuple = (0.0, 0.0, 0.0)  # relative to the chest
     knees_down: bool = False  # both knees rest on the floor (settle moves the hips until they do)
     flat_hands: bool = False  # fingers straight, as when the palms are on the floor
+    spine_shares: tuple = (0.1, 0.45, 0.45)  # how ``spine`` is spread over Spine, Spine1 and Spine2
 
 
 def _lerp(a, b, w):
@@ -83,12 +86,27 @@ def _direction_lerp(a, b, w):
     return tuple(v / n) if n > 1e-6 else tuple(np.asarray(b, float))
 
 
+def _slerp(a: np.ndarray, b: np.ndarray, w: float) -> np.ndarray:
+    """Rotation ``w`` of the way from 3x3 ``a`` to ``b`` (the shorter way)."""
+    qa, qb = quat_from_matrix(a), quat_from_matrix(b)
+    dot = float(np.dot(qa, qb))
+    if dot < 0:
+        qb, dot = -qb, -dot
+    if dot > 0.9995:
+        q = qa + (qb - qa) * w
+    else:
+        angle = math.acos(min(dot, 1.0))
+        q = (math.sin((1 - w) * angle) * qa + math.sin(w * angle) * qb) / math.sin(angle)
+    return quat_to_matrix(q / np.linalg.norm(q))
+
+
 def _limb_blend(a: Limb, b: Limb, w: float, lift: float = 0.0) -> Limb:
     target = _lerp(a.target, b.target, w)
     if lift:  # a step: the foot or hand rises on the way
         target = (target[0], target[1] + lift * math.sin(math.pi * w), target[2])
-    return Limb(target, _direction_lerp(a.pole, b.pole, w), _direction_lerp(a.forward, b.forward, w),
-                _direction_lerp(a.up, b.up, w), a.contact if w < 0.5 else b.contact, a.shrug + (b.shrug - a.shrug) * w)
+    turn = _slerp(_frame(a.forward, a.up), _frame(b.forward, b.up), w)  # the hand or foot turns smoothly
+    return Limb(target, _direction_lerp(a.pole, b.pole, w), tuple(turn[:, 0]), tuple(turn[:, 1]),
+                a.contact if w < 0.5 else b.contact, a.shrug + (b.shrug - a.shrug) * w, a.toes + (b.toes - a.toes) * w)
 
 
 def blend(a: BodyPose, b: BodyPose, w: float, lift: dict | None = None) -> BodyPose:
@@ -97,7 +115,8 @@ def blend(a: BodyPose, b: BodyPose, w: float, lift: dict | None = None) -> BodyP
     limbs = {name: _limb_blend(getattr(a, name), getattr(b, name), w, lift.get(name, 0.0)) for name in LIMBS}
     return BodyPose(_lerp(a.root, b.root, w), pelvis=_lerp(a.pelvis, b.pelvis, w), spine=_lerp(a.spine, b.spine, w),
                     head=_lerp(a.head, b.head, w), knees_down=a.knees_down if w < 0.5 else b.knees_down,
-                    flat_hands=a.flat_hands if w < 0.5 else b.flat_hands, **limbs)
+                    flat_hands=a.flat_hands if w < 0.5 else b.flat_hands,
+                    spine_shares=_lerp(a.spine_shares, b.spine_shares, w), **limbs)
 
 
 LIMBS = ("left_arm", "right_arm", "left_leg", "right_leg")
@@ -121,15 +140,20 @@ def turn(pitch: float = 0.0, yaw: float = 0.0, roll: float = 0.0) -> np.ndarray:
     return axis_rotation((0, 1, 0), yaw) @ axis_rotation((1, 0, 0), pitch) @ axis_rotation((0, 0, 1), roll)
 
 
+def _cross(a, b) -> np.ndarray:  # np.cross is slow for single 3-vectors
+    return np.array([a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]])
+
+
 def _unit(v) -> np.ndarray:
     v = np.asarray(v, float)
-    return v / max(np.linalg.norm(v), 1e-12)
+    return v / max(math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]), 1e-12)
 
 
 def _across(v, axis) -> np.ndarray | None:
     """The part of ``v`` across ``axis`` (unit), or None when ``v`` lies along it."""
-    v = np.asarray(v, float) - np.dot(v, axis) * axis
-    n = np.linalg.norm(v)
+    v = np.asarray(v, float)
+    v = v - (v[0] * axis[0] + v[1] * axis[1] + v[2] * axis[2]) * axis
+    n = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
     return v / n if n > 1e-6 else None
 
 
@@ -139,14 +163,16 @@ def _frame(main, second) -> np.ndarray:
     v = _across(second, u)
     if v is None:
         v = _across((0, 0, 1) if abs(u[2]) < 0.9 else (1, 0, 0), u)
-    return np.column_stack([u, v, np.cross(u, v)])
+    frame = np.empty((3, 3))
+    frame[:, 0], frame[:, 1], frame[:, 2] = u, v, _cross(u, v)
+    return frame
 
 
 def _align(a, b) -> np.ndarray:
     """The smallest rotation that turns direction ``a`` into direction ``b``."""
     a, b = _unit(a), _unit(b)
-    axis = np.cross(a, b)
-    s, c = np.linalg.norm(axis), float(np.dot(a, b))
+    axis = _cross(a, b)
+    s, c = math.sqrt(float(axis @ axis)), float(a @ b)
     if s < 1e-9:
         return np.eye(3) if c > 0 else axis_rotation(_across((1, 0, 0), a) if abs(a[0]) < 0.9 else (0, 1, 0), 180.0)
     return axis_rotation(axis / s, math.degrees(math.atan2(s, c)))
@@ -192,6 +218,7 @@ class Body:
         joints = np.concatenate([p.joints for p in model.primitives]).astype(np.int64)
         weights = np.concatenate([p.weights for p in model.primitives])
         self.owner = joints[np.arange(len(joints)), weights.argmax(axis=1)]
+        self.skin_joints, self.skin_weights = joints, weights.astype(np.float64)
         self.floor = float(self.vertices[:, 1].min())  # where the soles are in the rest pose
         pos = self.rest_pos
         for side in self.sides.values():
@@ -214,6 +241,8 @@ class Body:
             bend = _across(elbow - shoulder, _unit(wrist - shoulder))
             side["arm_bend"] = bend if bend is not None else np.array([0.0, 0.0, -1.0])
             side["leg_bend"] = np.array([0.0, 0.0, 1.0])  # the rest legs are straight: knees point forward
+        self.finger_tips = {chain[-1]: [c for c in sk.descendants(chain[-1]) if c != chain[-1]]
+                            for side in self.sides.values() for chain in side["fingers"] if chain}
         left, right = self.sides["left"], self.sides["right"]
         self.leg = 0.5 * (left["thigh_length"] + left["shin_length"] + right["thigh_length"] + right["shin_length"])
         self.arm = 0.5 * (left["upper_length"] + left["fore_length"] + right["upper_length"] + right["fore_length"])
@@ -241,9 +270,23 @@ class Body:
         return self.group(s["foot"], s["toe"])
 
     def knee_group(self, side: str) -> np.ndarray:
+        """The knee (what rests on the floor when kneeling on the toes)."""
         s = self.sides[side]
-        near = np.linalg.norm(self.vertices - self.rest_pos[s["calf"]], axis=1) < 0.09
-        return np.intersect1d(self.group(s["calf"], s["thigh"]), np.nonzero(near)[0])
+        leg = self.group(s["calf"], s["thigh"])
+        distance = np.linalg.norm(self.vertices[leg] - self.rest_pos[s["calf"]], axis=1)
+        near = leg[distance < 0.09]
+        return near if len(near) >= 20 else leg[np.argsort(distance)[:40]]  # coarse meshes: the closest ones
+
+    def shin_group(self, side: str) -> np.ndarray:
+        """The knee and the shin (what rests on the floor when kneeling on the tops of the feet): the lower leg's
+        vertices near the bone, so that a skirt or dress hem does not count."""
+        s = self.sides[side]
+        knee, ankle = self.rest_pos[s["calf"]], self.rest_pos[s["foot"]]
+        calf = self.group(s["calf"])
+        axis = _unit(ankle - knee)
+        along = np.clip((self.vertices[calf] - knee) @ axis, 0.0, float(np.linalg.norm(ankle - knee)))
+        off = np.linalg.norm(self.vertices[calf] - (knee + along[:, None] * axis), axis=1)
+        return np.union1d(calf[off < 0.075], self.knee_group(side))
 
 
 # -- solving -------------------------------------------------------------------------------------------
@@ -275,7 +318,7 @@ def solve(body: Body, pose: BodyPose) -> tuple[np.ndarray, np.ndarray]:
     pelvis = turn(*pose.pelvis)
     chest = pelvis.copy()
     special: dict[int, np.ndarray] = {body.root: pelvis @ body.rest_rot[body.root]}
-    for bone, share in zip(body.spine, SPINE_SHARES):
+    for bone, share in zip(body.spine, pose.spine_shares):  # (the thighs hang from Spine: keep its share small)
         chest = chest @ turn(*(share * np.asarray(pose.spine, float)))
         special[bone] = chest @ body.rest_rot[bone]
     special[body.neck] = chest @ body.rest_rot[body.neck]  # the clavicles hang from the neck: it follows the chest
@@ -285,10 +328,14 @@ def solve(body: Body, pose: BodyPose) -> tuple[np.ndarray, np.ndarray]:
         shrug = limbs[side][0].shrug
         special[s["clavicle"]] = chest @ axis_rotation((0, 0, 1), s["sign"] * shrug) @ body.rest_rot[s["clavicle"]]
     ik: dict[int, tuple] = {}
+    toes: dict[int, np.ndarray] = {}
     for side, s in body.sides.items():
         arm, leg = limbs[side]
         ik[s["upper"]] = ("arm", side, arm)
         ik[s["thigh"]] = ("leg", side, leg)
+        if leg.toes and s["toe"] is not None:  # bent about the foot's left-right axis, towards its top
+            axis = _cross(_unit(leg.forward), _across(leg.up, _unit(leg.forward)))
+            toes[s["toe"]] = axis_rotation(axis, leg.toes)
     done: set[int] = set()
     for b in range(n):
         parent = sk.parents[b]
@@ -323,23 +370,21 @@ def solve(body: Body, pose: BodyPose) -> tuple[np.ndarray, np.ndarray]:
             continue
         else:
             G[b] = G[parent] @ body.local_rot[b]
+            if b in toes:
+                G[b] = toes[b] @ G[b]
     if pose.flat_hands:  # every finger but the thumb straight along the hand
         for side, s in body.sides.items():
             hand_dir = G[s["hand"]] @ body.rest_rot[s["hand"]].T @ s["hand_forward"]
             for chain in s["fingers"][1:]:
-                for b in chain:
-                    child = [c for c in sk.children(b)]
-                    if child:
-                        now = G[b] @ body.rest_rot[b].T @ (body.rest_pos[child[0]] - body.rest_pos[b])
+                for k, b in enumerate(chain):  # each joint follows the one before, then is turned straight
+                    G[b] = G[sk.parents[b]] @ body.local_rot[b]
+                    if k + 1 < len(chain):
+                        now = G[b] @ body.rest_rot[b].T @ (body.rest_pos[chain[k + 1]] - body.rest_pos[b])
                         G[b] = _align(now, hand_dir) @ G[b]
-                    else:
-                        G[b] = G[sk.parents[b]] @ body.local_rot[b]
-                    for c in sk.descendants(b):
-                        if c != b:
-                            G[c] = G[sk.parents[c]] @ body.local_rot[c]
-        for b in range(n):  # positions again below the hands
-            if sk.parents[b] >= 0:
-                P[b] = P[sk.parents[b]] + G[sk.parents[b]] @ body.local_t[b]
+                    P[b] = P[sk.parents[b]] + G[sk.parents[b]] @ body.local_t[b]
+                for c in body.finger_tips.get(chain[-1], ()):  # finger nubs, if any
+                    G[c] = G[sk.parents[c]] @ body.local_rot[c]
+                    P[c] = P[sk.parents[c]] + G[sk.parents[c]] @ body.local_t[c]
     glob = np.zeros((n, 4, 4))
     glob[:, :3, :3], glob[:, :3, 3], glob[:, 3, 3] = G, P, 1.0
     local = np.zeros((n, 4, 4))
@@ -351,33 +396,78 @@ def solve(body: Body, pose: BodyPose) -> tuple[np.ndarray, np.ndarray]:
     return local, glob
 
 
-def skin(body: Body, glob: np.ndarray) -> np.ndarray:
-    """All mesh vertices of ``body`` posed by the global transforms ``glob``."""
-    return np.concatenate(skin_vertices(body.model, body.model.skinning_matrices(glob)))
+def skin(body: Body, glob: np.ndarray, vertices: np.ndarray | None = None) -> np.ndarray:
+    """The mesh vertices of ``body`` (all, or those numbered in ``vertices``) posed by the global transforms ``glob``."""
+    if vertices is None:
+        return np.concatenate(skin_vertices(body.model, body.model.skinning_matrices(glob)))
+    palette = body.model.skinning_matrices(glob)
+    m = np.einsum("nk,nkij->nij", body.skin_weights[vertices], palette[body.skin_joints[vertices]])
+    return np.einsum("nij,nj->ni", m[:, :3, :3], body.vertices[vertices]) + m[:, :3, 3]
+
+
+def _dorsum_down(limb: Limb) -> bool:
+    """Whether the top of the foot faces the floor (kneeling with the shins down)."""
+    return limb.up[1] < -0.5
 
 
 def settle(body: Body, pose: BodyPose, rounds: int = 4) -> BodyPose:
-    """``pose`` with its contacts on the floor: each ``contact`` hand or foot moved up or down until its lowest
-    vertex is at y = 0, and with ``knees_down`` the hips until the lower knee touches."""
+    """``pose`` with its contacts on the floor: each ``contact`` hand or foot is moved up or down until its lowest
+    vertex is at y = 0. With ``knees_down`` the hips move until the knees touch; a leg kneeling on the top of the
+    foot moves with them as a whole (hips and ankle together) until the lowest point of its knee, shin or foot
+    touches, and its foot then points its toes down until the top of the foot rests on the floor."""
+    groups = {f"{side}_{part}": getter(side) for side in body.sides
+              for part, getter in (("hand", body.hand_group), ("foot", body.foot_group), ("knee", body.knee_group),
+                                   ("shin", body.shin_group))}
+    used = np.unique(np.concatenate(list(groups.values())))
+    where = {name: np.searchsorted(used, group) for name, group in groups.items()}  # positions within ``used``
     for _ in range(rounds):
-        verts = skin(body, solve(body, pose)[1])
+        verts = skin(body, solve(body, pose)[1], used)
         changes, largest = {}, 0.0
+
+        def moved(limb, dy):
+            return replace(limb, target=(limb.target[0], limb.target[1] + dy, limb.target[2]))
+
+        shins = {f"{side}_leg" for side in body.sides if pose.knees_down and _dorsum_down(getattr(pose, f"{side}_leg"))}
         for name in LIMBS:
             limb = getattr(pose, name)
-            if limb.contact:
+            if limb.contact and name not in shins:
                 side = name.split("_")[0]
-                group = body.hand_group(side) if name.endswith("arm") else body.foot_group(side)
-                dy = -float(verts[group, 1].min())
-                changes[name] = replace(limb, target=(limb.target[0], limb.target[1] + dy, limb.target[2]))
+                dy = -float(verts[where[f"{side}_{'hand' if name.endswith('arm') else 'foot'}"], 1].min())
+                changes[name] = moved(limb, dy)
                 largest = max(largest, abs(dy))
         root = pose.root
         if pose.knees_down:
-            dy = -min(float(verts[body.knee_group(side), 1].min()) for side in body.sides)
+            touching = [np.concatenate([where[f"{side}_shin"], where[f"{side}_foot"]]) if f"{side}_leg" in shins
+                        else where[f"{side}_knee"] for side in body.sides]
+            dy = -float(verts[np.concatenate(touching), 1].min())
             root = (root[0], root[1] + dy, root[2])
+            changes.update({name: moved(getattr(pose, name), dy) for name in shins})
             largest = max(largest, abs(dy))
         pose = replace(pose, root=root, **changes)
+        if shins:
+            pose = _rest_feet(body, pose, shins)
         if largest < 2e-4:
             break
+    return pose
+
+
+def _rest_feet(body: Body, pose: BodyPose, legs, most: float = 58.0) -> BodyPose:
+    """Kneeling ``legs`` point their toes further down (at most ``most`` degrees in all) until the foot touches."""
+    for name in sorted(legs):
+        side = name.split("_")[0]
+        limb = getattr(pose, name)
+        down = np.array([0.0, -1.0, 0.0])
+        axis = _across(_cross(limb.forward, down), _unit(limb.forward))
+        if axis is None:
+            continue
+        tilted = math.degrees(math.acos(min(1.0, max(-1.0, -float(_unit(limb.up)[1])))))  # already, from flat
+        foot = body.foot_group(side)
+        for angle in np.arange(0.0, max(0.0, most - tilted) + 1e-9, 2.5):
+            r = axis_rotation(axis, angle)
+            tried = replace(limb, forward=tuple(r @ limb.forward), up=tuple(r @ limb.up))
+            if skin(body, solve(body, replace(pose, **{name: tried}))[1], foot)[:, 1].min() <= 0.003:
+                break
+        pose = replace(pose, **{name: tried})
     return pose
 
 
@@ -532,6 +622,134 @@ def _yogi_squat_steps(body: Body) -> list[Step]:
     return [Step(stand, hold=1.5, breathe=False), Step(squat, seconds=3.0, hold=8.0), Step(stand, seconds=3.0)]
 
 
+def _shoulders(body: Body, pose: BodyPose) -> np.ndarray:
+    """The point between the shoulder joints in ``pose``."""
+    _, glob = solve(body, pose)
+    return 0.5 * (glob[body.sides["left"]["upper"], :3, 3] + glob[body.sides["right"]["upper"], :3, 3])
+
+
+def _pitch_for_shoulders(body: Body, pose: BodyPose, height: float, low: float = 40.0, high: float = 130.0) -> float:
+    """The pelvis pitch (degrees, forward) that puts the shoulders of ``pose`` at ``height`` above the floor."""
+    def at(pitch):
+        return _shoulders(body, replace(pose, pelvis=(pitch, *pose.pelvis[1:])))[1] - height
+
+    if at(low) * at(high) > 0:  # out of range: whichever end comes closer
+        return low if abs(at(low)) < abs(at(high)) else high
+    for _ in range(30):
+        middle = 0.5 * (low + high)
+        if at(low) * at(middle) <= 0:
+            high = middle
+        else:
+            low = middle
+    return 0.5 * (low + high)
+
+
+def _hands_down(body: Body, shoulders: np.ndarray, ahead: float = 0.0, width: float = 1.0) -> dict:
+    """Both hands flat on the floor below ``shoulders`` (plus ``ahead`` metres), fingers forward, elbows back."""
+    arms = {}
+    for side, s in body.sides.items():
+        x = shoulders[0] + s["sign"] * 0.5 * body.shoulder_width * width
+        arms[f"{side}_arm"] = Limb((x, 0.05, shoulders[2] + ahead), (s["sign"] * 0.25, 0.0, -1.0), (0.0, 0.0, 1.0),
+                                   (0.0, 1.0, 0.0), contact=True)
+    return arms
+
+
+def _shin_down(body: Body, side: str, knee_z: float) -> Limb:
+    """A kneeling leg: the knee at ``knee_z`` below the hip, the shin and the top of the foot on the floor."""
+    s = body.sides[side]
+    return Limb((s["sign"] * 0.5 * body.hip_width, 0.06, knee_z - s["shin_length"]), (0.0, -1.0, 0.25),
+                (0.0, 0.0, -1.0), (0.0, -1.0, 0.0), contact=True)
+
+
+def _toes_tucked(body: Body, side: str, ankle_z: float) -> Limb:
+    """A kneeling leg on the ball of the foot: the foot upright behind the knee, the toes bent forward on the floor."""
+    s = body.sides[side]
+    return Limb((s["sign"] * 0.5 * body.hip_width, 0.16, ankle_z), (0.0, -1.0, 0.25), (0.0, -0.96, -0.28),
+                (0.0, -0.28, 0.96), contact=True, toes=70.0)
+
+
+def table_knees(body: Body) -> float:
+    """Where the knees go on hands and knees: the feet (tops down) end up where they stand."""
+    return float(body.rest_pos[body.sides["left"]["foot"], 2]) + body.sides["left"]["shin_length"]
+
+
+def _reach_floor(body: Body, pose: BodyPose, ahead: float = 0.0, low: float = 40.0, high: float = 150.0) -> BodyPose:
+    """``pose`` leaning (pelvis pitch) until straight arms reach the floor, the hands flat below the shoulders."""
+    pose = replace(pose, pelvis=(_pitch_for_shoulders(body, pose, HAND_REACH * body.arm + 0.05, low, high), 0.0, 0.0),
+                   flat_hands=True)
+    return replace(pose, **_hands_down(body, _shoulders(body, pose), ahead=ahead))
+
+
+def tabletop(body: Body, spine=(0.0, 0.0, 0.0), head=(-12.0, 0.0, 0.0), shares=(0.1, 0.45, 0.45),
+             tucked: bool = False, hips_back: float = 0.0) -> BodyPose:
+    """On hands and knees: knees under the hips, hands under the shoulders, the back flat (or bent by ``spine``);
+    ``tucked``: on the balls of the feet instead of the tops; ``hips_back``: the hips that far behind the knees
+    (sitting back towards the heels)."""
+    stand = mountain(body)
+    knee_z = table_knees(body)
+    thigh = body.sides["left"]["thigh_length"]
+    if tucked:
+        legs = {f"{side}_leg": _toes_tucked(body, side, knee_z - 0.85 * body.sides[side]["shin_length"])
+                for side in body.sides}
+    else:
+        legs = {f"{side}_leg": _shin_down(body, side, knee_z) for side in body.sides}
+    hip_height = 0.06 + math.sqrt(max((0.97 * thigh) ** 2 - hips_back ** 2, 0.01))  # the knees on the floor
+    probe = BodyPose((0.0, hip_height + body.hip_drop, knee_z - hips_back), stand.left_arm, stand.right_arm,
+                     pelvis=(90.0, 0, 0), spine=spine, head=head, knees_down=True, flat_hands=True,
+                     spine_shares=shares, **legs)
+    probe = settle(body, probe)  # the knees, shins and feet on the floor first: that sets the hip height
+    return _reach_floor(body, probe)
+
+
+def crouch(body: Body) -> BodyPose:
+    """Half way down from standing: knees bent, the torso folded forward, the hands on the floor below the shoulders."""
+    stand = mountain(body)
+    leg = body.leg
+    root = (0.0, stand.left_leg.target[1] + 0.40 * leg, -0.12 * leg)
+    probe = replace(stand, root=root, spine=(25.0, 0, 0), head=(-15.0, 0, 0))
+    for side, s in body.sides.items():  # the knees bend forward over the toes
+        probe = replace(probe, **{f"{side}_leg": replace(getattr(probe, f"{side}_leg"), pole=(s["sign"] * 0.2, 0.0, 1.0))})
+    return _reach_floor(body, probe, ahead=0.05)
+
+
+def kneel_tucked(body: Body) -> BodyPose:
+    """Down on the knees from the crouch: knees on the floor in front of the feet, toes tucked, sitting back."""
+    return tabletop(body, spine=(15.0, 0.0, 0.0), tucked=True, hips_back=0.22 * body.leg)
+
+
+def _down_to_table(body: Body) -> list[Step]:
+    """From standing to hands and knees (tops of the feet down): crouch, knees down, walk the hands forward, untuck."""
+    hands = {"left_arm": 0.06, "right_arm": 0.06}
+    feet = {"left_leg": 0.05, "right_leg": 0.05}
+    heels = {"left_leg": 0.075, "right_leg": 0.075, **hands}  # the heels rise while the toes tuck under
+    return [Step(mountain(body), hold=1.0, breathe=False), Step(crouch(body), seconds=2.0),
+            Step(kneel_tucked(body), seconds=1.5, lift=heels), Step(tabletop(body, tucked=True), seconds=1.2, lift=hands),
+            Step(tabletop(body), seconds=1.2, hold=1.0, breathe=False, lift=feet)]
+
+
+def _up_from(steps: list[Step]) -> list[Step]:
+    """The way back up: ``steps`` in reverse, each move as long as on the way down."""
+    back = []
+    for k in range(len(steps) - 2, -1, -1):
+        back.append(replace(steps[k], seconds=steps[k + 1].seconds, hold=steps[k].hold if k else 0.0,
+                            breathe=False, lift=steps[k + 1].lift))
+    return back
+
+
+def _cow_steps(body: Body) -> list[Step]:
+    """Bitilasana: on hands and knees, the belly sinks, the tailbone and the chest lift, the gaze goes forward."""
+    down = _down_to_table(body)
+    table = down[-1].pose
+    cow = tabletop(body, spine=(-55.0, 0.0, 0.0), head=(-48.0, 0.0, 0.0), shares=(0.3, 0.4, 0.3))
+    cow = replace(cow, root=table.root, **{name: getattr(table, name) for name in LIMBS})  # hands and knees stay
+    hand = table.left_arm.target
+    forward = _shoulders(body, cow)[2] - hand[2]  # the chest moves back: the arms slant a little
+    height = hand[1] + math.sqrt(max((HAND_REACH * body.arm) ** 2 - forward ** 2, 0.0))  # as high as the arms reach
+    cow = replace(cow, pelvis=(_pitch_for_shoulders(body, cow, height, low=60.0, high=150.0), 0, 0))
+    return down + [Step(cow, seconds=2.5, hold=9.0), Step(table, seconds=2.5, hold=1.0, breathe=False)] + _up_from(down)
+
+
 POSES: dict[str, PoseSpec] = {
     "yogi_squat": PoseSpec("Yogi Squat (Malasana)", _yogi_squat_steps, main=1, view=0.0),
+    "cow": PoseSpec("Cow Pose (Bitilasana)", _cow_steps, main=5, view=90.0),
 }
