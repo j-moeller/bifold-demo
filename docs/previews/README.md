@@ -143,3 +143,10 @@ work goes on. The people are avatars from the
   (focal length assumed), the warp that moves the avatar's features onto his
   (arrows three times as long), the avatar seen by the photo's camera, and the
   man on the left, whose profile MediaPipe does not find.
+- `created_characters.jpg`: characters from the character creator in the fair
+  (`scenes/created_cast.py`), from the fixed camera: the fair's own people at
+  14 s; the same moment with Ada (orange hat) in the place of the visitor in
+  the middle, waving as that visitor did; at 38 s Ben (sunglasses) in a man's
+  place and Carl in a woman's place, his behaviour made again for him, both
+  watching the camera; at 62 s Carl walking back up the aisle. Their outfits
+  are plain colours put on the avatars' own clothes (no real faces).

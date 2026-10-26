@@ -3,8 +3,9 @@
 :class:`FaceCast` gives every known person one 3D person (those standing in front of the camera first, so the face
 recognition sees them), keeps them while the folder keeps the person, takes the face off when the person goes, and
 gives newly added people a 3D person a second later. A face can also be put on someone by hand (:meth:`put`), e.g.
-from selection mode. Painting a face takes a fraction of a second: it runs on a worker thread, and the face appears
-when it is ready.
+from selection mode. Characters made in the character creator (``person.created``, see ``scenes.created_cast``) have
+faces of their own: they never get a known person's. Painting a face takes a fraction of a second: it runs on a
+worker thread, and the face appears when it is ready.
 """
 
 from __future__ import annotations
@@ -88,7 +89,7 @@ class FaceCast:
 
     def _candidates(self) -> list:
         people = [obj for obj in self._scene if getattr(obj, "skinned_model", None) is not None
-                  and getattr(obj, "texture_overrides", None) is not None
+                  and getattr(obj, "texture_overrides", None) is not None and getattr(obj, "created", None) is None
                   and face_photo.head_layout(obj.skinned_model) is not None]
 
         def rank(obj):
@@ -116,6 +117,9 @@ class FaceCast:
             self._take_off(character)
             self._cancel(character)
             return f"{character.name} has their own face again"
+        created = getattr(character, "created", None)
+        if created is not None:
+            return f"{character.name} is {created.name}, who has a face of their own (from the character creator)"
         photos = self.gallery.photos(name)
         if not photos:
             return f"no photo of {name} with a face"

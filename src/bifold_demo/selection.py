@@ -101,7 +101,9 @@ def _item_title(look_name: str, item: str) -> str:
 
 
 def person_name(character) -> str:
-    return f"{character.name} ({character.skinned_model.name})"
+    """``"walker3 (Male_Adult_05)"``: the scene object's name and the avatar, or the name of a created character."""
+    created = getattr(character, "created", None)
+    return f"{character.name} ({created.name if created is not None else character.skinned_model.name})"
 
 
 class OnScreen:
@@ -445,6 +447,8 @@ class Selection:
         """The selected person gets the next known person's face, or (after the last one) their own back."""
         from .characters import face_photo
 
+        if getattr(character, "created", None) is not None:
+            return f"{person_name(character)} has a face of their own, from the character creator"
         known = self.cast.known() if self.cast is not None else []
         if not known:
             return "nobody known yet: put photos of people in the faces folder (a folder per person)"

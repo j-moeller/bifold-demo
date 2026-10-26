@@ -18,7 +18,9 @@ on the Monk scale 1-10, ``outfit``, ``conference_fit`` 0-3 and optionally an est
   result always has ``n`` names, and it is deterministic for ``rng``.
 
 :func:`describe_crowd` counts what a list of names contains, :func:`avatar_style` turns catalog metadata into the
-``style`` behaviours take, and :func:`populate` builds :class:`~bifold_demo.characters.character.Character` objects.
+``style`` behaviours take, and :func:`populate` builds :class:`~bifold_demo.characters.character.Character` objects,
+each remembering how its behaviour was made (a :class:`Recipe`), so another avatar can take over its place
+(:func:`same_style` tells when the same behaviour fits that avatar as it is).
 """
 
 from __future__ import annotations
@@ -27,6 +29,8 @@ import math
 import numbers
 import random
 from collections import Counter
+from collections.abc import Callable
+from dataclasses import dataclass
 
 AGE_SHARES = {"child": 0.05, "adult": 0.80, "older": 0.15}
 SEX_SHARES = {"female": 0.5, "male": 0.5}
@@ -299,6 +303,28 @@ def avatar_style(entry: dict, model=None, motions=None, older_from_age: float = 
     return style
 
 
+@dataclass
+class Recipe:
+    """How :func:`populate` made a person's behaviour: ``make(style=style, library=library, rng=seed)``.
+    :meth:`remake` makes it again for another avatar (another ``style``): the same path, pauses and choices as far as
+    the style leaves them alone; ``options`` replace keywords of ``make`` (e.g. the ``period`` its loop fits)."""
+
+    make: Callable
+    style: dict
+    seed: int
+    library: object = None  # the MotionLibrary
+
+    def remake(self, style: dict, **options):
+        return self.make(style=dict(style), library=self.library, rng=self.seed, **options)
+
+
+def same_style(a: dict, b: dict) -> bool:
+    """Whether behaviours made for styles ``a`` and ``b`` fit the same: same sex and age group (so the same clips,
+    pace and turns) and the same ``stride_scale`` (so the feet do not slide)."""
+    return (a.get("sex"), a.get("age_group")) == (b.get("sex"), b.get("age_group")) and \
+        abs(float(a.get("stride_scale") or 1.0) - float(b.get("stride_scale") or 1.0)) < 1e-3
+
+
 def populate(library, names, behaviours, *, rng=0, older_from_age: float = OLDER_FROM_AGE, **character_options):
     """:class:`~bifold_demo.characters.character.Character` objects for ``names`` (e.g. from :func:`sample_crowd`).
 
@@ -307,6 +333,8 @@ def populate(library, names, behaviours, *, rng=0, older_from_age: float = OLDER
         names: avatar names; ``behaviours``: one per name, each a callable taking ``style``, ``library`` and ``rng``
             keywords, e.g. ``functools.partial(walk_by, [(-9, 0, -7), (9, 0, -7)], camera=CAMERA_POSITION)``.
         rng: seed for the behaviours' seeds. Other keywords go to ``Character`` (``name`` gets ``"<avatar>_<i>"``).
+
+    Each person's ``recipe`` (a :class:`Recipe`) tells how its behaviour was made.
     """
     from .character import Character
 
@@ -319,6 +347,8 @@ def populate(library, names, behaviours, *, rng=0, older_from_age: float = OLDER
     for i, (name, make) in enumerate(zip(names, behaviours)):
         model = library.load(name)
         style = avatar_style(available.get(name, {}), model, motions, older_from_age)
-        behaviour = make(style=style, library=motions, rng=rng.randrange(2 ** 31))
-        people.append(Character(model, behaviour=behaviour, name=f"{name}_{i}", **character_options))
+        recipe = Recipe(make, style, rng.randrange(2 ** 31), motions)
+        person = Character(model, behaviour=recipe.remake(style), name=f"{name}_{i}", **character_options)
+        person.recipe = recipe
+        people.append(person)
     return people

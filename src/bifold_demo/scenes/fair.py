@@ -8,7 +8,8 @@ wander about, small groups chat, exhibitors stand behind their counters talking 
 speaker is on the stage. Apart from the audience, nobody looks at the camera. The audience sees
 itself on the demo screen like in a mirror and now and then plays with it: people wave, make faces,
 step and lean from side to side, lean in or walk up closer and back (``characters.camera_play``,
-``CAMERA_PLAY``). The crowd mixes women and men, skin tones and ages (see ``characters.crowd``).
+``CAMERA_PLAY``). The crowd mixes women and men, skin tones and ages (see ``characters.crowd``). Characters made in
+the character creator take over the places of some of the people who walk about (``scenes.created_cast``).
 
 Until the characters are prepared, 2D cut-out people stand in: from the ``people/`` folder
 (``bifold-people generate -n 30``) or cut out of the Ultralytics sample photos.
@@ -384,14 +385,18 @@ def people_slots():
     return slots
 
 
-def add_3d_people(scene: Scene, library, rng: random.Random) -> list:
-    """Fill the hall with animated people chosen by :func:`~bifold_demo.characters.crowd.sample_crowd`.
+def add_3d_people(scene: Scene, library, rng: random.Random, slots=None, names=None) -> list:
+    """Fill the hall with animated people, one for each of ``slots`` (default :func:`people_slots`): the avatars
+    ``names``, by default chosen by :func:`~bifold_demo.characters.crowd.sample_crowd` and :func:`assign_people`.
+    Each person knows its ``kind`` (``"approach"``, ``"walker"`` ...) and how its behaviour was made (``recipe``),
+    so a created character can take over its place (:mod:`~bifold_demo.scenes.created_cast`).
 
     Nothing is added to ``scene`` when this fails half way.
     """
-    slots = people_slots()
+    slots = people_slots() if slots is None else list(slots)
     catalog = library.available()
-    names = assign_people(sample_crowd(catalog, len(slots), rng), slots, catalog, rng)
+    if names is None:
+        names = assign_people(sample_crowd(catalog, len(slots), rng), slots, catalog, rng)
     people = populate(library, names, [make for _, make, _, _ in slots], rng=rng)
     left = keep_apart([p.behaviour for p in people], [kind for kind, *_ in slots], rng)
     if left:
@@ -402,6 +407,7 @@ def add_3d_people(scene: Scene, library, rng: random.Random) -> list:
     counts: dict[str, int] = {}
     for (kind, *_), person in zip(slots, people):
         counts[kind] = counts.get(kind, 0) + 1
+        person.kind = kind
         scene.add(person, name=f"{kind}{counts[kind]}" if kind != "speaker" else "speaker")
     summary = describe_crowd(catalog, names)
     print(f"[fair] {len(people)} animated people ({summary['unique']} different avatars): "
@@ -420,6 +426,20 @@ def play_with_camera(people, kinds) -> list:
     return camera_play.play_along(players, CAMERA_POSITION, others=others, period=LOOP_PERIOD,
                                   rng=random.Random(f"camera play {CROWD_SEED}"), moves=CAMERA_PLAY_MOVES,
                                   place=feet_in_view)
+
+
+def join_camera_play(person, people):
+    """Let ``person``, who takes over the place of someone who played with the camera (with a behaviour of its own),
+    play too: its moves are planned clear of everyone else in ``people`` and of the moves of those who play
+    already, which stay as they are (:func:`~bifold_demo.characters.camera_play.join`). Returns the play, or
+    ``None`` when ``person`` cannot play."""
+    others = [p for p in people if p is not person]
+    players = [p for p in others if getattr(p, "kind", None) in PLAYERS
+               and camera_play.find_play(getattr(p, "behaviour", None)) is not None]
+    rest = [p for p in others if all(p is not q for q in players)]
+    return camera_play.join(person, CAMERA_POSITION, players=players, others=rest, period=LOOP_PERIOD,
+                            rng=random.Random(f"camera play {CROWD_SEED} {person.name}"), moves=CAMERA_PLAY_MOVES,
+                            place=feet_in_view)
 
 
 def assign_people(names: list[str], slots, catalog: dict, rng: random.Random) -> list[str]:
@@ -564,6 +584,64 @@ def keep_apart(behaviours, kinds, rng: random.Random, period: float = LOOP_PERIO
                 b.offset = rng.uniform(0.0, b.duration)
                 tracks[k] = _track(b, times)
     return len(conflicts(MIN_DISTANCE))
+
+
+def fit_in(behaviour, others, *, like=None, period: float = LOOP_PERIOD, step: float = 0.1, batch: int = 16) -> int:
+    """Shift the timing of one moving person (``behaviour``) until they never come closer than ``MIN_DISTANCE`` to any
+    of ``others`` (behaviours whose timing stays): :func:`keep_apart` for someone new in the hall, e.g. a created
+    character who takes over a place with a behaviour made again for their own avatar.
+
+    Of the timings that keep them apart, the one that follows ``like`` (the behaviour of the person whose place they
+    take) most closely over the whole ``period`` is chosen: then what was planned around that person about holds for
+    them too, and taking the place over does not make them jump. Without ``like`` the timing changes as little as it
+    can. ``behaviour`` must loop in a whole fraction of ``period`` (:func:`fits_period`), else its timing stays.
+    Returns the number of others who still come too close (0 = none).
+    """
+    apart = MIN_DISTANCE + 0.05
+    samples = round(period / step)
+    times = np.arange(samples) * step
+    track = _track(behaviour, times)
+    others = [b for b in others if b is not None]
+    theirs = np.stack([_track(b, times) for b in others]) if others else np.zeros((0, samples, 2))
+    seen = ~np.isnan(track)
+    if not seen.any():
+        return 0
+    lo, hi = np.where(seen, track, np.inf).min(axis=0) - apart, np.where(seen, track, -np.inf).max(axis=0) + apart
+
+    def near(other) -> bool:  # ever inside the area the person covers (plus the margin)
+        return bool(np.any(np.all((other >= lo) & (other <= hi), axis=1)))
+
+    theirs = theirs[[j for j, other in enumerate(theirs) if near(other)]]
+    if not fits_period(behaviour.duration, period):
+        return int((_closest(track[None, None], theirs[None])[0] < MIN_DISTANCE).sum()) if len(theirs) else 0
+    shifts = np.arange(max(1, round(behaviour.duration / step)))
+    if like is not None:  # how far from ``like`` each shifted track is, on average (hidden when it is not: 2 m)
+        target = _track(like, times)
+        cost = np.empty(len(shifts))
+        for k in range(0, len(shifts), 64):
+            rolled = track[(np.arange(samples)[None, :] + shifts[k:k + 64, None]) % samples]
+            d = np.hypot(rolled[..., 0] - target[:, 0], rolled[..., 1] - target[:, 1])
+            gone = np.isnan(rolled[..., 0]), np.isnan(target[:, 0])[None]
+            cost[k:k + 64] = np.where(gone[0] & gone[1], 0.0, np.where(gone[0] | gone[1], 2.0, d)).mean(axis=1)
+        order = np.argsort(cost, kind="stable")
+    else:  # the least change first, either way
+        order = np.argsort(np.minimum(shifts, len(shifts) - shifts), kind="stable")
+    best, best_key = 0, None
+    for k in range(0, len(order), batch):
+        chosen = shifts[order[k:k + batch]]
+        rolled = track[(np.arange(samples)[None, :] + chosen[:, None]) % samples]
+        closest = _closest(rolled[:, None], theirs[None]) if len(theirs) else np.full((len(chosen), 1), np.inf)
+        for j, shift in enumerate(chosen):
+            key = (int((closest[j] < apart).sum()), -float(closest[j].min()))
+            if best_key is None or key < best_key:
+                best, best_key = int(shift), key
+            if key[0] == 0:
+                break
+        if best_key[0] == 0:
+            break
+    behaviour.offset = (behaviour.offset + best * step) % behaviour.duration
+    track = track[(np.arange(samples) + best) % samples]
+    return int((_closest(track[None, None], theirs[None])[0] < MIN_DISTANCE).sum()) if len(theirs) else 0
 
 
 def close_encounters(behaviours, seconds: float, step: float = 0.1, distance: float = MIN_DISTANCE):

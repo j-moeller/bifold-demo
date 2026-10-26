@@ -398,6 +398,9 @@ It contains:
 | 4 visitors | talk to exhibitors at the left-hand booths | |
 | 1 speaker | talks on the stage | |
 
+Characters made in the character creator take over some of the visitors',
+walkers' and wanderers' places (see [Created characters](#created-characters)).
+
 The camera is our own exhibit, so at any moment at least three people watch it:
 the audience always, and the visitors while they stand with them. Everyone
 else never looks at the camera: the behaviours guarantee that their faces
@@ -874,6 +877,76 @@ for view in views:
 
 Photos of people and textures made from them are personal data: keep them in
 git-ignored folders (like `faces/`) and never commit them.
+## Created characters
+
+Characters made in the character creator are saved in [`created/`](created/README.md)
+(`--created DIR` for another folder, `--created ''` to show none), a folder
+per character: `character.json` (its name, avatar, whose face it wears, the
+outfit recipe and its items) and the textures painted for it. The demo puts
+them into the fair. Each takes over the place of one of the fair's own people
+who walk about and keeps that place's behaviour, so what the fair planned
+(nobody walks through anybody, the camera play) stays valid. The places go in
+this order:
+
+1. the visitors who walk up the aisle to the camera (they are seen best,
+   watch the camera and play with it),
+2. the people walking by along the cross aisles,
+3. the people wandering about.
+
+A child's place is never taken (up to 13 places in all). Within each kind, a
+place whose person is like the character's avatar (a woman's place for a
+woman) comes first. There the place's own behaviour fits the avatar as it is:
+Rocketbox grown-ups of one sex have the same legs, so the feet do not slide,
+and the character steps in exactly where that person was, doing what they did.
+Elsewhere the behaviour is made again for the new avatar: the same path and
+pauses, but the avatar's own walk, turn and idle clips. It walks as fast as
+the person before when its clips can keep up (else at its own pace), its
+timing is fitted in so that it keeps 0.6 m from everyone, and its camera play
+is planned around the others'. It is swapped in at a moment when it stands
+where that person stands.
+
+The character wears its own textures and items. The known faces of
+[face recognition](#known-faces-on-the-3d-people) are never put on it: it
+has a face of its own. Selection mode works on it as on anyone (yoga poses,
+items), and its tag shows the character's name, e.g. `approach1 (Ada)`.
+
+While the demo runs it looks at the folder once a second:
+
+- a character saved by the creator (or copied in) joins the fair in the next
+  free place, and the demo says so ("Ada joined the fair");
+- a character saved again changes in place: new looks on the same 3D person,
+  or, with another avatar, a new 3D person in the same place;
+- a deleted character gives the place back to the person who had it.
+
+The status panel lists who is in the fair (`created: Ada, Ben in the fair`)
+and how many wait for a free place. Making a character's 3D person (reading
+its images, about 30 ms each, loading the avatar, putting its looks on) takes
+0.05 to 0.1 s, and half a second when its behaviour is made again. That runs
+on a worker thread, so the video goes on meanwhile; the swap itself costs the
+main thread less than a millisecond. Restarting the scene (`R`) and reloading
+the scene file keep the characters in the fair.
+
+**Privacy.** A created character can wear a real person's face, painted from
+their photos: that is personal data. `created/` stays on this computer, git
+ignores it, and the demo keeps no copy of it anywhere else. To remove a
+character, delete it in the creator or delete its folder (`created/Ada/`); it
+leaves the fair within a second.
+
+```python
+from bifold_demo.characters.created import CharacterBook, CreatedCharacter
+
+book = CharacterBook("created")
+book.save(CreatedCharacter("Ada", "Female_Adult_01", items={"hat": "navy"},
+                           textures={"f001_body": outfit_rgba}))  # by primitive name
+book.delete("Ada")
+```
+
+[`scenes/created_cast.py`](src/bifold_demo/scenes/created_cast.py) does the
+casting (`CreatedCast`), [`characters/created.py`](src/bifold_demo/characters/created.py)
+the saving and loading.
+[docs/previews/created_characters.jpg](docs/previews/created_characters.jpg)
+shows three created characters (plain colour outfits, a hat, sunglasses) in
+the visitors' places.
 
 ## Generating 2D people
 
@@ -1126,6 +1199,7 @@ src/bifold_demo/
                outfit/ (garment regions, cloth coordinates, fabrics, prompts,
                         presets.json, the compositor: new clothes on an avatar),
                headtex/ (head textures from photos: landmarks on the mesh, photos registered),
+               created.py (characters from the character creator, saved),
                rocketbox.py + library.py + cli.py (bifold-characters),
                rocketbox_catalog.json (avatar labels)                   ← 3D people
   recognition/ engine.py (find and fingerprint faces), gallery.py (known people),
@@ -1135,11 +1209,13 @@ src/bifold_demo/
                library.py, defaults.py, cli.py (bifold-people)          ← 2D people generator
   app.py       main loop and command line; loader.py loads and reloads scene files;
                selection.py (selection mode: people, their yoga poses and accessories)
-  scenes/      fair.py (default trade-fair hall), fair3d.py (static 3D poses), basic.py
+  scenes/      fair.py (default trade-fair hall), created_cast.py (created characters in it),
+               fair3d.py (static 3D poses), basic.py
 examples/      example scenes
 uploads/       drop textures here while the demo runs
 people/        2D cut-outs (used by the fair scene when no 3D people are prepared)
 faces/         photos of the people the face recognition knows (a folder per person)
+created/       characters made in the character creator (a folder per character; kept out of git)
 tests/         pytest suite
 ```
 

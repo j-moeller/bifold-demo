@@ -53,6 +53,7 @@ class DemoConfig:
     faces: str = "faces"  # photos of the people the face recognition knows (see recognition.gallery)
     recognize: bool = False  # start with the face recognition on (N toggles it)
     cast: bool = True  # put the known people's faces on 3D people (when the faces folder has photos)
+    created: str | None = "created"  # characters made in the character creator, shown in the fair (None: not)
     title: str = "bifold demo"
 
 
@@ -112,6 +113,12 @@ class DemoApp:
         from .characters.accessories import Wardrobe
 
         self.selection = Selection(wardrobe=Wardrobe(config.items))  # Y: pick a person, then yoga poses and items
+        self.created = None  # the created characters in the scene (scenes.created_cast), when there is a folder
+        if config.created:
+            from .characters.created import CharacterBook
+            from .scenes.created_cast import CreatedCast
+
+            self.created = CreatedCast(CharacterBook(config.created), wardrobe=self.selection.wardrobe)
 
     def _prepare_scene(self, scene: Scene) -> None:
         if self.config.uploads:
@@ -185,6 +192,12 @@ class DemoApp:
             self.cast = FaceCast(gallery)
             self.selection.cast = self.cast
 
+    def _update_created(self, wait: bool = False) -> None:
+        """Keep the created characters in the scene (new, changed and deleted ones; see scenes.created_cast)."""
+        if self.created is not None:
+            for note in self.created.update(self.scene_source.scene, wait=wait):
+                self.notify(note, 3.0, error=note.startswith("cannot"))
+
     def _faces_for(self, frame: Frame):
         """The recognised faces of ``frame`` (or of a frame just before it), or ``None``; kept for the status panel."""
         self._last_faces = self._recognized(frame)
@@ -222,6 +235,7 @@ class DemoApp:
         if cfg.recognize:
             self.recognize_enabled = self._load_recognizer()
         self._load_cast()
+        self._update_created(wait=True)  # the first frame has them
         window = None if cfg.headless else Window(cfg.title, cfg.fullscreen)
         if window:
             print(f"[demo] controls: {HELP}")
@@ -231,6 +245,7 @@ class DemoApp:
                 frame = self.switcher.active.read(timeout=0.5)
                 if frame is not None:
                     if frame.source == "scene":
+                        self._update_created()
                         message = self.selection.update(self.scene_source.scene, frame.size)
                         if self.cast is not None:
                             for note in self.cast.update(self.scene_source.scene):
@@ -264,6 +279,8 @@ class DemoApp:
                 self.face_worker.stop()
             if self.cast is not None:
                 self.cast.close()
+            if self.created is not None:
+                self.created.close()
             self.selection.close()
             self.switcher.stop()
             if self._writer is not None:
@@ -342,7 +359,8 @@ class DemoApp:
                 line += f" (+{strangers} unknown)" if strangers else ""
             lines.append(line)
         if frame.source == "scene":
-            lines += self.selection.status_lines(self.scene_source.scene.time)
+            created = self.created.status() if self.created is not None else None
+            lines += ([created] if created else []) + self.selection.status_lines(self.scene_source.scene.time)
         return lines
 
     def _handle_key(self, key: int, window: Window) -> None:
@@ -443,6 +461,7 @@ class DemoApp:
         if scene is not None:
             self._prepare_scene(scene)
             self.scene_source.set_scene(scene)
+            self._update_created(wait=True)  # the created characters again, from its first frame
             self.notify("scene reloaded", 1.5)
 
 
@@ -488,6 +507,9 @@ def parse_args(argv=None) -> DemoConfig:
     g.add_argument("--recognize", action="store_true", help="start with the face recognition on (N toggles it)")
     g.add_argument("--no-cast", dest="cast", action="store_false",
                    help="do not put the faces of the known people on the 3D people")
+    g.add_argument("--created", default="created",
+                   help="folder of the characters made in the character creator, shown in the fair (default: created; "
+                        "'' for none)")
     g.add_argument("--items", default="items",
                    help="folder of looks for the hats, glasses, signs and t-shirts of selection mode, e.g. "
                         "items/sign_logo.png ('' for the built-in ones only)")
@@ -512,7 +534,7 @@ def parse_args(argv=None) -> DemoConfig:
         mirror=a.mirror, model=a.model, device=a.device, conf=a.conf, iou=a.iou, imgsz=a.imgsz, classes=a.classes,
         detect=a.detect, sync=a.sync, fullscreen=a.fullscreen, record=a.record, headless=a.headless,
         frames=a.frames, reload=a.reload, uploads=a.uploads or None, items=a.items or None, faces=a.faces,
-        recognize=a.recognize, cast=a.cast,
+        recognize=a.recognize, cast=a.cast, created=a.created or None,
     )
 
 

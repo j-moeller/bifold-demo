@@ -1653,6 +1653,15 @@ class Behaviour:
                 return True
         return False
 
+    def walk_speed(self) -> float | None:
+        """How fast the person walks (metres per second, between easing in and out), or ``None`` without walks."""
+        return next((float(p.speed) for p in self._pieces if isinstance(p, _WalkPiece)), None)
+
+    def walk_rates(self) -> list[float]:
+        """How fast each walk clip plays against its own natural rate (1 = natural): about 1 unless the style gives
+        a ``speed``, then the clips play faster or slower to keep up with it (the feet never slide)."""
+        return [float(e.walk.speed * e.scale) for e in self._entries if e.walk is not None and e.clip is not None]
+
     def teleports(self) -> list[tuple[float, float]]:
         """Loop-time intervals ``(start, end)`` during which the person is hidden (and may jump)."""
         return [(p.t0, p.t1) for p in self._pieces if not p.visible]

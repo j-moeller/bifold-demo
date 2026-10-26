@@ -47,7 +47,14 @@ class Character(SceneObject):
     has instead of the model's (a real face painted on the head, see :mod:`.face_photo`).
     Creating a character starts decoding its texture files, visible or not (``texture_jobs``: the futures
     from :func:`preload_textures`).
+
+    ``created``: the :class:`~.created.CreatedCharacter` this person is, for a character made in the character
+    creator (else ``None``); ``recipe``: how its behaviour was made (a :class:`~.crowd.Recipe`, set by
+    :func:`~.crowd.populate`), so that another avatar can take over its place.
     """
+
+    created = None
+    recipe = None
 
     def __init__(self, model: CharacterModel, behaviour=None, *, name: str | None = None, scale=1.0,
                  shadow: bool = True, head_bones: tuple[str, str] | None = None):
