@@ -402,3 +402,38 @@ def test_clips_are_built_in_a_worker_process_and_cached_on_disk(biped, tmp_path)
         again.close()
     with pytest.raises(KeyError):
         again.request(biped, "headstand")
+
+
+def test_selection_keys_in_the_demo_app(gl, biped, tmp_path, monkeypatch):
+    from bifold_demo.app import DemoApp, DemoConfig
+    from bifold_demo.sources import SourceSwitcher
+
+    monkeypatch.chdir(tmp_path)
+    scene = _scene(biped)
+    app = DemoApp(DemoConfig(headless=True, frames=1, width=320, height=180, detect=False, uploads=None), scene=scene)
+    app.run()
+    app.selection.clips = _clips()
+    app.config.headless = False  # draw the key help like the windowed demo
+    app.switcher = SourceSwitcher({"scene": lambda: app.scene_source}, "scene")
+    messages = []
+    app.notify = lambda message, *args, **kwargs: messages.append(message)
+    window = type("W", (), {"toggle_fullscreen": lambda self: None})()
+    try:
+        app._handle_key(ord("y"), window)
+        assert app.selection.active and app.selection.selected.name == "middle" and "selected middle" in messages[-1]
+        app._handle_key(TAB, window)
+        assert app.selection.selected.name == "right"
+        app._handle_key(ord("1"), window)
+        assert messages[-1].startswith("preparing Yogi Squat for right")
+        frame = app.scene_source.read()
+        app.selection.update(app.scene_source.scene, frame.size)
+        plain = frame.image.copy()
+        canvas = app._compose(frame, None)
+        assert app.selection.box is not None and (canvas != plain).any()  # the tag and the selection help
+        assert any(line.startswith("selected: right") for line in app._status_lines(frame, None))
+        app._handle_key(27, window)  # Esc ends selection mode, it does not quit
+        assert not app.selection.active and app._running
+        app._handle_key(27, window)
+        assert not app._running
+    finally:
+        app.selection.close()

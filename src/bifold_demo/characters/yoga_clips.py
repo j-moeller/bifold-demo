@@ -266,11 +266,17 @@ def _spawn() -> subprocess.Popen:
 
 
 def _stop(worker: subprocess.Popen) -> None:
+    """End the worker: it stops when its input closes, else (busy with a clip) it is killed; the cache files are
+    written whole or not at all."""
     try:
         worker.stdin.close()
-        worker.wait(timeout=2.0)
+        worker.wait(timeout=0.3)
     except (OSError, subprocess.TimeoutExpired):
         worker.kill()
+        try:
+            worker.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def _serve(inp, out) -> None:

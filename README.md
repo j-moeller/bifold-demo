@@ -62,7 +62,7 @@ for your terminal app. Allow it, then run the command again.
 | `P`       | save a screenshot to `screenshots/`                       |
 | `M`       | mirror the webcam on or off                               |
 | `H`       | hide or show the status panel                             |
-| `Q`/`Esc` | quit                                                      |
+| `Q`/`Esc` | quit (in selection mode `Esc` ends that first)            |
 
 **Selecting people for yoga.** `Y` (or `Tab`) selects the most prominent of
 the 3D people in the picture and marks them with a tag. In this selection mode
@@ -87,7 +87,8 @@ instead. A person asked for a pose stops what they are doing and walks (up to
 - the mat is clear of the other people and of the furniture;
 - the whole pose is on one floor level (not half on a booth platform).
 
-There they do the pose, then walk back and carry on exactly where they left
+When no spot within reach has all of that, they take the one the camera sees
+best. There they do the pose, then walk back and carry on exactly where they left
 off. A new pose asked for during one follows it without walking back in
 between. Several people can do poses at once. People who walk around are
 later on their way afterwards, so the fair's timing that keeps walkers from
