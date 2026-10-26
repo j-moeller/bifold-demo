@@ -10,8 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 COPY pyproject.toml README.md /src/
 COPY src /src/src
-RUN pip install --no-cache-dir "/src[models]" opencv-python-headless \
-    && pip uninstall -y opencv-python || true
+# opencv-python (a dependency) and opencv-python-headless share the cv2 folder: removing one deletes it, so the
+# headless one (no GUI libraries needed) goes in afresh after the other is gone
+RUN pip install --no-cache-dir "/src[models]" \
+    && pip uninstall -y opencv-python \
+    && pip install --no-cache-dir --force-reinstall --no-deps opencv-python-headless \
+    && python -c "import cv2, torch, timm, gdown; cv2.FaceDetectorYN; print('ok', cv2.__version__, torch.__version__)"
 
 RUN useradd --create-home --uid 10001 morph
 USER morph
