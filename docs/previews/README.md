@@ -20,5 +20,11 @@ work goes on. The people are avatars from the
   up to the camera keeps her head lowered and turned aside, the man behind her
   turns around.
 - `fair_animated.jpg`: the default trade-fair scene with 33 animated 3D people
-  (at 0, 4, 8 and 12 s) and YOLO's detections: people approaching the camera
-  and turning around, walking by, wandering, chatting, staffing booths.
+  (at 0, 4, 8 and 12 s) and YOLO's detections (9-14 people found per frame):
+  people approaching the camera and turning around, walking by, wandering,
+  chatting, staffing booths.
+- `fair_closeups.jpg`: close-ups from the same scene after the review fixes:
+  exhibitors on their booth platforms, a visitor at a booth, people walking
+  towards the camera on the red carpet with their feet in frame and on the
+  floor, walkers on the blue aisle carpet with their blob shadows, a chat group
+  with a child, wanderers.
