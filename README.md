@@ -216,6 +216,7 @@ starting pose into the pose, holding it for two breaths, and back.
 | Warrior 1 (Virabhadrasana I) | `"warrior_1"` | standing, the right foot steps back, the arms sweep up |
 | Downward Facing Dog (Adho Mukha Svanasana) | `"downward_dog"` | standing, down to hands and knees, toes tucked, the hips lift |
 | Warrior 2 (Virabhadrasana II) | `"warrior_2"` | standing, the right foot steps out wide, the arms open |
+| Upward Facing Dog (Urdhva Mukha Svanasana) | `"upward_dog"` | standing, down to hands and knees, a step back to plank, the hips lower |
 
 ```python
 from bifold_demo.characters.character import Character

@@ -44,3 +44,6 @@ work goes on. The people are avatars from the
 - `yoga_warrior_2.jpg`: the Warrior 2 (Virabhadrasana II) clip: a wide stance
   across the mat, the front knee over the ankle, the arms level, the gaze over
   the front hand.
+- `yoga_upward_dog.jpg`: the Upward Facing Dog (Urdhva Mukha Svanasana) clip:
+  down to hands and knees, a step back to plank, then the hips lower, the
+  feet roll onto their tops and the chest lifts on straight arms.

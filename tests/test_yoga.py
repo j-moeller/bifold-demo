@@ -249,6 +249,27 @@ def test_warrior_2_opens_to_the_front_with_the_arms_level(body):
     assert gaze[0] > 0.8  # looking over the front hand
 
 
+def test_upward_dog_lifts_the_chest_on_straight_arms(body):
+    spec = yoga.POSES["upward_dog"]
+    pose = yoga.settle(body, spec.steps(body)[spec.main].pose)
+    _, glob = yoga.solve(body, pose)
+    hips = glob[body.root, :3, 3]
+    verts = yoga.skin(body, glob)
+    for side, s in body.sides.items():
+        shoulder, hand = glob[s["upper"], :3, 3], glob[s["hand"], :3, 3]
+        assert abs(shoulder[2] - hand[2]) < 0.05  # the shoulders right above the wrists ...
+        assert _bend(glob, s["upper"], s["fore"], s["hand"]) < 15.0  # ... on straight arms
+        assert shoulder[1] - hips[1] > 0.25 * body.leg  # the chest lifted well above the hips
+        assert _bend(glob, s["thigh"], s["calf"], s["foot"]) < 15.0  # straight legs ...
+        assert verts[body.knee_group(side), 1].min() > 0.03  # ... with the knees off the floor
+        toes = glob[s["foot"], :3, :3] @ s["foot_forward"]
+        assert toes[2] < -0.9  # the toes point back: the feet rest on their tops
+    assert hips[1] < 0.4 * body.leg  # the hips low
+    gaze = glob[body.head, :3, :3] @ body.rest_rot[body.head].T @ (0.0, 0.0, 1.0)
+    assert gaze[2] > 0.9  # looking forward
+    assert all(getattr(pose, limb).contact for limb in yoga.LIMBS)  # both hands and both feet on the floor
+
+
 def test_yogi_squat_is_deep_with_wide_knees_and_palms_together(body):
     pose = yoga.settle(body, yoga.POSES["yogi_squat"].steps(body)[1].pose)
     _, glob = yoga.solve(body, pose)

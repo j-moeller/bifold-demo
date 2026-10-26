@@ -24,6 +24,7 @@ the body part below it (the pelvis to the character).
 from __future__ import annotations
 
 import math
+from functools import partial
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -277,16 +278,17 @@ class Body:
         near = leg[distance < 0.09]
         return near if len(near) >= 20 else leg[np.argsort(distance)[:40]]  # coarse meshes: the closest ones
 
-    def shin_group(self, side: str) -> np.ndarray:
+    def shin_group(self, side: str, within: float = 0.075) -> np.ndarray:
         """The knee and the shin (what rests on the floor when kneeling on the tops of the feet): the lower leg's
-        vertices near the bone, so that a skirt or dress hem does not count."""
+        vertices ``within`` metres of the bone, so that a skirt or dress hem does not count. Wide trouser legs
+        reach about 0.11 m out at the cuffs."""
         s = self.sides[side]
         knee, ankle = self.rest_pos[s["calf"]], self.rest_pos[s["foot"]]
         calf = self.group(s["calf"])
         axis = _unit(ankle - knee)
         along = np.clip((self.vertices[calf] - knee) @ axis, 0.0, float(np.linalg.norm(ankle - knee)))
         off = np.linalg.norm(self.vertices[calf] - (knee + along[:, None] * axis), axis=1)
-        return np.union1d(calf[off < 0.075], self.knee_group(side))
+        return np.union1d(calf[off < within], self.knee_group(side))
 
 
 # -- solving -------------------------------------------------------------------------------------------
@@ -417,7 +419,7 @@ def settle(body: Body, pose: BodyPose, rounds: int = 4) -> BodyPose:
     touches, and its foot then points its toes down until the top of the foot rests on the floor."""
     groups = {f"{side}_{part}": getter(side) for side in body.sides
               for part, getter in (("hand", body.hand_group), ("foot", body.foot_group), ("knee", body.knee_group),
-                                   ("shin", body.shin_group))}
+                                   ("shin", body.shin_group), ("cuffs", partial(body.shin_group, within=0.12)))}
     used = np.unique(np.concatenate(list(groups.values())))
     where = {name: np.searchsorted(used, group) for name, group in groups.items()}  # positions within ``used``
     for _ in range(rounds):
@@ -432,7 +434,10 @@ def settle(body: Body, pose: BodyPose, rounds: int = 4) -> BodyPose:
             limb = getattr(pose, name)
             if limb.contact and name not in shins:
                 side = name.split("_")[0]
-                dy = -float(verts[where[f"{side}_{'hand' if name.endswith('arm') else 'foot'}"], 1].min())
+                part = where[f"{side}_{'hand' if name.endswith('arm') else 'foot'}"]
+                if name.endswith("leg") and _dorsum_down(limb):  # on the top of the foot: the shin may be lowest,
+                    part = np.concatenate([part, where[f"{side}_cuffs"]])  # trouser cuffs included
+                dy = max(-float(verts[part, 1].min()), -limb.target[1])  # a wrist or ankle never below the floor
                 changes[name] = moved(limb, dy)
                 largest = max(largest, abs(dy))
         root = pose.root
@@ -444,8 +449,10 @@ def settle(body: Body, pose: BodyPose, rounds: int = 4) -> BodyPose:
             changes.update({name: moved(getattr(pose, name), dy) for name in shins})
             largest = max(largest, abs(dy))
         pose = replace(pose, root=root, **changes)
-        if shins:
-            pose = _rest_feet(body, pose, shins)
+        resting = shins | {name for name in ("left_leg", "right_leg")
+                           if getattr(pose, name).contact and _dorsum_down(getattr(pose, name))}
+        if resting:
+            pose = _rest_feet(body, pose, resting)
         if largest < 2e-4:
             break
     return pose
@@ -872,10 +879,95 @@ def _warrior2_steps(body: Body) -> list[Step]:
             Step(stand, seconds=3.0, lift=steps)]
 
 
+def plank(body: Body, hands: BodyPose) -> BodyPose:
+    """High plank with the hands of ``hands``: straight arms upright under the shoulders, the body one straight line
+    down to the heels, on the balls of the feet."""
+    left = body.sides["left"]
+    hand = np.asarray(hands.left_arm.target, float)
+    shoulder = hand + np.array([0.0, ARM_STRAIGHT * (left["upper_length"] + left["fore_length"]), 0.0])
+    legs = ARM_STRAIGHT * (left["thigh_length"] + left["shin_length"])
+    ankle_height = 0.14 * body.leg  # on the balls of the feet, the heels up
+    arms = {name: replace(getattr(hands, name), pole=(0.0, 0.0, -1.0)) for name in ("left_arm", "right_arm")}
+    base = BodyPose((0.0, 0.0, 0.0), pelvis=(80.0, 0.0, 0.0), head=(-8.0, 0.0, 0.0), flat_hands=True, **arms,
+                    left_leg=hands.left_leg, right_leg=hands.right_leg)
+
+    def place(pitch):  # the shoulders right above the hands, the straight legs down to the floor
+        _, glob = solve(body, replace(base, pelvis=(pitch, 0.0, 0.0)))
+        root = shoulder - (glob[left["upper"], :3, 3] - glob[body.root, :3, 3])
+        rise = root[1] - body.hip_drop - ankle_height
+        ankle_z = root[2] - math.sqrt(max(legs ** 2 - rise ** 2, 0.0))
+        feet = {f"{side}_leg": replace(_toes_tucked(body, side, ankle_z),
+                                       target=(s["sign"] * 0.5 * body.hip_width, ankle_height, ankle_z),
+                                       pole=(0.0, -1.0, 0.0), forward=tuple(_unit((0.0, -0.75, -0.66))),
+                                       up=tuple(_unit((0.0, -0.66, 0.75))), toes=55.0)
+                for side, s in body.sides.items()}
+        pose = replace(base, root=tuple(root), pelvis=(pitch, 0.0, 0.0), **feet)
+        trunk = math.atan2(shoulder[1] - root[1], shoulder[2] - root[2])  # the slope hips -> shoulders
+        legs_slope = math.asin(min(1.0, max(-1.0, rise / legs)))  # the slope heels -> hips
+        return pose, trunk - legs_slope
+
+    low, high = 55.0, 110.0
+    for _ in range(30):  # the pitch that puts the hips on the line from the heels to the shoulders
+        middle = 0.5 * (low + high)
+        if place(middle)[1] * place(low)[1] <= 0:
+            high = middle
+        else:
+            low = middle
+    return place(0.5 * (low + high))[0]
+
+
+def upward_dog(body: Body, hands: BodyPose) -> BodyPose:
+    """Urdhva Mukha Svanasana with the hands of ``hands``: the legs straight back with the tops of the feet down
+    and the knees off the floor, the hips low, the chest lifted on straight arms through a backbend, gaze forward."""
+    left = body.sides["left"]
+    hand = np.asarray(hands.left_arm.target, float)
+    shoulder_height = hand[1] + ARM_STRAIGHT * (left["upper_length"] + left["fore_length"])  # arms upright
+    hip_height = 0.32 * body.leg  # low, but the thighs off the floor
+    legs = ARM_STRAIGHT * (left["thigh_length"] + left["shin_length"])
+    arms = {name: replace(getattr(hands, name), pole=(0.0, 0.0, -1.0)) for name in ("left_arm", "right_arm")}
+    feet = {f"{side}_leg": Limb((s["sign"] * 0.5 * body.hip_width, 0.06, 0.0), (0.0, -1.0, 0.0), (0.0, 0.0, -1.0),
+                                (0.0, -1.0, 0.0), contact=True) for side, s in body.sides.items()}
+    base = BodyPose((0.0, hip_height + body.hip_drop, 0.0), pelvis=(70.0, 0, 0), spine=(-50.0, 0.0, 0.0),
+                    head=(-22.0, 0.0, 0.0), flat_hands=True, spine_shares=(0.35, 0.35, 0.3), **arms, **feet)
+
+    def place(pitch):  # the hips where the shoulders come out right above the hands
+        _, glob = solve(body, replace(base, pelvis=(pitch, 0.0, 0.0)))
+        offset = glob[left["upper"], :3, 3] - glob[body.root, :3, 3]
+        root = (0.0, base.root[1], float(hand[2] - offset[2]))
+        rise = base.root[1] - body.hip_drop - feet["left_leg"].target[1]
+        ankle_z = root[2] - math.sqrt(max(legs ** 2 - rise ** 2, 0.0))
+        legs_back = {name: replace(limb, target=(limb.target[0], limb.target[1], ankle_z)) for name, limb in feet.items()}
+        return replace(base, root=root, pelvis=(pitch, 0.0, 0.0), **legs_back), base.root[1] + offset[1]
+
+    low, high = 30.0, 110.0
+    for _ in range(30):  # the pitch that lifts the shoulders to straight-arm height
+        middle = 0.5 * (low + high)
+        if (place(middle)[1] - shoulder_height) * (place(low)[1] - shoulder_height) <= 0:
+            high = middle
+        else:
+            low = middle
+    return place(0.5 * (low + high))[0]
+
+
+def _upward_dog_steps(body: Body) -> list[Step]:
+    """From standing down to hands and knees, a step back to plank, then the hips lower, the feet roll onto their
+    tops and the chest lifts."""
+    down = _down_to_table(body)
+    table = settle(body, down[-1].pose)
+    board = plank(body, table)
+    dog = upward_dog(body, table)
+    back = {"left_leg": 0.12, "right_leg": 0.12}  # stepping back from the knees
+    roll = {"left_leg": 0.05, "right_leg": 0.05}  # the feet roll over the toes
+    return down + [Step(board, seconds=2.0, hold=0.5, breathe=False, lift=back), Step(dog, seconds=2.5, hold=9.0, lift=roll),
+                   Step(board, seconds=2.5, hold=0.5, breathe=False, lift=roll),
+                   Step(table, seconds=2.0, hold=1.0, breathe=False, lift=back)] + _up_from(down)
+
+
 POSES: dict[str, PoseSpec] = {
     "yogi_squat": PoseSpec("Yogi Squat (Malasana)", _yogi_squat_steps, main=1, view=0.0),
     "cow": PoseSpec("Cow Pose (Bitilasana)", _cow_steps, main=5, view=90.0),
     "warrior_1": PoseSpec("Warrior 1 (Virabhadrasana I)", _warrior1_steps, main=2, view=90.0),
     "downward_dog": PoseSpec("Downward Facing Dog (Adho Mukha Svanasana)", _downward_dog_steps, main=6, view=90.0),
     "warrior_2": PoseSpec("Warrior 2 (Virabhadrasana II)", _warrior2_steps, main=1, view=0.0),
+    "upward_dog": PoseSpec("Upward Facing Dog (Urdhva Mukha Svanasana)", _upward_dog_steps, main=6, view=90.0),
 }
