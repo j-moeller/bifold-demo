@@ -1327,6 +1327,149 @@ def _warrior3_steps(body: Body) -> list[Step]:
     warrior = _balanced(body, partial(build, 90.0), "left", along=0.72)  # the weight on the ball of the foot
     return [Step(stand, hold=1.5, breathe=False), Step(shift, seconds=1.5), Step(warrior, seconds=3.0, hold=9.0),
             Step(shift, seconds=3.0), Step(stand, seconds=1.5)]
+OVERREACH = 1.08  # a free arm aimed this far (times its length) stays straight while it swings: the IK stops short
+
+
+def _straight_legs_root(body: Body, pose: BodyPose) -> tuple:
+    """Where the root of ``pose`` goes (its z kept) for both legs to reach their ankle targets straight
+    (``ARM_STRAIGHT`` of their length): the higher crossing of the two circles the root may lie on."""
+    _, glob = solve(body, replace(pose, root=(0.0, 0.0, pose.root[2])))
+    circles = []
+    for side, s in body.sides.items():
+        offset = glob[s["thigh"], :3, 3] - glob[body.root, :3, 3]  # the hip joint from the root
+        centre = np.asarray(getattr(pose, f"{side}_leg").target, float) - offset
+        reach = ARM_STRAIGHT * (s["thigh_length"] + s["shin_length"])
+        dz = centre[2] - pose.root[2]
+        circles.append((centre[:2], math.sqrt(max(reach * reach - dz * dz, 1e-6))))
+    (c0, r0), (c1, r1) = circles
+    gap = c1 - c0
+    d = max(float(np.linalg.norm(gap)), 1e-6)
+    along = (r0 * r0 - r1 * r1 + d * d) / (2 * d)
+    height = math.sqrt(max(r0 * r0 - along * along, 0.0))
+    middle = c0 + along * gap / d
+    across = np.array([-gap[1], gap[0]]) / d
+    root = max(middle + height * across, middle - height * across, key=lambda p: p[1])
+    return (float(root[0]), float(root[1]), float(pose.root[2]))
+
+
+def _arm_along(body: Body, glob: np.ndarray, side: str, direction, back, pole, reach: float = OVERREACH) -> Limb:
+    """A straight arm from its shoulder in ``glob`` along ``direction``, the back of the hand towards ``back``."""
+    s = body.sides[side]
+    direction = _unit(direction)
+    wrist = glob[s["upper"], :3, 3] + reach * (s["upper_length"] + s["fore_length"]) * direction
+    return Limb(tuple(wrist), tuple(pole), tuple(direction), tuple(back))
+
+
+def _farther(body: Body, pose: BodyPose, names=("left_arm", "right_arm")) -> BodyPose:
+    """``pose`` with the targets of the arms ``names`` pushed out along the arm to ``OVERREACH`` of its length."""
+    _, glob = solve(body, pose)
+    arms = {}
+    for name in names:
+        s = body.sides[name.split("_")[0]]
+        shoulder = glob[s["upper"], :3, 3]
+        limb = getattr(pose, name)
+        aim = _unit(np.asarray(limb.target, float) - shoulder)
+        arms[name] = replace(limb, target=tuple(shoulder + OVERREACH * (s["upper_length"] + s["fore_length"]) * aim))
+    return replace(pose, **arms)
+
+
+def _gap_along(body: Body, pose: BodyPose, top: np.ndarray, below: np.ndarray, axis: int = 1,
+               radius: float = 0.02) -> float | None:
+    """How far the vertices ``top`` of the posed mesh are beyond the vertices ``below`` along character ``axis``
+    (the least difference over the ``top`` vertices with ``below`` vertices within ``radius`` across the axis;
+    negative when they sink in), or None when none are in line."""
+    verts = skin(body, solve(body, pose)[1], np.concatenate([top, below]))
+    a, b = verts[:len(top)], verts[len(top):]
+    others = [k for k in range(3) if k != axis]
+    across = np.linalg.norm(a[:, None, others] - b[None, :, others], axis=2)
+    near = across < radius
+    if not near.any():
+        return None
+    under = np.where(near, b[None, :, axis], -np.inf).max(axis=1)
+    has = near.any(axis=1)
+    return float((a[has, axis] - under[has]).min())
+
+
+def _wide_stance(body: Body, width: float, turned: bool) -> BodyPose:
+    """Standing with the feet ``width`` apart (ankle to ankle) across the body, both legs straight, the arms out
+    to the sides; ``turned``: the front (left) foot turned out to point along the stance, the back foot a little in."""
+    stand = mountain(body)
+    left, right = body.sides["left"], body.sides["right"]
+    z = stand.left_leg.target[2]
+    if turned:
+        front = Limb((0.5 * width, left["ankle_height"], z), (1.0, 0.0, 0.15), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0),
+                     contact=True)
+        back_toes = axis_rotation((0, 1, 0), 12.0) @ (0.0, 0.0, 1.0)
+        back = Limb((-0.5 * width, right["ankle_height"], z), (0.0, 0.0, 1.0), tuple(back_toes), (0.0, 1.0, 0.0),
+                    contact=True)
+    else:
+        front = _foot(body, "left", 0.5 * width, z)
+        back = _foot(body, "right", -0.5 * width, z)
+    wide = replace(stand, left_leg=front, right_leg=back, flat_hands=True)
+    wide = replace(wide, root=_straight_legs_root(body, wide))
+    return _farther(body, replace(wide, **_arms_out(body, wide)))
+
+
+def triangle(body: Body, stance: BodyPose, tilt: float | None = None, spine_roll: float = -14.0,
+             opening: float = -10.0, gaze: float = -55.0, pole=(0.6, 0.0, -0.8), shrug: float = 10.0) -> BodyPose:
+    """Utthita Trikonasana on the feet of ``stance`` (turned out, :func:`_wide_stance`): both legs straight, the
+    hips back, the torso tilted ``tilt`` degrees (pelvis roll, plus ``spine_roll`` in the waist) over the front
+    leg with the chest turned open (``opening``), the lower arm straight down to the front shin, the palm on its
+    front, the top arm straight up, the gaze turned up (``gaze``, head yaw). Without ``tilt`` the torso tilts
+    until the lower hand comes down onto the shin."""
+    left = body.sides["left"]
+    hand, shin = body.hand_group("left"), body.group(left["calf"], left["foot"])
+
+    def place(angle, ahead=0.0):
+        pose = replace(stance, pelvis=(0.0, 0.0, -angle), spine=(0.0, opening, spine_roll), head=(0.0, gaze, 0.0),
+                       spine_shares=(0.2, 0.4, 0.4), right_arm=replace(stance.right_arm, shrug=shrug))
+        pose = replace(pose, root=_straight_legs_root(body, pose))
+        _, glob = solve(body, pose)
+        down = _unit(glob[left["foot"], :3, 3] - glob[left["calf"], :3, 3])  # the fingers point down the shin
+        lower = _arm_along(body, glob, "left", (0.0, -1.0, ahead), _across((0.0, 0.0, 1.0), down), pole,
+                           reach=ARM_STRAIGHT)
+        upper = _arm_along(body, glob, "right", (0.0, 1.0, 0.0), (0.0, 0.0, -1.0), (0.0, 0.0, -1.0))
+        return replace(pose, left_arm=replace(lower, forward=tuple(down)), right_arm=replace(upper, shrug=shrug))
+
+    if tilt is not None:
+        return place(tilt)
+
+    def off_shin(pose):  # how far the wrist is above the shin's line, seen from the front
+        _, glob = solve(body, pose)
+        knee, ankle = glob[left["calf"], :3, 3], glob[left["foot"], :3, 3]
+        normal = _across((0.0, 1.0, 0.0), _unit((ankle - knee) * (1, 1, 0)))
+        return float(((glob[left["hand"], :3, 3] - knee) * (1, 1, 0)) @ normal)
+
+    low, high = 30.0, 89.0
+    for _ in range(16):  # the tilt where the straight arm comes down onto the shin
+        middle = 0.5 * (low + high)
+        low, high = (middle, high) if off_shin(place(middle)) > 0 else (low, middle)
+    angle = 0.5 * (low + high)
+    low, high = 0.0, 0.4
+    for _ in range(10):  # the hand just in front of the shin (the arm leaning forward that much)
+        middle = 0.5 * (low + high)
+        gap = _gap_along(body, place(angle, middle), hand, shin, axis=2)
+        low, high = (middle, high) if gap is not None and gap < 0.003 else (low, middle)
+    return place(angle, high)
+
+
+def _triangle_steps(body: Body) -> list[Step]:
+    """Utthita Trikonasana: from standing the feet step wide apart and the arms open to the sides, the front (left)
+    foot turns out, the hips shift back while the torso reaches out over the front leg and tilts down, the lower
+    hand to the shin, the top arm straight up, the gaze to the top hand; up the same way and back to standing."""
+    stand = mountain(body)
+    width = 1.2 * body.leg
+    wide = _wide_stance(body, width, turned=False)
+    turned = _wide_stance(body, width, turned=True)
+    pose = triangle(body, turned)
+    tilt = -pose.pelvis[2]
+    reach = triangle(body, turned, tilt=0.45 * tilt, gaze=0.0, shrug=0.0)
+    reach = _farther(body, replace(reach, **_arms_out(body, reach)))
+    step = {"left_leg": 0.05, "right_leg": 0.05}
+    pivot = {"left_leg": 0.02}
+    return [Step(stand, hold=1.5, breathe=False), Step(wide, seconds=2.5, lift=step), Step(turned, seconds=1.0, lift=pivot),
+            Step(reach, seconds=1.5), Step(pose, seconds=2.0, hold=9.0), Step(reach, seconds=2.0),
+            Step(turned, seconds=1.5), Step(wide, seconds=1.0, lift=pivot), Step(stand, seconds=2.5, lift=step)]
 
 
 POSES: dict[str, PoseSpec] = {
@@ -1340,4 +1483,5 @@ POSES: dict[str, PoseSpec] = {
     "goddess": PoseSpec("Goddess Pose (Utkata Konasana)", _goddess_steps, main=3, view=0.0),
     "tree": PoseSpec("Tree Pose (Vrksasana)", _tree_steps, main=5, view=0.0),
     "warrior_3": PoseSpec("Warrior 3 (Virabhadrasana III)", _warrior3_steps, main=2, view=90.0),
+    "triangle": PoseSpec("Triangle Pose (Utthita Trikonasana)", _triangle_steps, main=4, view=0.0),
 }

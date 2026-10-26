@@ -333,6 +333,34 @@ def test_warrior_3_is_a_level_t_on_one_leg(body):
     assert pose.left_leg.contact and not (pose.right_leg.contact or pose.left_arm.contact or pose.right_arm.contact)
 
 
+def test_triangle_tilts_over_the_straight_front_leg_with_the_arms_in_one_vertical_line(body):
+    spec = yoga.POSES["triangle"]
+    pose = yoga.settle(body, spec.steps(body)[spec.main].pose)
+    _, glob = yoga.solve(body, pose)
+    left, right = body.sides["left"], body.sides["right"]
+    front, back = glob[left["foot"], :3, 3], glob[right["foot"], :3, 3]
+    assert front[0] - back[0] > 1.1 * body.leg and abs(front[2] - back[2]) < 0.05  # wide, across the body
+    toes = glob[left["foot"], :3, :3] @ left["foot_forward"]
+    assert toes[0] > 0.95  # the front foot points along the stance
+    for s in (left, right):
+        assert _bend(glob, s["thigh"], s["calf"], s["foot"]) < 15.0  # both legs straight ...
+        assert _bend(glob, s["upper"], s["fore"], s["hand"]) < 15.0  # ... and both arms
+    hips = glob[body.root, :3, 3]
+    torso = 0.5 * (glob[left["upper"], :3, 3] + glob[right["upper"], :3, 3]) - hips
+    assert hips[0] < 0.0 and math.degrees(math.atan2(torso[0], torso[1])) > 55.0  # hips back, the torso far over
+    down = glob[left["hand"], :3, 3] - glob[left["upper"], :3, 3]
+    up = glob[right["hand"], :3, 3] - glob[right["upper"], :3, 3]
+    assert -down[1] > 0.95 * np.linalg.norm(down) and up[1] > 0.95 * np.linalg.norm(up)  # one vertical line
+    knee, ankle, wrist = glob[left["calf"], :3, 3], glob[left["foot"], :3, 3], glob[left["hand"], :3, 3]
+    along = np.clip((wrist - knee) @ (ankle - knee) / np.dot(ankle - knee, ankle - knee), 0.0, 1.0)
+    assert 0.2 < along < 1.0 and np.linalg.norm(knee + along * (ankle - knee) - wrist) < 0.12  # the hand on the shin
+    chest = glob[body.spine[2], :3, :3] @ body.rest_rot[body.spine[2]].T @ (0.0, 0.0, 1.0)
+    assert chest[2] > 0.9  # the chest open to the front, not turned to the floor
+    gaze = glob[body.head, :3, :3] @ body.rest_rot[body.head].T @ (0.0, 0.0, 1.0)
+    assert gaze[1] > 0.5  # looking up to the top hand
+    assert pose.left_leg.contact and pose.right_leg.contact and not pose.left_arm.contact
+
+
 def test_yogi_squat_is_deep_with_wide_knees_and_palms_together(body):
     pose = yoga.settle(body, yoga.POSES["yogi_squat"].steps(body)[1].pose)
     _, glob = yoga.solve(body, pose)

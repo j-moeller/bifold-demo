@@ -62,6 +62,11 @@ work goes on. The people are avatars from the
   the straight left leg, the body tips forward like a seesaw as the right leg
   lifts straight back (the heel peeling off first) and the arms swing forward,
   into one level line from the hands to the heel.
+- `yoga_triangle.jpg`: the Triangle Pose (Utthita Trikonasana) clip: a wide
+  stance with both legs straight and the front foot turned out, the hips back,
+  the torso tilted over the front leg, the lower hand on the shin (at the ankle
+  for the longer-armed avatars), the top arm straight up in line with it, the
+  gaze to the top hand.
 - `selection.jpg`: selection mode in the fair: three of the audience doing Cow
   Pose, Downward Facing Dog and Upward Facing Dog (keys 2, 4 and 6), each at a
   spot they walked to where the camera sees the whole pose; the selected one is
