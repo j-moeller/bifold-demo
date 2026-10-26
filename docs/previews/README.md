@@ -47,3 +47,7 @@ work goes on. The people are avatars from the
 - `yoga_upward_dog.jpg`: the Upward Facing Dog (Urdhva Mukha Svanasana) clip:
   down to hands and knees, a step back to plank, then the hips lower, the
   feet roll onto their tops and the chest lifts on straight arms.
+- `selection.jpg`: selection mode in the fair: three of the audience doing Cow
+  Pose, Downward Facing Dog and Upward Facing Dog (keys 2, 4 and 6), each at a
+  spot they walked to where the camera sees the whole pose; the selected one is
+  tagged with what they are doing, and the key help is at the bottom.

@@ -160,6 +160,13 @@ def _pose_names() -> list[str]:
     return list(yoga.POSES)
 
 
+def _ignore_interrupts() -> None:
+    """Pool workers leave Ctrl+C to the command, which stops them."""
+    import signal
+
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
 def _yoga_job(dest: str, name: str, pose: str) -> tuple[str, str, float, str | None]:
     """Solve (or find cached) one avatar's pose; runs in a worker process."""
     from . import yoga_clips
@@ -168,13 +175,14 @@ def _yoga_job(dest: str, name: str, pose: str) -> tuple[str, str, float, str | N
     try:
         model = CharacterLibrary(dest).load(name, textures="none")
         path = yoga_clips.cache_path(Path(dest) / "yoga", model, pose)
-        yoga_clips.load_or_build(model, pose, path, yoga_clips.model_key(model))
+        yoga_clips.load_or_build(model, pose, path, yoga_clips.model_key(model), strict=True)
     except Exception as exc:  # noqa: BLE001 - reported per clip
         return name, pose, time.perf_counter() - start, f"{type(exc).__name__}: {exc}"
     return name, pose, time.perf_counter() - start, None
 
 
 def cmd_yoga(args) -> int:
+    import multiprocessing
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
     from . import yoga
@@ -189,13 +197,24 @@ def cmd_yoga(args) -> int:
     poses = args.poses or list(yoga.POSES)
     jobs = [(str(dest), name, pose) for name in names for pose in poses]
     report, failed = _progress("yoga"), 0
-    with ProcessPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+    pool = ProcessPoolExecutor(max_workers=max(1, args.jobs), mp_context=multiprocessing.get_context("spawn"),
+                               initializer=_ignore_interrupts)  # spawn: like on macOS, and safe with threads
+    try:
         futures = [pool.submit(_yoga_job, *job) for job in jobs]
         for done, future in enumerate(as_completed(futures), 1):
             name, pose, seconds, error = future.result()
             failed += error is not None
             report(done, len(jobs), f"{name} {pose}", error or f"{seconds:.1f} s")
-    print(f"[yoga] {len(jobs) - failed} clips ready in {dest / 'yoga'}" + (f", {failed} failed" if failed else ""))
+    except BaseException:  # Ctrl+C: stop now, not after the queue (the clips done so far are kept)
+        processes = list(getattr(pool, "_processes", {}).values())
+        pool.shutdown(wait=False, cancel_futures=True)
+        for process in processes:
+            process.terminate()
+        raise
+    pool.shutdown()
+    ready = len(jobs) - failed
+    print(f"[yoga] {ready} {'clip' if ready == 1 else 'clips'} ready in {dest / 'yoga'}"
+          + (f", {failed} failed" if failed else ""))
     return 1 if failed else 0
 
 

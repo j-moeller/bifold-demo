@@ -681,10 +681,16 @@ def fetch(dest, avatars, clips, jobs: int = 8, progress=None, *, retries: int = 
 
 
 def _write_atomic(path: Path, write) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "wb") as f:
-        write(f)
-    os.replace(tmp, path)
+    """Write ``path`` whole or not at all; each writer has its own temporary file, so two writers of the same file
+    (the demo and ``bifold-characters``) never mix their bytes."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}-{threading.get_ident()}.tmp")
+    try:
+        with open(tmp, "wb") as f:
+            write(f)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _json(data, **kw) -> str:

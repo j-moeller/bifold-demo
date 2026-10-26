@@ -4,7 +4,8 @@ Solving a pose for an avatar takes up to about three seconds (the floor poses), 
 ran in the demo's process, even on another thread. :class:`YogaClips` therefore builds clips in a worker process (one
 at a time, most urgent first), keeps them in memory and caches them on disk in ``<characters folder>/yoga/``, so each
 avatar's pose is solved once (``bifold-characters yoga`` solves them all ahead of time). The cache is keyed by the
-avatar's skeleton and mesh and by the source of :mod:`.yoga`: changing a pose rebuilds its clips.
+avatar's skeleton, mesh and skinning and by the source of the solver (:mod:`.yoga` and the modules it uses): changing
+a pose rebuilds its clips.
 
 :func:`worker_main` is the worker: it reads pickled jobs on stdin and writes pickled results to stdout.
 """
@@ -23,6 +24,8 @@ import threading
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
+
 from . import yoga
 from .library import default_folder
 from .model import AnimationClip, CharacterModel
@@ -30,16 +33,19 @@ from .model import AnimationClip, CharacterModel
 URGENT, LATER = 0, 1  # priorities: a pose someone asked for, poses solved ahead of time
 
 
-_SOURCE = Path(yoga.__file__).read_bytes()
+_SOURCE = b"".join(Path(__file__).with_name(name).read_bytes() for name in ("yoga.py", "model.py", "character.py"))
 
 
 def model_key(model: CharacterModel) -> str:
-    """A fingerprint of what a yoga clip depends on: the skeleton, the skinned mesh and the pose code."""
+    """A fingerprint of what a yoga clip depends on: the skeleton, the skinned mesh and the solver's code."""
     h = hashlib.blake2b(_SOURCE, digest_size=10)
     sk = model.skeleton
     h.update("\n".join(sk.names).encode())
-    for array in (sk.parents, sk.rest_local, *(a for p in model.primitives for a in (p.positions, p.joints, p.weights))):
-        h.update(array.tobytes())
+    arrays = (sk.parents, sk.rest_local, model.inverse_bind,
+              *(a for p in model.primitives for a in (p.positions, p.joints, p.weights)))
+    for array in map(np.asarray, arrays):
+        h.update(f"{array.dtype}{array.shape}".encode())
+        h.update(np.ascontiguousarray(array).tobytes())
     return h.hexdigest()
 
 
@@ -47,8 +53,9 @@ def cache_path(folder: Path, model: CharacterModel, pose: str) -> Path:
     return Path(folder) / f"{re.sub(r'[^A-Za-z0-9_.-]', '_', model.name)}-{pose}.npz"
 
 
-def load_or_build(model: CharacterModel, pose: str, path: Path | None, key: str) -> AnimationClip:
-    """The clip of ``pose`` for ``model``: from ``path`` if it holds one for ``key``, else solved (and saved there)."""
+def load_or_build(model: CharacterModel, pose: str, path: Path | None, key: str, strict: bool = False) -> AnimationClip:
+    """The clip of ``pose`` for ``model``: from ``path`` if it holds one for ``key``, else solved and saved there (when
+    that fails, only kept in memory; with ``strict`` the error is raised)."""
     from .rocketbox import read_clip, save_clip
 
     if path is not None and Path(path).is_file():
@@ -64,7 +71,9 @@ def load_or_build(model: CharacterModel, pose: str, path: Path | None, key: str)
         try:
             save_clip(clip, None, path=path)
         except OSError:
-            pass  # a read-only folder: keep it in memory only
+            if strict:
+                raise
+            # else a read-only folder (or a full disk): keep it in memory only
     return clip
 
 
@@ -97,6 +106,7 @@ class YogaClips:
         self._order = itertools.count()
         self._keys: dict[int, tuple[CharacterModel, str]] = {}
         self._worker = None  # the current thread's worker process (for close)
+        self._deaths = 0  # workers that died in a row while building a clip
         self._thread = None
         self._generation = self._thread_generation = 0  # close() starts a new generation
 
@@ -133,10 +143,10 @@ class YogaClips:
                 return None  # failed before: only try again when someone asks for it
             self._errors.pop(job, None)
             if job != self._running:
-                known = self._queue.get(job)
-                if known is None or priority < known[0]:
-                    order = next(self._order) if priority == URGENT or known is None else known[1]
-                    self._queue[job] = (priority, -order if priority == URGENT else order, model)
+                if priority == URGENT:  # the newest request first
+                    self._queue[job] = (URGENT, -next(self._order), model)
+                elif job not in self._queue:
+                    self._queue[job] = (LATER, next(self._order), model)
             self._start()
             self._lock.notify_all()
         return None
@@ -195,19 +205,26 @@ class YogaClips:
                     return
                 (key, pose), model = item
                 path = cache_path(self.folder, model, pose) if self.folder is not None else None
-                clip, error = None, None
+                clip, error, in_process = None, None, not self.process
                 try:
                     if self.process:
                         try:
                             worker = self._ensure_worker(worker, generation)
                             clip = _in_worker(worker, _light(model), pose, path, key)
+                            self._deaths = 0
+                        except _NoWorker as exc:
+                            print(f"[yoga] {exc}; building clips in the demo's process instead", file=sys.stderr)
+                            self.process, in_process = False, True
                         except _WorkerGone as exc:
                             if self._generation != generation:
                                 return  # closed meanwhile
-                            print(f"[yoga] the worker process stopped ({exc}); building clips in the demo's process "
-                                  "instead", file=sys.stderr)
-                            self.process = False
-                    if clip is None:
+                            worker, self._deaths = None, self._deaths + 1  # the next clip starts a new one
+                            error = f"the worker process stopped while solving it ({exc})"
+                            if self._deaths >= 3:
+                                print(f"[yoga] the worker process stopped {self._deaths} times in a row; building "
+                                      "clips in the demo's process from now on", file=sys.stderr)
+                                self.process = False
+                    if in_process:
                         clip = load_or_build(model, pose, path, key)
                 except Exception as exc:  # noqa: BLE001 - reported to whoever asks for the clip
                     error = f"{type(exc).__name__}: {exc}"
@@ -248,7 +265,11 @@ def _in_worker(worker: subprocess.Popen, model, pose, path, key) -> AnimationCli
 
 
 class _WorkerGone(Exception):
-    pass
+    """The worker process stopped (or was stopped) while building a clip."""
+
+
+class _NoWorker(_WorkerGone):
+    """No worker process can be started."""
 
 
 _WORKER = "from bifold_demo.characters.yoga_clips import worker_main; worker_main()"
@@ -262,20 +283,21 @@ def _spawn() -> subprocess.Popen:
     try:
         return subprocess.Popen([sys.executable, "-c", _WORKER], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
     except OSError as exc:
-        raise _WorkerGone(f"cannot start {sys.executable}: {exc}") from None
+        raise _NoWorker(f"cannot start {sys.executable}: {exc}") from None
 
 
 def _stop(worker: subprocess.Popen) -> None:
-    """End the worker: it stops when its input closes, else (busy with a clip) it is killed; the cache files are
-    written whole or not at all."""
+    """End the worker now: a clip it is building is not wanted any more, and cache files are written whole or not at
+    all."""
     try:
-        worker.stdin.close()
-        worker.wait(timeout=0.3)
-    except (OSError, subprocess.TimeoutExpired):
         worker.kill()
+        worker.wait(timeout=1.0)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    for pipe in (worker.stdin, worker.stdout):
         try:
-            worker.wait(timeout=1.0)
-        except subprocess.TimeoutExpired:
+            pipe.close()
+        except OSError:
             pass
 
 
