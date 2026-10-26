@@ -361,6 +361,27 @@ def test_triangle_tilts_over_the_straight_front_leg_with_the_arms_in_one_vertica
     assert pose.left_leg.contact and pose.right_leg.contact and not pose.left_arm.contact
 
 
+def test_forward_bend_folds_over_straight_legs_with_the_hands_by_the_feet(body):
+    spec = yoga.POSES["forward_bend"]
+    pose = yoga.settle(body, spec.steps(body)[spec.main].pose)
+    _, glob = yoga.solve(body, pose)
+    left, right = body.sides["left"], body.sides["right"]
+    hips, head = glob[body.root, :3, 3], glob[body.head, :3, 3]
+    shoulders = 0.5 * (glob[left["upper"], :3, 3] + glob[right["upper"], :3, 3])
+    verts = yoga.skin(body, glob)
+    feet = verts[np.concatenate([body.foot_group(side) for side in body.sides])]
+    assert hips[1] > 0.95 * body.leg  # standing tall on the legs ...
+    for side, s in body.sides.items():
+        assert _bend(glob, s["thigh"], s["calf"], s["foot"]) < 15.0  # ... straight
+        hand, foot = glob[s["hand"], :3, 3], glob[s["foot"], :3, 3]
+        assert abs(hand[0]) > abs(foot[0]) + 0.05 and abs(hand[2] - foot[2]) < 0.25  # the hands beside the feet ...
+        assert abs(verts[body.hand_group(side), 1].min()) < 0.005  # ... on the floor
+    assert abs(glob[left["foot"], 0, 3] - glob[right["foot"], 0, 3]) < 2.0 * body.hip_width  # feet hip-width apart
+    assert shoulders[1] < hips[1] - 0.6 * body.torso and head[1] < shoulders[1]  # folded down, the head hanging
+    assert feet[:, 2].min() < hips[2] < feet[:, 2].min() + 0.4 * np.ptp(feet[:, 2])  # the hips over the heels
+    assert all(getattr(pose, limb).contact for limb in yoga.LIMBS)
+
+
 def test_yogi_squat_is_deep_with_wide_knees_and_palms_together(body):
     pose = yoga.settle(body, yoga.POSES["yogi_squat"].steps(body)[1].pose)
     _, glob = yoga.solve(body, pose)

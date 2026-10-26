@@ -67,6 +67,10 @@ work goes on. The people are avatars from the
   the torso tilted over the front leg, the lower hand on the shin (at the ankle
   for the longer-armed avatars), the top arm straight up in line with it, the
   gaze to the top hand.
+- `yoga_forward_bend.jpg`: the Standing Forward Bend (Uttanasana) clip: a swan
+  dive with the arms wide into a fold over straight legs, the hips over the
+  heels, the head hanging, the hands on the floor beside the feet (on the
+  fingertips for the shorter-armed women).
 - `selection.jpg`: selection mode in the fair: three of the audience doing Cow
   Pose, Downward Facing Dog and Upward Facing Dog (keys 2, 4 and 6), each at a
   spot they walked to where the camera sees the whole pose; the selected one is

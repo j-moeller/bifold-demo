@@ -1467,9 +1467,127 @@ def _triangle_steps(body: Body) -> list[Step]:
     reach = _farther(body, replace(reach, **_arms_out(body, reach)))
     step = {"left_leg": 0.05, "right_leg": 0.05}
     pivot = {"left_leg": 0.02}
-    return [Step(stand, hold=1.5, breathe=False), Step(wide, seconds=2.5, lift=step), Step(turned, seconds=1.0, lift=pivot),
-            Step(reach, seconds=1.5), Step(pose, seconds=2.0, hold=9.0), Step(reach, seconds=2.0),
+    return [Step(stand, hold=1.5, breathe=False), Step(wide, seconds=2.5, lift=step),
+            Step(turned, seconds=1.0, lift=pivot), Step(reach, seconds=1.5), Step(pose, seconds=2.0, hold=9.0), Step(reach, seconds=2.0),
             Step(turned, seconds=1.5), Step(wide, seconds=1.0, lift=pivot), Step(stand, seconds=2.5, lift=step)]
+
+
+def _hinge(body: Body, pitch: float, spine: float = 0.0, head: float = 0.0) -> BodyPose:
+    """Standing on straight legs, the feet as in mountain pose, bent forward at the hips by ``pitch`` degrees
+    (pelvis) and ``spine`` more in the back; the hips move back as the torso folds, over the heels when it is
+    horizontal or lower. The arms are left as in mountain pose."""
+    stand = mountain(body)
+    pose = replace(stand, pelvis=(pitch, 0.0, 0.0), spine=(spine, 0.0, 0.0), head=(head, 0.0, 0.0), flat_hands=True)
+    _, glob = solve(body, replace(pose, root=(0.0, 0.0, 0.0)))
+    hips = 0.5 * (glob[body.sides["left"]["thigh"], 2, 3] + glob[body.sides["right"]["thigh"], 2, 3])
+    feet = body.vertices[np.concatenate([body.foot_group(side) for side in body.sides]), 2]
+    heels = float(feet.min()) + 0.15 * float(feet.max() - feet.min())  # the heel bones
+    back = min(1.0, pitch / 90.0)
+    rest = float(body.rest_pos[body.root, 2])
+    pose = replace(pose, root=(0.0, 0.0, rest + back * (heels - rest - hips)))
+    return replace(pose, root=_straight_legs_root(body, pose))
+
+
+def _arms_wide(body: Body, pose: BodyPose, reach: float = OVERREACH) -> dict:
+    """Both arms straight out to the sides of the chest, palms forward (to the floor when bent over), aimed
+    ``reach`` times their length away."""
+    _, glob = solve(body, pose)
+    chest = glob[body.spine[2], :3, :3] @ body.rest_rot[body.spine[2]].T
+    back = chest @ (0.0, 0.0, -1.0)
+    return {f"{side}_arm": _arm_along(body, glob, side, chest @ (s["sign"], 0.0, 0.0), back, back, reach)
+            for side, s in body.sides.items()}
+
+
+def _tipped(tip: float) -> tuple:
+    """``(forward, back)`` of a hand pointing forward, tipped down ``tip`` degrees from lying flat (palm down)."""
+    a = math.radians(tip)
+    return (0.0, -math.sin(a), math.cos(a)), (0.0, math.cos(a), math.sin(a))
+
+
+def _hand_drop(body: Body, side: str, tip: float = 0.0) -> float:
+    """How far the hand (fingers straight) reaches below the wrist joint when it points forward, tipped down
+    ``tip`` degrees from flat: the wrist's height above the floor with the palm flat (0) or on the fingertips."""
+    s = body.sides[side]
+    stand = mountain(body)
+    shoulder = body.rest_pos[s["upper"]]
+    wrist = shoulder + (s["upper_length"] + s["fore_length"]) * np.array([0.0, -0.6, 0.5])  # easily reached
+    forward, back = _tipped(tip)
+    probe = replace(stand, flat_hands=True, **{f"{side}_arm": Limb(tuple(wrist), (s["sign"] * 0.25, 0.0, -1.0),
+                                                                   forward, back)})
+    _, glob = solve(body, probe)
+    return float(glob[s["hand"], 1, 3] - skin(body, glob, body.hand_group(side))[:, 1].min())
+
+
+def _wrists_by_feet(body: Body, pose: BodyPose, reach: float = 0.98) -> dict:
+    """side -> ``(x, height, z)``: where the wrist goes for the hand to rest on the floor beside the foot with the
+    fingertips about level with the toes, and how high it is when the arm (``reach`` of its length) gets there."""
+    _, glob = solve(body, pose)
+    wrists = {}
+    for side, s in body.sides.items():
+        foot = body.vertices[body.foot_group(side)]
+        hand = body.vertices[body.hand_group(side)] - body.rest_pos[s["hand"]]
+        length = float((hand @ s["hand_forward"]).max())  # wrist to fingertips
+        x = s["sign"] * (float((s["sign"] * foot[:, 0]).max()) + 0.05)
+        z = float(foot[:, 2].max()) - 0.9 * length
+        shoulder = glob[s["upper"], :3, 3]
+        arm = reach * (s["upper_length"] + s["fore_length"])
+        across = math.hypot(x - shoulder[0], z - shoulder[2])
+        wrists[side] = (x, float(shoulder[1]) - math.sqrt(max(arm * arm - across * across, 0.0)), z)
+    return wrists
+
+
+def _hands_by_feet(body: Body, pose: BodyPose, reach: float = 0.98) -> dict:
+    """Both hands on the floor beside the feet (:func:`_wrists_by_feet`): the palms flat when the arms get that
+    far down, else on the fingertips, the hand tipped down until they touch (at most 70 degrees)."""
+    arms = {}
+    for side, (x, height, z) in _wrists_by_feet(body, pose, reach).items():
+        s = body.sides[side]
+        flat = _hand_drop(body, side)
+        tip = 0.0
+        if height > flat:  # on the fingertips: tipped as far as the wrist is higher
+            low, high = 0.0, 70.0
+            for _ in range(10):
+                tip = 0.5 * (low + high)
+                low, high = (tip, high) if _hand_drop(body, side, tip) < height else (low, tip)
+            tip = 0.5 * (low + high)
+        forward, back = _tipped(tip)
+        arms[f"{side}_arm"] = Limb((x, max(height, flat), z), (s["sign"] * 0.6, 0.0, -0.8), forward, back,
+                                   contact=True)
+    return arms
+
+
+def forward_fold(body: Body, spine: float = 35.0, head: float = 30.0, low: float = 110.0,
+                 high: float = 135.0) -> BodyPose:
+    """Uttanasana: the legs straight, the torso folded forward from the hips over the legs (pelvis pitch between
+    ``low`` and ``high``, ``spine`` more in the back), the head hanging, the hips over the heels and the hands on
+    the floor beside the feet: as deep as the palms need to rest flat, at most ``high`` (then on the fingertips)."""
+    flat = {side: _hand_drop(body, side) for side in body.sides}
+
+    def above(pitch):  # how far the wrists stay above where they would be with the palms flat
+        wrists = _wrists_by_feet(body, _hinge(body, pitch, spine, head))
+        return max(wrists[side][1] - flat[side] for side in body.sides)
+
+    for _ in range(12):  # the least fold that brings the palms flat to the floor
+        middle = 0.5 * (low + high)
+        low, high = (middle, high) if above(middle) > 0 else (low, middle)
+    pose = _hinge(body, high, spine, head)
+    return replace(pose, **_hands_by_feet(body, pose))
+
+
+def _forward_bend_steps(body: Body) -> list[Step]:
+    """Uttanasana: from standing the arms open wide, the body hinges forward with a long flat back, the arms out
+    to the sides (a swan dive), then folds down over the legs, the hands to the floor beside the feet and the head
+    hanging; up the same way, with a flat back and the arms wide, and the arms down to standing."""
+    stand = mountain(body)
+    far = 2.0  # the wide arms aim far, so that they stay nearly straight while they sweep up and down
+    opened = replace(stand, spine=(-6.0, 0.0, 0.0), head=(-6.0, 0.0, 0.0), flat_hands=True)
+    opened = replace(opened, **_arms_wide(body, opened, far))
+    swan = _hinge(body, 80.0, -6.0, -12.0)
+    swan = replace(swan, **_arms_wide(body, swan, far))
+    fold = forward_fold(body)
+    return [Step(stand, hold=1.5, breathe=False), Step(opened, seconds=2.0), Step(swan, seconds=2.0),
+            Step(fold, seconds=2.2, hold=9.0), Step(swan, seconds=2.2), Step(opened, seconds=2.0),
+            Step(stand, seconds=2.0)]
 
 
 POSES: dict[str, PoseSpec] = {
@@ -1484,4 +1602,5 @@ POSES: dict[str, PoseSpec] = {
     "tree": PoseSpec("Tree Pose (Vrksasana)", _tree_steps, main=5, view=0.0),
     "warrior_3": PoseSpec("Warrior 3 (Virabhadrasana III)", _warrior3_steps, main=2, view=90.0),
     "triangle": PoseSpec("Triangle Pose (Utthita Trikonasana)", _triangle_steps, main=4, view=0.0),
+    "forward_bend": PoseSpec("Standing Forward Bend (Uttanasana)", _forward_bend_steps, main=3, view=90.0),
 }
