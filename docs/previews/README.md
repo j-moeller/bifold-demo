@@ -12,3 +12,10 @@ work goes on. The people are avatars from the
   from 20 avatars in the trade-fair hall, frozen in idle, talk, listen and walk
   poses; nobody faces the camera.
 - `fair3d_det.jpg`: the same frame with YOLO's detections.
+- `behaviours_frames.jpg`: first animated test with the work-in-progress
+  behaviours and a fixed camera (one frame every 2 s): two people walk towards
+  the camera, stop and turn around; three walk across the aisles (one a child);
+  two chat.
+- `approach_closeup.jpg`: close-up of the end of that test: the woman who walks
+  up to the camera keeps her head lowered and turned aside, the man behind her
+  turns around.
