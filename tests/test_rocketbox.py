@@ -32,6 +32,7 @@ ROCKETBOX = Path(os.environ["BIFOLD_ROCKETBOX_TEST_DIR"]).expanduser() if os.env
     else None
 CONTRACT_ROLES = ("walk", "walk_slow", "stroll", "idle", "look_around", "talk", "listen", "phone",
                   "turn_left_90", "turn_right_90", "turn_left_180", "turn_right_180")
+GESTURE_ROLES = ("wave",)  # clips played over an arm (camera play), never picked for idles
 BONES = ["Bip01", "Bip01 Pelvis", "Bip01 Spine", "Bip01 Head"]
 
 
@@ -39,7 +40,7 @@ BONES = ["Bip01", "Bip01 Pelvis", "Bip01 Spine", "Bip01 Head"]
 
 
 def test_every_role_has_clips_for_men_and_women():
-    assert tuple(rocketbox.ROLE_CLIPS) == CONTRACT_ROLES
+    assert tuple(rocketbox.ROLE_CLIPS) == CONTRACT_ROLES + GESTURE_ROLES
     for role, names in rocketbox.ROLE_CLIPS.items():
         assert any(n.startswith("m_") for n in names) and any(n.startswith("f_") for n in names), role
         assert all(rocketbox.CLIPS[n].role == role for n in names)
@@ -48,6 +49,9 @@ def test_every_role_has_clips_for_men_and_women():
     except ImportError:
         return
     assert tuple(ROLES) == CONTRACT_ROLES
+    from bifold_demo.characters.behaviour import GESTURES
+
+    assert tuple(GESTURES) == GESTURE_ROLES
 
 
 def test_manifest_matches_the_repository_listing():
@@ -86,7 +90,7 @@ def test_avatar_sets():
     with pytest.raises(ValueError, match="unknown avatar set"):
         rocketbox.avatar_set("everyone")
     assert set(rocketbox.clip_set("basic")) <= set(rocketbox.clip_set("all"))
-    assert len(rocketbox.clip_set("basic")) == 2 * len(CONTRACT_ROLES)
+    assert len(rocketbox.clip_set("basic")) == 2 * len(CONTRACT_ROLES + GESTURE_ROLES)
 
 
 def test_names_sizes_and_urls():
@@ -228,7 +232,7 @@ SOME_AVATARS = ("Female_Child_01", "Business_Male_02", "Male_Adult_05")
 
 def test_ctrl_c_stops_the_queued_and_the_running_downloads(tmp_path):
     clips = rocketbox.clip_set("basic")
-    remote = _remote(avatars=SOME_AVATARS, clips=clips)  # 35 files
+    remote = _remote(avatars=SOME_AVATARS, clips=clips)  # 37 files
     opener = FakeOpener(remote, delay=0.02)  # 0.1-0.3 s per file: about 3 s for all of them with 2 jobs
 
     def interrupt(*_):
@@ -266,8 +270,8 @@ def test_fetch_gives_up_soon_when_the_server_cannot_be_reached(tmp_path):
     report = info.value.report
     assert report.stopped and report.downloaded == 0
     assert rocketbox.UNREACHABLE_AFTER <= len(report.failed) <= rocketbox.UNREACHABLE_AFTER + 1  # + one running
-    assert len(calls) <= 3 * (rocketbox.UNREACHABLE_AFTER + 1)  # not 3 attempts for every one of the 35 files
-    assert "check the network connection" in str(info.value) and "35 of 35 files are still missing" in str(info.value)
+    assert len(calls) <= 3 * (rocketbox.UNREACHABLE_AFTER + 1)  # not 3 attempts for every one of the 37 files
+    assert "check the network connection" in str(info.value) and "37 of 37 files are still missing" in str(info.value)
 
 
 def test_cli_fetch_without_a_network_ends_soon_with_one_clear_error(tmp_path, monkeypatch, capsys):
@@ -377,7 +381,7 @@ def test_fetch_stops_at_the_first_certificate_failure_with_one_clear_error(tmp_p
     report = info.value.report
     assert report.stopped and len(report.failed) == 1 and len(calls) <= 4  # the same for every file of the host
     assert "install certificates" in str(info.value) and "intercepts HTTPS" in str(info.value)
-    assert "35 of 35 files are still missing" in str(info.value)
+    assert "37 of 37 files are still missing" in str(info.value)
 
     monkeypatch.setattr(rocketbox, "_default_opener", lambda: _untrusted([]))
     assert cli.main(["fetch", "--set", "conference", "--dest", str(tmp_path / "cli")]) == 1
@@ -455,7 +459,8 @@ def _raw_tree(root: Path, avatars=AVATARS, clips=None) -> Path:
 def test_prepare_and_load_round_trip(tmp_path, stub_convert):
     raw, cache = _raw_tree(tmp_path / "raw"), tmp_path / "cache"
     report = rocketbox.prepare(raw / "Assets", cache)
-    assert sorted(report.avatars) == sorted(AVATARS) and len(report.clips) == 24 and not report.failed
+    basic = len(rocketbox.clip_set("basic"))  # 26: the first clip of every role, for men and women
+    assert sorted(report.avatars) == sorted(AVATARS) and len(report.clips) == basic and not report.failed
     library = CharacterLibrary(cache)
     available = library.available()
     assert sorted(available) == sorted(AVATARS)
@@ -484,7 +489,7 @@ def test_prepare_and_load_round_trip(tmp_path, stub_convert):
         library.load("Male_Adult_01")
 
     clips = library.clips()
-    assert len(clips) == 24
+    assert len(clips) == basic
     clip, source = clips["m_turn_left_90"], _clip("m_turn_left_90")
     assert clip.bone_names == BONES and clip.fps == 30.0 and clip.loop is False and clip.root == "Bip01"
     assert np.allclose(clip.rotations, source.rotations, atol=1e-6) and clip.rotations.dtype == np.float64
@@ -620,7 +625,8 @@ def test_a_damaged_clip_is_left_out_with_one_warning(prepared, damage):
     assert len(caught) == 1 and "fetch --avatars --clips basic" in str(caught[0].message)
     with warnings.catch_warnings():
         warnings.simplefilter("error", DamagedFileWarning)
-        assert len(library.clips()) == 23 and library.is_ready() and "m_walk_neutral_01" in library.damaged()
+        assert len(library.clips()) == len(rocketbox.clip_set("basic")) - 1 and library.is_ready()
+        assert "m_walk_neutral_01" in library.damaged()
     assert not rocketbox.is_prepared(cache, "clip", "m_walk_neutral_01")
     assert rocketbox.prepare(raw, cache, avatars=[], clips=["m_walk_neutral_01"]).clips == ["m_walk_neutral_01"]
     assert "m_walk_neutral_01" in library.clips() and len(library.roles()["walk"]) == 2 and not library.damaged()
@@ -786,7 +792,7 @@ def test_cli_parsing():
 def test_cli_dry_run_list_and_errors(tmp_path, capsys):
     assert cli.main(["fetch", "--set", "small", "--dry-run", "--dest", str(tmp_path)]) == 0
     out = capsys.readouterr().out
-    assert "12 avatars and 24 animation clips" in out and "MB to download" in out
+    assert "12 avatars and 26 animation clips" in out and "MB to download" in out
     assert cli.main(["fetch", "--avatars", "Nobody", "--dest", str(tmp_path)]) == 2
     assert "unknown avatar 'Nobody'" in capsys.readouterr().err
     assert cli.main(["list", "--dest", str(tmp_path)]) == 0
@@ -806,10 +812,10 @@ def test_cli_fetch_downloads_prepares_and_lists(tmp_path, stub_convert, monkeypa
     assert cli.main(["fetch", "--avatars", "Female_Child_01", "--clips", "basic", "--dest", str(dest),
                      "--delete-raw"]) == 0
     out = capsys.readouterr().out
-    assert "27 files" in out and "[prepare]" in out and "\n  ready\n" in out
+    assert "29 files" in out and "[prepare]" in out and "\n  ready\n" in out
     assert not [p for p in (dest / "raw").rglob("*") if p.is_file()]
     assert cli.main(["fetch", "--avatars", "Female_Child_01", "--clips", "basic", "--dest", str(dest)]) == 0
-    assert "25 already prepared" in capsys.readouterr().out
+    assert "27 already prepared" in capsys.readouterr().out
     assert cli.main(["list", "--dest", str(dest)]) == 0
     assert "Female_Child_01" in capsys.readouterr().out
     assert cli.main(["info", "Female_Child_01", "--dest", str(dest)]) == 0
@@ -838,7 +844,7 @@ def test_cli_fetch_repairs_what_the_library_leaves_out(tmp_path, stub_convert, m
     assert "left out, damaged: Female_Child_01" in out and "left out, damaged: m_walk_neutral_01" in out
     assert repair[:2] == ["bifold-characters", "fetch"] and cli.main(repair[1:]) == 0  # the suggested command
     out = capsys.readouterr().out
-    assert "(23 already prepared): 4 files" in out and "[prepare] 1 avatars and 1 clips converted" in out  # not 74
+    assert "(25 already prepared): 4 files" in out and "[prepare] 1 avatars and 1 clips converted" in out  # not 78
     assert cli.main(["list", "--dest", str(dest)]) == 0
     out = capsys.readouterr().out
     assert "Female_Child_01" in out and "damaged" not in out and "\n  ready\n" in out
@@ -854,10 +860,10 @@ def test_cli_fetch_takes_an_assets_folder_like_prepare(tmp_path, stub_convert, m
     dest = tmp_path / "characters"
     assert cli.main(["fetch", "--avatars", *avatar, "--clips", "basic", "--raw", str(assets), "--dest", str(dest)]) == 0
     out = capsys.readouterr().out
-    assert "27 files, about 12.6 MB to download (26 files already there)" in out
+    assert "29 files, about 12.6 MB to download (28 files already there)" in out
     assert opener.requests == [(rocketbox.url_for(texture), None)]
     assert (assets / texture.removeprefix("Assets/")).is_file() and not (assets / "Assets").exists()
-    assert "[prepare] 1 avatars and 24 clips converted" in out and "\n  ready\n" in out
+    assert "[prepare] 1 avatars and 26 clips converted" in out and "\n  ready\n" in out
 
 
 def test_cli_says_how_to_make_the_demo_use_another_folder(tmp_path, monkeypatch, capsys):

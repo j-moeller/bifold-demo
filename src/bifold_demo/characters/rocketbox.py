@@ -244,6 +244,7 @@ _CLIP_MANIFEST = {
     "turn_right_90": ("xyz", "turn_right_90"),
     "turn_left_180": ("xyz", "turn_left_180"),
     "turn_right_180": ("xyz", "turn_right_180"),
+    "wave": ("static", "wave_01 wave_02"),  # gestures (behaviour.GESTURES): played over an arm, never as idles
 }
 
 

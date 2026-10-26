@@ -89,6 +89,7 @@ from .model import (
 
 ROLES = ("walk", "walk_slow", "stroll", "idle", "look_around", "talk", "listen", "phone",
          "turn_left_90", "turn_right_90", "turn_left_180", "turn_right_180")
+GESTURES = ("wave",)  # clips played over part of the body (see camera_play), never as idles or walks
 FADE = 0.3  # shortest crossfade between consecutive clips, seconds
 HEAD_YAW_LIMIT = 70.0
 MIN_ANGLE = 35.0
@@ -207,12 +208,15 @@ def clip_sex(name: str) -> str | None:
 
 
 def classify_clip(name: str) -> str | None:
-    """The role (one of ``ROLES``) a clip name suggests, e.g. ``m_walk_neutral_01`` -> ``"walk"``, else ``None``."""
+    """The role (one of ``ROLES`` or ``GESTURES``) a clip name suggests, e.g. ``m_walk_neutral_01`` -> ``"walk"``,
+    ``f_wave_02`` -> ``"wave"``, else ``None``."""
     base = name.lower().split(".")[0]
     if clip_sex(base):
         base = base[2:]
     if any(token in base for token in _EXCLUDE):
         return None
+    if base.startswith("wave"):
+        return "wave"
     for direction in ("left", "right"):
         for angle in ("90", "180"):
             if base == f"turn_{direction}_{angle}":
@@ -353,7 +357,7 @@ def stride_scale(model: CharacterModel, clip: AnimationClip) -> float:
 
 
 class MotionLibrary:
-    """Animation clips by role (see ``ROLES``).
+    """Animation clips by role (see ``ROLES``; the ``GESTURES`` roles too, which behaviours never pick for idles).
 
     Args:
         clips: ``{name: AnimationClip}``; roles are guessed from the names (:func:`classify_clip`), more can be
@@ -364,7 +368,7 @@ class MotionLibrary:
 
     def __init__(self, clips: dict[str, AnimationClip], head_forward=None):
         self.clips = dict(clips)
-        self._roles: dict[str, list[str]] = {role: [] for role in ROLES}
+        self._roles: dict[str, list[str]] = {role: [] for role in ROLES + GESTURES}
         for name in sorted(self.clips):
             role = classify_clip(name)
             if role is not None:
@@ -379,7 +383,7 @@ class MotionLibrary:
     def register(self, role: str, clip_name: str) -> None:
         """Use the clip called ``clip_name`` for ``role``."""
         if role not in self._roles:
-            raise ValueError(f"unknown role {role!r}; choose from {ROLES}")
+            raise ValueError(f"unknown role {role!r}; choose from {ROLES + GESTURES}")
         if clip_name not in self.clips:
             raise KeyError(f"no clip called {clip_name!r}")
         if clip_name not in self._roles[role]:
