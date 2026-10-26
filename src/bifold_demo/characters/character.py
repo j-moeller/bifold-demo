@@ -39,6 +39,11 @@ class Character(SceneObject):
     ``current_rotation = (0, heading, 0)``, ``current_visible``, ``pose`` (character-space bone transforms),
     ``skin_palette`` (``(B, 4, 4)`` float32 skinning matrices) and ``shadow_ellipse``. The renderer draws
     ``skinned_model`` with ``skin_palette``; the ``mesh`` property is only the static rest pose (for bounds).
+
+    What the person wears (see :mod:`.accessories`): ``worn`` skinned primitives drawn with the same palette,
+    ``props`` (rigid scene objects that follow bones; updated after the pose and drawn with the character), and
+    ``pose_adjusters``: ``fn(local, character, t)`` that edit the local bone transforms of the clips before the
+    skeleton is posed (an arm holding a sign).
     Creating a character starts decoding its texture files, visible or not (``texture_jobs``: the futures
     from :func:`preload_textures`).
     """
@@ -66,6 +71,10 @@ class Character(SceneObject):
         self.pose = self._rest_pose
         self.skin_palette = self._rest_palette
         self.shadow_ellipse = (cx, cz, rx, rz)
+        self.worn: list = []
+        self.props: list = []
+        self.pose_adjusters: list = []
+        self._time = 0.0
         self.update(0.0)
 
     def _build_mesh(self) -> Mesh:
@@ -95,15 +104,23 @@ class Character(SceneObject):
             self.current_rotation = np.array([0.0, float(state.heading), 0.0])
             visible = bool(state.visible)
         self.current_visible = visible and bool(resolve(self.visible, t))
+        self._time = t
         if self.current_visible:
             self._pose(state)
+            for garment in self.worn:
+                refresh = getattr(garment, "refresh", None)
+                if refresh is not None:
+                    refresh(t)
+        for prop in self.props:
+            prop.update(t)
 
     def _pose(self, state: CharacterState | None) -> None:
         look = state is not None and self._look and (state.head_yaw or state.head_pitch)
-        if state is None or (not state.layers and not look):
+        if (state is None or (not state.layers and not look)) and not self.pose_adjusters:
             pose, palette = self._rest_pose, self._rest_palette
         else:
-            pose = self.poser.global_pose(state.layers)
+            layers = state.layers if state is not None else []
+            pose = self.poser.global_pose(layers, adjust=self._adjust if self.pose_adjusters else None)
             if look:
                 self._turn_head(pose, float(state.head_yaw), float(state.head_pitch))
             palette = self.skinned_model.skinning_matrices(pose).astype(np.float32)
@@ -111,6 +128,10 @@ class Character(SceneObject):
         centre = pose[self._centre_bone]
         dx, dz = self._shadow_offset
         self.shadow_ellipse = (float(centre[0, 3]) + dx, float(centre[2, 3]) + dz, *self._shadow_radii)
+
+    def _adjust(self, local: np.ndarray, _poser) -> None:
+        for adjust in self.pose_adjusters:
+            adjust(local, self, self._time)
 
     def _turn_head(self, pose: np.ndarray, yaw: float, pitch: float) -> None:
         """Turn the head by ``yaw`` / ``pitch`` degrees in character space, editing the global ``pose`` in place.

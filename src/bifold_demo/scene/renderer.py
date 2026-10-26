@@ -231,6 +231,9 @@ class Renderer:
             if obj.current_visible:
                 if getattr(obj, "skinned_model", None) is not None:
                     characters.append(obj)
+                    for prop in getattr(obj, "props", ()):  # what they wear and carry (see characters.accessories)
+                        if prop.current_visible:
+                            self._draw(prop, view_proj, camera.current_position)
                 else:
                     self._draw(obj, view_proj, camera.current_position)
         if characters:
@@ -269,7 +272,7 @@ class Renderer:
             u["u_color"].value = (r / 255.0, g / 255.0, b / 255.0)
             u["u_lit"].value = bool(obj.lit)
             self._joint_texture(obj).use(1)
-            for primitive in obj.skinned_model.primitives:
+            for primitive in (*obj.skinned_model.primitives, *getattr(obj, "worn", ())):
                 vao, texture = self._skinned_primitive(primitive)
                 self._gl_texture(texture.at_time(t)).use(0)
                 vao.render(triangles)
