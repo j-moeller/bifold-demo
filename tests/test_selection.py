@@ -2,6 +2,7 @@
 
 import math
 import time
+from concurrent.futures import wait
 
 import numpy as np
 import pytest
@@ -12,11 +13,20 @@ from bifold_demo.characters import yoga
 from bifold_demo.characters.behaviour import MotionLibrary, stand
 from bifold_demo.characters.character import Character
 from bifold_demo.characters.model import AnimationClip, CharacterState, Layer
-from bifold_demo.characters.performer import Performer, choose_place, place
+from bifold_demo.characters.performer import (
+    Performer,
+    _rect_distance,
+    choose_place,
+    floor_height,
+    floors,
+    footprint,
+    obstacles,
+    place,
+)
 from bifold_demo.characters.yoga_clips import YogaClips, cache_path, model_key
 from bifold_demo.display.window import BACKSPACE, BACKTAB, DOWN, LEFT, RIGHT, TAB, UP, key_code
-from bifold_demo.scene import Camera, Scene
-from bifold_demo.selection import Selection
+from bifold_demo.scene import Box, Camera, Plane, Scene
+from bifold_demo.selection import STALE, Selection
 
 SIZE = (640, 360)
 
@@ -187,6 +197,157 @@ def test_the_place_for_a_pose_is_in_the_picture_and_on_one_floor():
     assert place(points, heading, spot)[..., 0].max() < 0.5  # all of it off the platform
 
 
+def test_the_floor_is_the_floor_carpets_and_platforms_not_the_ceiling_or_the_walls():
+    scene = Scene()
+    scene.add(Plane(size=(20.0, 20.0)), name="floor")
+    scene.add(Plane(size=(4.0, 20.0), position=(-6.0, 0.004, 0.0)), name="carpet")
+    scene.add(Plane(size=(20.0, 20.0), position=(0.0, 12.0, 0.0), rotation=(180, 0, 0)), name="ceiling")
+    scene.add(Plane(size=(20.0, 12.0), position=(0.0, 6.0, -10.0), rotation=(90, 0, 0)), name="wall")
+    scene.add(Box(size=(4.0, 0.08, 3.0), position=(3.0, 0.04, 0.0)), name="platform")
+    scene.add(Box(size=(1.8, 1.05, 0.6), position=(3.0, 0.605, 1.0)), name="counter")  # on the platform
+    scene.update(0.0, 0.0)
+    rects = floors(scene)
+    heights = floor_height(rects, np.array([(0.0, 0.0), (-6.0, 3.0), (3.0, 0.0), (5.2, 0.0), (0.0, -9.99)]))
+    assert heights == pytest.approx([0.0, 0.004, 0.08, 0.0, 0.0])
+    assert floor_height(rects, np.array((3.0, 1.0))) == pytest.approx(0.08)  # a counter is no floor
+    assert len(obstacles(scene, 0.08)) == 1  # but furniture
+
+
+def test_the_fair_hall_is_level_but_for_the_booth_platforms():
+    from bifold_demo.scenes import fair
+
+    scene = fair.build_scene()
+    scene.update(0.0, 0.0)
+    rects = floors(scene)
+    platform = scene["booth1_floor"]
+    lo, hi = (platform.current_position + corner for corner in platform.extents())
+    centre = (lo + hi)[[0, 2]] / 2
+    beside = np.array((hi[0] + 0.2, centre[1]) if abs(hi[0]) < abs(lo[0]) else (lo[0] - 0.2, centre[1]))
+    assert floor_height(rects, np.array([(0.0, -10.0), (12.0, -21.0)])) == pytest.approx([0.0, 0.0], abs=0.01)
+    assert floor_height(rects, centre) == pytest.approx(fair.BOOTH_FLOOR)
+    assert floor_height(rects, beside) == pytest.approx(0.0, abs=0.01)  # the aisle beside it
+
+
+def test_no_mat_in_the_fair_is_half_on_a_booth_platform(monkeypatch):
+    from test_yoga import CHARACTERS
+
+    from bifold_demo.scenes import fair
+
+    if not (CHARACTERS / "avatars").is_dir():
+        pytest.skip("set BIFOLD_CHARACTERS_TEST_DIR to a prepared character library")
+    monkeypatch.setenv("BIFOLD_CHARACTERS", str(CHARACTERS))
+    scene = fair.build_scene()
+    t = 10.0
+    scene.update(t, 1 / 30)
+    rects = floors(scene)
+    platforms = rects[np.isclose(rects[:, 4], fair.BOOTH_FLOOR)]
+    beside = [o for o in scene if getattr(o, "skinned_model", None) is not None and yoga.supports(o.skinned_model)
+              and 0.0 < _rect_distance(o.current_position[None, [0, 2]], platforms).min() < 1.0]
+    assert len(beside) >= 3  # visitors at the booths, a chat group
+    selection = Selection(YogaClips(cache_dir=False, process=False))
+    selection.update(scene, (1280, 720))
+    try:
+        for person in beside[:3]:
+            for pose in ("warrior_2", "downward_dog"):
+                clip = _real_clip(person.skinned_model, pose)
+                performer = selection._performer(person)
+                selection._place(person, performer, clip, t)
+                heading, spot = selection._placing[id(person)].future.result(timeout=120)
+                selection._drop(id(person))
+                performer.reset()
+                _times, points = selection._footprint(person, clip)
+                under = floor_height(rects, place(points, heading, spot)[..., [0, 2]])
+                level = floor_height(rects, person.current_position[[0, 2]])
+                assert np.abs(under - level).max() <= 0.03, (person.name, pose, heading, spot)
+    finally:
+        selection.close()
+
+
+def _real_clip(model, pose):
+    """``pose`` for a real avatar: from the prepared library's cache if it is there (never written), else solved."""
+    from test_yoga import CHARACTERS
+
+    from bifold_demo.characters.rocketbox import read_clip
+
+    path = cache_path(CHARACTERS / "yoga", model, pose)
+    if path.is_file():
+        clip = read_clip(path)
+        if clip.metadata.get("cache_key") == model_key(model):
+            return clip
+    return yoga.yoga_clip(model, pose)
+
+
+def test_the_mat_keeps_every_point_of_the_body_clear_of_people(biped):
+    person = Character(biped)
+    for pose in ("warrior_2", "downward_dog"):
+        clip = yoga.yoga_clip(biped, pose)
+        times, points = footprint(person, clip)
+        ends = points.shape[1] * 3 // 4  # the footprint's segment ends: ... head, ... hands, fingertips, ... toes
+        hold = int(np.searchsorted(times, sum(clip.metadata["hold"]) / 2))
+        for k in (2, 4, 5, 7, 8, 11, 14):  # the head, a hand, fingertips, a foot, toes, the other fingertips and toes
+            tip = points[hold, ends + k, [0, 2]]
+            if np.linalg.norm(tip) < 0.3:
+                continue  # not out to the side (the head standing, say)
+            other = tip * (1.0 + 0.15 / np.linalg.norm(tip))  # someone standing just beyond it
+            heading, spot = choose_place((0, 0, 0), [0.0], points, np.tile(other, (len(times), 1, 1)), np.zeros((0, 6)))
+            gap = np.linalg.norm(place(points, heading, spot)[..., [0, 2]] - other, axis=-1).min()
+            assert gap >= 0.5 - 1e-9, (pose, k, gap)
+
+
+def test_the_way_back_home_after_a_queued_pose_keeps_clear_of_the_furniture():
+    library = MotionLibrary(synthetic_clips())
+    performer = Performer(stand((0.0, 0.0), 0.0, library=library))
+    first = performer.perform(_clip(), 0.0, heading=90.0, position=(3.0, 0.0, 0.0))
+    t = first.clip_start + 3.0  # a second pose asked for during the first: planned from where the first ends
+    start = performer.free_at(t)
+    here, home = np.asarray(performer.peek(start).position), performer.home(start)
+    assert np.allclose(home, (0.0, 0.0, 0.0))
+    counter = np.array([[0.5, 1.0, 2.5, 1.4, 0.0, 1.0]])  # between home and the spots in view
+    def seen(world):  # the camera sees the pose only beyond z = 1.8
+        return (world[..., 2] >= 1.8).mean(axis=(-2, -1))
+
+    nobody = np.zeros((2, 0, 2))
+    heading, spot = choose_place(here, [0.0], _line(1.0), nobody, counter, reach=4.0, seen=seen, home=home)
+    assert performer.perform(_clip(view=0.0), t, heading, spot) is None  # it follows the first
+    second = performer.current(first.end + 0.01)
+    way = np.array([performer(u).position for u in np.arange(second.clip_end, second.end, 1 / 30)])[:, [0, 2]]
+    assert _rect_distance(way, counter).min() > 0.15  # straight home, past the counter
+
+
+def test_a_pose_hidden_by_a_counter_is_rated_by_what_can_be_seen(biped):
+    scene = Scene(camera=Camera(position=(0.0, 1.6, 6.0), target=(0.0, 1.0, 0.0)))
+    scene.add(Box(size=(0.8, 1.1, 0.4), position=(2.45, 0.55, 2.5)), name="counter")
+    scene.add(Box(size=(0.6, 1.05, 2.0), position=(-1.3, 0.525, 0.0)), name="side")  # long side towards the camera
+    scene.update(0.0, 0.0)
+    selection = Selection(_clips())
+    selection.update(scene, SIZE)
+    seen = selection._rating(np.zeros((3, 0, 2)), obstacles(scene, 0.0), np.arange(3))
+    line = np.stack([np.zeros(9), np.full(9, 0.3), np.linspace(-0.8, 0.8, 9)], axis=1)  # a low pose, 3 frames
+    low = np.tile(line, (3, 1, 1))
+    eye = np.asarray(scene.camera.current_position)
+    clip_from_world = scene.camera.projection_matrix(SIZE[0] / SIZE[1]) @ scene.camera.view_matrix()
+
+    def truth(world):  # the share in the picture and not behind a box (ray casts)
+        world = world.reshape(-1, 3)
+        lo, hi = obstacles(scene, 0.0)[:, [0, 4, 1]], obstacles(scene, 0.0)[:, [2, 5, 3]]
+        ray = world[:, None, :] - eye
+        with np.errstate(divide="ignore", invalid="ignore"):
+            a, b = (lo - eye) / ray, (hi - eye) / ray
+        enter, leave = np.minimum(a, b).max(-1), np.maximum(a, b).min(-1)
+        behind = ((enter <= leave) & (leave >= 0) & (enter < 1)).any(-1)
+        c = np.c_[world, np.ones(len(world))] @ clip_from_world.T
+        x = (c[:, 0] / c[:, 3] * 0.5 + 0.5) * SIZE[0]
+        return np.mean(~behind & (x >= 0.02 * SIZE[1]) & (x <= SIZE[0] - 0.02 * SIZE[1]))
+
+    for spot in ((4.4, 0.0, 0.0), (5.0, 0.0, 0.0), (5.6, 0.0, 0.0)):  # behind the counter, partly out of the picture
+        world = place(low, 90.0, spot)
+        assert float(seen(world)) == pytest.approx(truth(world), abs=0.02)
+    xs, zs = np.meshgrid(np.linspace(-1.75, -2.35, 7), np.linspace(0.2, 0.8, 5))  # beside "side", level with its front
+    beside = np.tile(np.stack([xs.ravel(), np.full(xs.size, 0.3), zs.ravel()], axis=1), (3, 1, 1))
+    assert 0.1 < 1.0 - truth(beside) < 0.5 and float(seen(beside)) == pytest.approx(truth(beside), abs=0.02)
+    selection.close()
+
+
 def test_people_with_walk_clips_walk_to_the_place_and_back():
     library = MotionLibrary(synthetic_clips())
     performer = Performer(stand((0.0, 0.0), 0.0, library=library))
@@ -305,9 +466,13 @@ def test_a_new_person_is_selected_when_the_selected_one_is_gone(biped):
         selection.close()
 
 
-def _run_until(scene, selection, t, until, step=1 / 15):
+def _run_until(scene, selection, t, until, step=1 / 15, searches=False):
+    """Run the scene and the selection until ``until(t)``; with ``searches``, scene time waits for spots being found
+    (as if they were found at once)."""
     messages = []
     for _ in range(3000):
+        if searches:
+            wait([entry.future for entry in selection._placing.values() if entry.future is not None], timeout=60)
         t += step
         scene.update(t, step)
         message = selection.update(scene, SIZE)
@@ -320,6 +485,12 @@ def _run_until(scene, selection, t, until, step=1 / 15):
     raise AssertionError("timed out")
 
 
+def _posing(person, t) -> bool:
+    """Whether ``person`` is doing a pose at ``t`` (not just standing waiting for a spot for it)."""
+    act = person.behaviour.current(t) if isinstance(person.behaviour, Performer) else None
+    return act is not None and not act.clip.metadata.get("waiting")
+
+
 def test_number_keys_make_the_selected_person_do_yoga(biped):
     scene = _scene(biped)
     selection = Selection(_clips())
@@ -329,8 +500,10 @@ def test_number_keys_make_the_selected_person_do_yoga(biped):
         handled, message = selection.handle_key(ord("5"), 0.0)  # Warrior 2: seen from the front
         assert handled and message.startswith("preparing Warrior 2")
         assert "preparing Warrior 2" in selection.describe(person, 0.0)
-        t, messages = _run_until(scene, selection, 0.0, lambda t: isinstance(person.behaviour, Performer)
-                                 and person.behaviour.current(t) is not None)
+        t, _ = _run_until(scene, selection, 0.0, lambda t: id(person) in selection._placing)
+        waiting = person.behaviour.current(t)  # the clip is ready: they stand still while a spot is found
+        assert waiting.clip.metadata["waiting"] and selection.describe(person, t) == "Warrior 2: finding a spot ..."
+        t, messages = _run_until(scene, selection, t, lambda t: _posing(person, t))
         assert messages[-1] == "middle (synthetic_biped): Warrior 2"
         act = person.behaviour.current(t)
         camera = scene.camera.current_position
@@ -358,11 +531,164 @@ def test_the_same_number_again_holds_a_pose_that_has_not_started_yet(biped):
         person = selection.selected
         assert selection.handle_key(ord("1"), 0.0)[1].startswith("preparing Yogi Squat")
         assert "will keep holding Yogi Squat" in selection.handle_key(ord("1"), 0.0)[1]
-        t, _ = _run_until(scene, selection, 0.0, lambda t: isinstance(person.behaviour, Performer)
-                          and person.behaviour.current(t) is not None)
+        t, _ = _run_until(scene, selection, 0.0, lambda t: _posing(person, t))
         assert person.behaviour.current(t).looping
     finally:
         selection.close()
+
+
+def _clip_ready(selection, model, pose):
+    for _ in range(3000):
+        clip = selection.clips.request(model, pose)
+        if clip is not None:
+            return clip
+        time.sleep(0.01)
+    raise AssertionError(f"no {pose} clip")
+
+
+def _walking_scene(biped):
+    scene = Scene(camera=Camera(position=(0.0, 1.6, 6.0), target=(0.0, 1.0, 0.0)))
+    walker = Character(biped, lambda t: CharacterState((-1.0 + 1.0 * t, 0.0, 1.0), 90.0, []), name="walker")
+    scene.add(walker)
+    scene.update(0.0, 0.0)
+    return scene, walker
+
+
+def test_a_walking_person_stops_at_the_key_and_the_pose_starts_where_and_when_planned(biped, monkeypatch):
+    import bifold_demo.selection as selection_module
+
+    real = selection_module.choose_place
+
+    def slow(*args, **kwargs):  # finding the spot takes a while
+        time.sleep(0.6)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(selection_module, "choose_place", slow)
+    scene, walker = _walking_scene(biped)
+    selection = Selection(_clips())
+    try:
+        _clip_ready(selection, biped, "warrior_2")
+        t = 0.5
+        scene.update(t, t)
+        selection.update(scene, SIZE)
+        selection.selected = walker
+        key = np.asarray(walker.state.position)
+        assert selection.do("warrior_2", t) is None
+        positions, planned, begin = [], [], time.perf_counter()
+        while not _posing(walker, t):  # scene time is real time, as in the demo
+            time.sleep(1 / 60)
+            dt, t = 0.5 + time.perf_counter() - begin - t, 0.5 + time.perf_counter() - begin
+            scene.update(t, dt)
+            if id(walker) in selection._placing:
+                planned.append(selection._placing[id(walker)].start)
+            selection.update(scene, SIZE)
+            positions.append(walker.state.position)
+            assert t < 30.0
+        act = walker.behaviour.current(t)
+        assert act.start - 0.5 > 0.6  # time enough to walk on a little ...
+        assert np.allclose(positions[:-1], key)  # ... but they stood still from the key on
+        assert np.allclose(act.before.position, key)
+        assert planned[-1] <= act.start <= planned[-1] + 0.6 + STALE  # not before it was planned for, nor much later
+        assert np.allclose(walker.behaviour.home(act.start), key)  # and carry on from there afterwards
+    finally:
+        selection.close()
+
+
+def test_a_spot_found_long_ago_is_looked_for_again(biped):
+    scene, walker = _walking_scene(biped)
+    selection = Selection(_clips())
+    try:
+        _clip_ready(selection, biped, "warrior_2")
+        t = 0.5
+        scene.update(t, t)
+        selection.update(scene, SIZE)
+        selection.selected = walker
+        key = np.asarray(walker.state.position)
+        selection.do("warrior_2", t)
+        selection._placing[id(walker)].future.result(timeout=60)
+        t += 20.0  # found, but the demo showed the webcam meanwhile: no frames, the clock ran on
+        scene.update(t, 20.0)
+        selection.update(scene, SIZE)
+        assert selection._placing[id(walker)].tries == 2 and not _posing(walker, t)  # the others moved on: again
+        t, _ = _run_until(scene, selection, t, lambda t: _posing(walker, t))
+        act = walker.behaviour.current(t)
+        assert np.allclose(act.before.position, key) and act.start >= 20.5
+    finally:
+        selection.close()
+
+
+def test_poses_asked_of_neighbours_one_after_another_keep_clear_of_each_other(biped, monkeypatch):
+    library = MotionLibrary(synthetic_clips())
+    scene = Scene(camera=Camera(position=(0.0, 1.6, 6.0), target=(0.0, 1.0, 0.0)))
+    first = Character(biped, stand((-0.35, 1.0), 0.0, library=library), name="first")
+    second = Character(biped, stand((0.35, 1.0), 0.0, library=library), name="second")
+    scene.add(first)
+    scene.add(second)
+    scene.update(0.0, 0.0)
+    searches = []
+    find = Selection._find
+
+    def logged(entry, *args, **kwargs):
+        searches.append((entry.character.name, entry.asked))
+        return find(entry, *args, **kwargs)
+
+    monkeypatch.setattr(Selection, "_find", staticmethod(logged))
+    selection = Selection(_clips())
+    try:
+        selection.update(scene, SIZE)
+        _clip_ready(selection, biped, "warrior_2")
+        t = 0.0
+        for person in (first, second):  # Warrior 2 for one, Tab, Warrior 2 for the other
+            selection.selected = person
+            selection.do("warrior_2", t)
+            t, _ = _run_until(scene, selection, t, lambda t: True, searches=True)
+        t, _ = _run_until(scene, selection, t, lambda t: _posing(first, t) and _posing(second, t), searches=True)
+        a, b = first.behaviour.current(t), second.behaviour.current(t)
+        assert [name for name, _asked in searches] == ["first", "second"]
+        assert searches[1][1] >= a.start  # the second spot was looked for once the first pose had started
+        frames, points = selection._footprint(first, a.clip)
+        step = frames[1] - frames[0]
+        closest = np.inf
+        for u in np.arange(max(a.clip_start, b.clip_start), min(a.clip_end, b.clip_end), 0.25):
+            body_a = place(points[min(round(a.clip_time(u) / step), len(points) - 1)], a.heading, a.position)[:, [0, 2]]
+            body_b = place(points[min(round(b.clip_time(u) / step), len(points) - 1)], b.heading, b.position)[:, [0, 2]]
+            closest = min(closest, float(np.linalg.norm(body_a[:, None] - body_b[None], axis=-1).min()))
+        assert closest >= 0.25 - 1e-6  # their bodies keep apart (in place, their arms would cross)
+    finally:
+        selection.close()
+
+
+def test_a_superseded_or_closed_search_stops_at_once(biped, monkeypatch):
+    import threading
+
+    import bifold_demo.selection as selection_module
+
+    nobody, nothing = np.zeros((2, 0, 2)), np.zeros((0, 6))
+    assert choose_place((0, 0, 0), [0.0], _line(), nobody, nothing, cancelled=lambda: True) is None
+
+    def endless(*args, cancelled, **kwargs):  # a search that would take long
+        deadline = time.monotonic() + 10.0
+        while not cancelled() and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    monkeypatch.setattr(selection_module, "choose_place", endless)
+    scene = _scene(biped)
+    selection = Selection(_clips())
+    selection.update(scene, SIZE)
+    person = selection.selected = scene["middle"]
+    for pose in ("warrior_2", "cow"):
+        _clip_ready(selection, biped, pose)
+    selection.do("warrior_2", 0.0)
+    superseded = selection._placing[id(person)]
+    selection.do("cow", 0.0)  # another pose before a spot was found: that search gives up
+    assert superseded.cancel.is_set() and wait([superseded.future], timeout=1.0).done
+    begin = time.monotonic()
+    selection.close()  # quitting while the next search runs
+    for thread in threading.enumerate():
+        if thread.name.startswith("yoga-place"):
+            thread.join(timeout=2.0)
+            assert not thread.is_alive()
+    assert time.monotonic() - begin < 1.0
 
 
 def test_the_menus_switch_between_poses_and_items(biped):

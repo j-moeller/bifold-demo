@@ -6,12 +6,15 @@ face the right way, does the clip (from standing into the pose and back), walks 
 behaviour exactly where they left it: the behaviour's time stands still meanwhile. A pose that is cut short
 (:meth:`~Performer.stop`, or a new pose) leaves the hold early, or goes back the way it came if that is quicker; a new
 pose follows at once, without walking back first. A pose asked to :meth:`~Performer.hold` keeps holding until it is
-stopped. Since the behaviour's time stood still, a person who walks around is later on their way than before; plans
-that time several people's loops against each other (``fair.keep_apart``) no longer hold for them.
+stopped. :meth:`~Performer.wait` stops the person and has them stand (in the clip's first pose) until the clip is
+asked for, so where they will be stays known while a place for it is found. Since the behaviour's time stood still,
+a person who walks around is later on their way than before; plans that time several people's loops against each
+other (``fair.keep_apart``) no longer hold for them.
 
 :func:`choose_place` picks where and facing which way: a spot as near as possible from which the camera sees the
-whole pose from the side it is best seen from, with the mat clear of the other people and of the furniture and on one
-floor level (not half on a booth platform).
+whole pose from the side it is best seen from, with the mat clear of the other people (every point of the body, hands
+and feet too) and of the furniture and on one floor level (not half on a booth platform: :func:`floors` are the
+floor, carpets and platforms, not the ceiling or the walls), and with clear ways there and back home.
 """
 
 from __future__ import annotations
@@ -30,6 +33,8 @@ SKIP_BLEND = 0.6  # seconds of crossfade when a hold is cut short
 WALK_BLEND = 0.5  # seconds of crossfade into and out of a walk
 WALK_FROM = 0.3  # metres: farther than this the person walks there (when the behaviour has walk clips)
 STEP_SPEED = 0.5  # m/s of a shorter step aside (a slide during the turn)
+STEP_UP = 0.35  # metres: flat things up to this high count as floor (booth platforms)
+FIELD_CELL = 0.05  # metres between the points of the grids on which the distance to a body is looked up
 # chains of bones whose joints (and the points between them) outline the body
 FOOTPRINT_CHAINS = [("Bip01 Pelvis", "Bip01 Spine1", "Bip01 Neck", "Bip01 Head")] + [
     tuple(f"Bip01 {side} {bone}" for bone in chain) for side in "LR"
@@ -324,6 +329,16 @@ class Performer:
             return None
         return self._start(clip, t, heading, position, hold)
 
+    def wait(self, clip: AnimationClip, t: float) -> None:
+        """Stop what the person is doing at scene time ``t`` (out of the current pose, without walking back) and stand
+        in ``clip``'s first pose (:func:`standing`) until the next :meth:`perform` or :meth:`stop`. The behaviour's time
+        stands still meanwhile, so where the person will be when ``clip`` starts stays known while a place is found."""
+        self.perform(standing(clip), t, self.peek(self.free_at(t)).heading, hold=True)
+
+    def home(self, t: float) -> np.ndarray:
+        """Where the person walks back to after a clip started at scene time ``t``: where their behaviour carries on."""
+        return np.asarray(self._base(t, self._planned(t)).position, float)
+
     def hold(self, t: float) -> bool:
         """Keep holding the current pose (until :meth:`stop` or another pose), or the queued one; ``False`` if the
         current pose is already leaving and none is queued."""
@@ -486,6 +501,15 @@ class Performer:
         return out
 
 
+def standing(clip: AnimationClip) -> AnimationClip:
+    """``clip``'s first frame (standing, before the pose) held as a clip of its own: what someone waiting to do
+    ``clip`` looks like (``metadata["waiting"]`` is true)."""
+    return AnimationClip(f"{clip.name}@standing", clip.fps, list(clip.bone_names), clip.rotations[:1].copy(),
+                         clip.translations[:1].copy(), loop=False, root=clip.root,
+                         metadata={"pose": clip.metadata.get("pose", clip.name), "hold": (0.0, 1.0 / clip.fps),
+                                   "waiting": True})
+
+
 def _cut(act: Act, t: float) -> None:
     """Cut ``act`` short at scene time ``t``: the quickest way back to standing."""
     c = act.clip_time(t)
@@ -554,12 +578,11 @@ def obstacles(scene, floor: float) -> np.ndarray:
 
 
 def floors(scene) -> np.ndarray:
-    """``(N, 5)`` rectangles ``(x0, z0, x1, z1, height)`` of what people can stand on: floor planes and flat boxes
-    (booth platforms)."""
-    from ..scene.scene import Plane
-
-    rects = [(lo[0], lo[2], hi[0], hi[2], hi[1]) for obj, lo, hi in _boxes(scene)
-             if isinstance(obj, Plane) or (hi[1] - lo[1] <= 0.35 and hi[1] <= 0.35)]
+    """``(N, 5)`` rectangles ``(x0, z0, x1, z1, height)`` of what people can stand on: the floor planes, carpets and
+    booth platforms, i.e. flat things at most a step (``STEP_UP``) above the ground. The ceiling and the walls are
+    planes too, but no floor."""
+    rects = [(lo[0], lo[2], hi[0], hi[2], hi[1]) for _obj, lo, hi in _boxes(scene)
+             if hi[1] - lo[1] <= STEP_UP and hi[1] <= STEP_UP]
     return np.array(rects, float).reshape(-1, 5)
 
 
@@ -571,6 +594,22 @@ def floor_height(rects: np.ndarray, xz: np.ndarray) -> np.ndarray:
     x, z = xz[..., None, 0], xz[..., None, 1]
     on = (x >= rects[:, 0]) & (x <= rects[:, 2]) & (z >= rects[:, 1]) & (z <= rects[:, 3])
     return np.where(on, rects[:, 4], -np.inf).max(axis=-1).clip(min=0.0)
+
+
+def _on_level(rects: np.ndarray, xz: np.ndarray, level: float, tolerance: float = 0.03) -> np.ndarray:
+    """Whether all the ``(..., M, 2)`` points lie on the floor ``level`` (their :func:`floor_height` within
+    ``tolerance`` of it): ``(...)``. None is on something higher, and (above the ground) none off it."""
+    x, z = xz[..., 0, None], xz[..., 1, None]
+
+    def on(r):  # (..., M): on any of the rectangles r
+        if not len(r):
+            return np.zeros(xz.shape[:-1], bool)
+        return ((x >= r[:, 0]) & (x <= r[:, 2]) & (z >= r[:, 1]) & (z <= r[:, 3])).any(axis=-1)
+
+    ok = ~on(rects[rects[:, 4] > level + tolerance]).any(axis=-1)
+    if level > tolerance:
+        ok &= on(rects[rects[:, 4] >= level - tolerance]).all(axis=-1)
+    return ok
 
 
 def _rect_distance(points: np.ndarray, rects: np.ndarray) -> np.ndarray:
@@ -590,8 +629,8 @@ def place(points: np.ndarray, heading: float, spot) -> np.ndarray:
 
 def choose_place(position, views, points: np.ndarray, others: np.ndarray, furniture: np.ndarray, *,
                  bodies: np.ndarray | None = None, floor_rects: np.ndarray | None = None, reach: float = 0.6,
-                 seen=None, people_gap: float = 0.5, body_gap: float = 0.25,
-                 furniture_gap: float = 0.15) -> tuple[float, tuple]:
+                 seen=None, home=None, people_gap: float = 0.5, body_gap: float = 0.25, furniture_gap: float = 0.15,
+                 cancelled=None) -> tuple[float, tuple] | None:
     """``(heading, position)`` for a pose done by someone standing at ``position``.
 
     The candidates are ``views`` (preferred headings, best first) turned by up to 45 degrees, at ``position`` or up
@@ -599,17 +638,22 @@ def choose_place(position, views, points: np.ndarray, others: np.ndarray, furnit
     the pose's ``(T, P, 3)`` :func:`footprint`, at least ``people_gap`` from ``others``, the ``(T, O, 2)`` positions of
     the other people at those moments (nan = nowhere), ``body_gap`` from ``bodies``, ``(T, Q, 2)`` points of the
     bodies of people doing poses then, and ``furniture_gap`` from the :func:`obstacles` ``furniture``), lies on the
-    person's floor level (``floor_rects``, see :func:`floors`) as does the way there,
-    and that ``seen`` rates at least 0.97 (``seen(world_points)``: ``(..., T, P, 3)`` scene points of poses to
-    ``(...)`` shares in the picture and not hidden). Otherwise the candidate with the best ``seen`` rating among the
-    clear ones, else the one with the most room.
+    person's floor level (``floor_rects``, see :func:`floors`) as do the way there and the way back to ``home`` (where
+    the person carries on afterwards; default ``position``), and that ``seen`` rates at least 0.97
+    (``seen(world_points)``: ``(..., T, P, 3)`` scene points of poses to ``(...)`` shares in the picture and not
+    hidden). Otherwise the candidate with the best ``seen`` rating among the clear ones, else the one with the most
+    room (on the person's floor level, if any is). ``None`` if ``cancelled()`` turns true meanwhile (it is asked before
+    each spot).
     """
     position = np.asarray(position, float)
+    home = position if home is None else np.asarray(home, float)
     points = np.asarray(points, float)
     outline = np.unique(np.round(points.reshape(-1, 3) / 0.05), axis=0) * 0.05  # every frame at once, for the
     span = float(np.hypot(outline[:, 0], outline[:, 2]).max()) + reach + 1.0  # furniture, which does not move
     if len(furniture):
         furniture = furniture[_rect_distance(position[None, [0, 2]], furniture)[0] < span + furniture_gap]
+    if floor_rects is not None and len(floor_rects):
+        floor_rects = floor_rects[_rect_distance(position[None, [0, 2]], floor_rects)[0] < span]
     others = np.asarray(others, float).reshape(len(points), -1, 2)
     if bodies is not None and np.size(bodies):  # body points count like people, with a smaller gap
         bodies = np.asarray(bodies, float).reshape(len(points), -1, 2)
@@ -622,17 +666,22 @@ def choose_place(position, views, points: np.ndarray, others: np.ndarray, furnit
     penalty = np.array([0.6 * abs(turn) / 45.0 + 0.2 * k for turn in turns for k, _view in enumerate(views)])
     turned_outline = _turned(outline, headings)  # (H, U, 3)
     turned_points = _turned(points, headings)  # (H, T, P, 3)
-    every = max(1, len(points) // 40)  # the people, who move, are checked at most 40 times, at the joints only
-    joints = _turned(points[::every, ::max(1, points.shape[1] // 16)], headings)[..., [0, 2]]
-    moments, moment_gaps = others[::every], gaps
-    reach_out = float(np.hypot(outline[:, 0], outline[:, 2]).max()) + people_gap
+    flat_points = turned_points[..., [0, 2]].reshape(len(headings), -1, 2)  # every point, for the floor level
+    # the people, who move, are checked at most 40 times, against every point of the body (hands and feet too): by
+    # their distance to it in each frame, looked up on a grid around the body (turned and moved with the candidates)
+    every = max(1, len(points) // 40)
+    moments, margin = others[::every], (float(gaps.max()) if len(gaps) else 0.0)
+    field, cos, sin = None, np.cos(np.radians(headings))[:, None], np.sin(np.radians(headings))[:, None]
+    reach_out = float(np.hypot(outline[:, 0], outline[:, 2]).max()) + margin
     rings = [r for r in (0.3, 0.6, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0) if r <= reach + 1e-9]
     spots = [(0.0, 0.0)] + [(r * math.sin(a), r * math.cos(a)) for r in rings
                             for a in np.radians(np.arange(0.0, 360.0, 45.0 if r < 1.0 else 30.0))]
     level = float(floor_height(floor_rects, position[[0, 2]])) if floor_rects is not None else None
     found, found_cost = None, math.inf
-    best, best_seen, roomiest, most_room = None, -1.0, None, -math.inf
+    best, best_seen, roomiest, most_room = None, -1.0, None, (False, -math.inf)
     for dx, dz in spots:
+        if cancelled is not None and cancelled():
+            return None
         distance = math.hypot(dx, dz)
         if distance > found_cost:
             break  # nothing farther can be better
@@ -641,20 +690,24 @@ def choose_place(position, views, points: np.ndarray, others: np.ndarray, furnit
         room = np.full(len(headings), math.inf)
         if len(furniture):
             room = _rect_distance(flat_outline, furniture).min(axis=(1, 2)) - furniture_gap
-        if moments.shape[1]:
-            near = np.nan_to_num(np.linalg.norm(moments - spot[[0, 2]], axis=-1), nan=np.inf).min(axis=0) < reach_out
-            if near.any():
-                flat = joints + spot[[0, 2]]  # (H, T', J, 2)
-                d = np.linalg.norm(flat[:, :, :, None, :] - moments[None, :, None, near, :], axis=-1)
-                d = np.nan_to_num(d, nan=np.inf) - moment_gaps[near]
-                room = np.minimum(room, d.min(axis=(1, 2, 3)))
-        k = int(np.argmax(room))
-        if room[k] > most_room:
-            roomiest, most_room = (float(headings[k]), tuple(spot)), float(room[k])
-        ok = room >= 0.0
-        if level is not None and ok.any():
-            ok &= np.abs(floor_height(floor_rects, flat_outline) - level).max(axis=1) <= 0.03  # one floor level
-        if not ok.any() or not _way_clear(position, spot, others, furniture, floor_rects, level):
+        with np.errstate(invalid="ignore"):  # nan: nobody there
+            when, who = np.nonzero(np.linalg.norm(moments - spot[[0, 2]], axis=-1) < reach_out)  # who is near when
+        if len(when):
+            if field is None:
+                field, corner = _distance_field(points[::every][..., [0, 2]], margin)
+            v = moments[when, who] - spot[[0, 2]]  # (K, 2): where they are, in the person's own frame for each heading
+            x, z = cos * v[:, 0] - sin * v[:, 1], sin * v[:, 0] + cos * v[:, 1]
+            d = _look_up(field, corner, np.broadcast_to(when, x.shape), x, z, margin)  # (H, K)
+            room = np.minimum(room, (d - gaps[who]).min(axis=1))
+        level_ok = np.ones(len(headings), bool)  # all of it on one floor level
+        if level is not None:
+            level_ok = _on_level(floor_rects, flat_points + spot[[0, 2]], level)
+        k = int(np.argmax(np.where(level_ok, room, -math.inf) if level_ok.any() else room))
+        if (bool(level_ok[k]), float(room[k])) > most_room:
+            roomiest, most_room = (float(headings[k]), tuple(spot)), (bool(level_ok[k]), float(room[k]))
+        ok = (room >= 0.0) & level_ok
+        if (not ok.any() or not _way_clear(position, spot, others[0], furniture, floor_rects, level)
+                or not _way_clear(spot, home, others[-1], furniture, floor_rects, level)):
             continue
         chosen = np.nonzero(ok)[0]
         ratings = np.ones(len(chosen)) if seen is None else np.asarray(seen(turned_points[chosen] + spot), float)
@@ -671,6 +724,31 @@ def choose_place(position, views, points: np.ndarray, others: np.ndarray, furnit
     return roomiest if roomiest is not None else (float(views[0]), tuple(position))
 
 
+def _distance_field(body: np.ndarray, margin: float) -> tuple[np.ndarray, np.ndarray]:
+    """``(field, corner)``: for each frame of ``body`` (``(T, P, 2)`` floor points) the distance from each point of a
+    grid (``FIELD_CELL`` apart from ``corner``, reaching ``margin`` beyond the body) to the nearest body point:
+    ``(T, X, Z)``."""
+    flat = body.reshape(-1, 2)
+    corner = flat.min(axis=0) - margin
+    size = np.ceil((flat.max(axis=0) + margin - corner) / FIELD_CELL).astype(int) + 1
+    xs, zs = corner[0] + FIELD_CELL * np.arange(size[0]), corner[1] + FIELD_CELL * np.arange(size[1])
+    field = np.empty((len(body), *size))
+    for k, frame in enumerate(body):
+        dx, dz = xs[:, None, None] - frame[:, 0], zs[None, :, None] - frame[:, 1]
+        field[k] = np.sqrt((dx * dx + dz * dz).min(axis=-1))
+    return field, corner
+
+
+def _look_up(field, corner, frames, x, z, margin: float) -> np.ndarray:
+    """The distance of the points ``(x, z)`` to the body in ``frames`` (see :func:`_distance_field`), rounded down
+    (never more than the true distance); at least ``margin`` off the grid."""
+    i = np.rint((x - corner[0]) / FIELD_CELL).astype(int)
+    j = np.rint((z - corner[1]) / FIELD_CELL).astype(int)
+    on = (i >= 0) & (j >= 0) & (i < field.shape[1]) & (j < field.shape[2])
+    d = field[frames, np.clip(i, 0, field.shape[1] - 1), np.clip(j, 0, field.shape[2] - 1)] - FIELD_CELL * 0.7072
+    return np.where(on, d, margin)
+
+
 def _turned(points: np.ndarray, headings: np.ndarray) -> np.ndarray:
     """``points`` (character space, ``(..., 3)``) turned to each of ``headings``: ``(H, ..., 3)``."""
     c = np.cos(np.radians(headings)).reshape((-1,) + (1,) * (points.ndim - 1))
@@ -680,8 +758,8 @@ def _turned(points: np.ndarray, headings: np.ndarray) -> np.ndarray:
 
 
 def _way_clear(start, goal, others, furniture, floor_rects, level) -> bool:
-    """Whether the straight way from ``start`` to ``goal`` keeps clear of the furniture and of the others (where they
-    are now) and stays on one floor level."""
+    """Whether the straight way from ``start`` to ``goal`` keeps clear of the furniture and of the ``(O, 2)``
+    ``others`` (where they are then) and stays on one floor level."""
     length = math.hypot(goal[0] - start[0], goal[2] - start[2])
     if length < 1e-6:
         return True
@@ -689,8 +767,7 @@ def _way_clear(start, goal, others, furniture, floor_rects, level) -> bool:
     way = start[[0, 2]] + (goal[[0, 2]] - start[[0, 2]]) * u
     if len(furniture) and _rect_distance(way, furniture).min() < 0.2:
         return False
-    now = others[0] if others.shape[1] else np.zeros((0, 2))
-    now = now[np.isfinite(now).all(axis=1)]
+    now = others[np.isfinite(others).all(axis=1)]
     if len(now) and np.linalg.norm(way[:, None, :] - now[None, :, :], axis=-1).min() < 0.4:
         return False
-    return level is None or np.abs(floor_height(floor_rects, way) - level).max() <= 0.03
+    return level is None or bool(_on_level(floor_rects, way, level))

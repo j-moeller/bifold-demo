@@ -99,20 +99,24 @@ The bottom panel shows the keys of the current menu.
 People drawn smaller than 8 % of the picture height (far away) cannot be
 selected. When the selected person walks out of the picture, is hidden or is
 removed from the scene, the person nearest to where they were is selected
-instead. A person asked for a pose stops what they are doing and walks (up to
-4 m) to the nearest spot where:
+instead. A person asked for a pose stops what they are doing at once, stands
+while a spot is found (a second or two), and walks (up to 4 m) to the nearest
+spot where:
 
 - the camera sees the whole pose, from the side it is best seen from;
 - nobody nearer the camera and no counter hides it;
-- the mat is clear of the other people and of the furniture;
-- the whole pose is on one floor level (not half on a booth platform).
+- the mat is clear of the other people (hands and feet too) and of the furniture;
+- the whole pose is on one floor level (not half on a booth platform);
+- the ways there and back are clear of the furniture and on that floor level.
 
 When no spot within reach has all of that, they take the one the camera sees
 best. There they do the pose, then walk back and carry on exactly where they left
 off. A new pose asked for during one follows it without walking back in
-between. Several people can do poses at once. People who walk around are
-later on their way afterwards, so the fair's timing that keeps walkers from
-meeting no longer covers them (`R` restarts everything).
+between. Several people can do poses at once; when they are asked one after
+another, their spots are found in that order, so each mat keeps clear of the
+ones before. People who walk around are later on their way afterwards, so the
+fair's timing that keeps walkers from meeting no longer covers them (`R`
+restarts everything).
 
 Each avatar's pose is solved the first time it is needed, in the background
 (up to about 3 s), and then cached in `~/.cache/bifold-demo/characters/yoga`.
