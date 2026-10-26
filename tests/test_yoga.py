@@ -287,6 +287,28 @@ def test_yogi_squat_is_deep_with_wide_knees_and_palms_together(body):
     assert all(np.linalg.norm(e - k) < 0.2 for e, k in zip(elbows, knees))  # elbows at the knees
 
 
+def test_chair_sits_back_with_the_arms_in_line_with_the_back(body):
+    spec = yoga.POSES["chair"]
+    pose = yoga.settle(body, spec.steps(body)[spec.main].pose)
+    _, glob = yoga.solve(body, pose)
+    left, right = body.sides["left"], body.sides["right"]
+    hips = glob[body.root, :3, 3]
+    back = 0.5 * (glob[left["upper"], :3, 3] + glob[right["upper"], :3, 3]) - hips
+    assert 30.0 < math.degrees(math.atan2(back[2], back[1])) < 45.0  # the torso leans forward
+    for s in (left, right):
+        hip, knee, ankle = glob[s["thigh"], :3, 3], glob[s["calf"], :3, 3], glob[s["foot"], :3, 3]
+        assert 90.0 < _bend(glob, s["thigh"], s["calf"], s["foot"]) < 110.0  # the knees bent deep ...
+        assert hip[2] < ankle[2] - 0.1 and hip[1] < knee[1] + 0.4 * s["thigh_length"]  # ... the hips back and low
+        assert abs(knee[0] - hip[0]) < 0.05  # the knees hip-width apart, pointing ahead
+        toes = glob[s["foot"], :3, :3] @ body.rest_rot[s["foot"]].T @ s["foot_forward"]
+        assert abs(toes[1]) < 0.05  # the feet flat, the heels down
+        arm = glob[s["hand"], :3, 3] - glob[s["upper"], :3, 3]
+        assert _bend(glob, s["upper"], s["fore"], s["hand"]) < 15.0  # straight arms ...
+        assert math.degrees(math.acos(arm @ back / np.linalg.norm(arm) / np.linalg.norm(back))) < 15.0  # ... along the back
+        assert glob[s["hand"], 1, 3] > glob[body.head, 1, 3] + 0.2  # ... reaching up past the head
+    assert pose.left_leg.contact and pose.right_leg.contact
+
+
 # -- every pose on real avatars --------------------------------------------------------------------------------
 
 

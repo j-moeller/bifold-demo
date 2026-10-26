@@ -971,6 +971,65 @@ def _upward_dog_steps(body: Body) -> list[Step]:
                    Step(table, seconds=2.0, hold=1.0, breathe=False, lift=back)] + _up_from(down)
 
 
+def _lean(body: Body, pose: BodyPose) -> float:
+    """How far (degrees, forward) the line from the hips to the shoulders leans from upright in ``pose``."""
+    _, glob = solve(body, pose)
+    up = _shoulders(body, pose) - glob[body.root, :3, 3]
+    return math.degrees(math.atan2(up[2], up[1]))
+
+
+def _pitch_for_lean(body: Body, pose: BodyPose, lean: float, low: float = -20.0, high: float = 100.0) -> float:
+    """The pelvis pitch (degrees, forward) that leans the hips-to-shoulders line of ``pose`` by ``lean`` degrees."""
+    def at(pitch):
+        return _lean(body, replace(pose, pelvis=(pitch, *pose.pelvis[1:]))) - lean
+
+    for _ in range(30):
+        middle = 0.5 * (low + high)
+        if at(low) * at(middle) <= 0:
+            high = middle
+        else:
+            low = middle
+    return 0.5 * (low + high)
+
+
+def _hips_at(body: Body, pose: BodyPose, hips) -> BodyPose:
+    """``pose`` moved so that the point between its hip joints is at ``hips``."""
+    _, glob = solve(body, pose)
+    middle = 0.5 * (glob[body.sides["left"]["thigh"], :3, 3] + glob[body.sides["right"]["thigh"], :3, 3])
+    return replace(pose, root=tuple(np.asarray(hips, float) + glob[body.root, :3, 3] - middle))
+
+
+def chair(body: Body, lean: float = 38.0, shin_tilt: float = 25.0, knee_bend: float = 100.0) -> BodyPose:
+    """Utkatasana: the feet where they stand, the knees bent ``knee_bend`` degrees with the shins ``shin_tilt``
+    degrees forward and the heels down, the hips back as if sitting on a chair, the long back leaning ``lean``
+    degrees forward, the arms straight up alongside the ears in line with the back, the gaze forward."""
+    stand = mountain(body)
+    thigh = 0.5 * (body.sides["left"]["thigh_length"] + body.sides["right"]["thigh_length"])
+    shin = 0.5 * (body.sides["left"]["shin_length"] + body.sides["right"]["shin_length"])
+    thigh_down = math.radians(shin_tilt + math.degrees(math.asin(math.cos(math.radians(knee_bend)))))
+    tilt = math.radians(shin_tilt)
+    ankle = np.array([0.0, stand.left_leg.target[1], 0.5 * (stand.left_leg.target[2] + stand.right_leg.target[2])])
+    knee = ankle + shin * np.array([0.0, math.cos(tilt), math.sin(tilt)])
+    hips = knee + thigh * np.array([0.0, math.sin(thigh_down), -math.cos(thigh_down)])
+    legs = {name: replace(getattr(stand, name), pole=(0.0, 0.0, 1.0)) for name in ("left_leg", "right_leg")}
+    pose = replace(stand, spine=(-6.0, 0.0, 0.0), head=(-30.0, 0.0, 0.0), **legs)  # the chest lifts, the gaze ahead;
+    pose = replace(pose, pelvis=(_pitch_for_lean(body, pose, lean), 0.0, 0.0))  # the knees point straight ahead
+    pose = _hips_at(body, pose, hips)
+    return replace(pose, **_arms_up(body, pose))
+
+
+def _chair_steps(body: Body) -> list[Step]:
+    """From standing the arms sweep out and up overhead, then the knees bend and the hips sit back into the chair;
+    the way back the same in reverse."""
+    stand = mountain(body)
+    sweep = replace(stand, **_arms_out(body, stand, lift=10.0))
+    reach = replace(stand, **_arms_up(body, stand))  # Urdhva Hastasana: standing, the arms overhead
+    seat = chair(body)
+    return [Step(stand, hold=1.5, breathe=False), Step(sweep, seconds=1.5), Step(reach, seconds=1.2, hold=0.5, breathe=False),
+            Step(seat, seconds=2.5, hold=9.0), Step(reach, seconds=2.5, hold=0.5, breathe=False), Step(sweep, seconds=1.2),
+            Step(stand, seconds=1.5)]
+
+
 POSES: dict[str, PoseSpec] = {
     "yogi_squat": PoseSpec("Yogi Squat (Malasana)", _yogi_squat_steps, main=1, view=0.0),
     "cow": PoseSpec("Cow Pose (Bitilasana)", _cow_steps, main=5, view=90.0),
@@ -978,4 +1037,5 @@ POSES: dict[str, PoseSpec] = {
     "downward_dog": PoseSpec("Downward Facing Dog (Adho Mukha Svanasana)", _downward_dog_steps, main=6, view=90.0),
     "warrior_2": PoseSpec("Warrior 2 (Virabhadrasana II)", _warrior2_steps, main=1, view=0.0),
     "upward_dog": PoseSpec("Upward Facing Dog (Urdhva Mukha Svanasana)", _upward_dog_steps, main=6, view=90.0),
+    "chair": PoseSpec("Chair Pose (Utkatasana)", _chair_steps, main=3, view=90.0),
 }
