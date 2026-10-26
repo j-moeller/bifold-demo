@@ -164,6 +164,44 @@ everybody wearing it at once. In Python, `Wardrobe(folder, textures={"sign":
 Items fit the Rocketbox avatars (their Biped skeleton); a person can wear all
 four at once.
 
+## Funny faces
+
+[`characters/faces.py`](src/bifold_demo/characters/faces.py) makes the 3D people
+pull faces at the camera with the 28 face bones in every Rocketbox head (jaw,
+lips, mouth corners, cheeks, eyelids, eyebrows, nose, tongue, eyeballs):
+
+| Name | Face |
+|------|------|
+| `smile` | a broad closed-mouth smile, the corners up and out, the cheeks raised |
+| `grin` | a wide toothy grin, the lips drawn apart over both rows of teeth |
+| `tongue` | the jaw open, the tongue far out and down over the lower lip |
+| `puff` | blown-up cheeks, the lips pressed together |
+| `surprise` | the jaw dropped into a round O, the eyebrows high, the eyes wide |
+| `scrunch` | the nose wrinkled, the eyes squeezed shut, the brows down, the upper lip up |
+| `fish` | the lips pursed far forward, the cheeks sucked in |
+| `wink` | the left eye shut, that mouth corner and cheek up |
+| `sideways` | the mouth pulled over to the left, the jaw with it |
+| `cross_eyed` | both eyes turned in to the nose, the mouth hanging open |
+| `roar` | a monster roar: the jaw wide open, the upper lip up, the brows down and in |
+| `pout` | a sulky pout: the lower lip out and up, the corners down |
+
+```python
+from bifold_demo.characters.faces import apply_face, face_rig
+
+rig = face_rig(model)   # once per model, before it is first drawn; None without face bones
+person.pose_adjusters.append(lambda local, character, t: apply_face(local, rig, {"tongue": 1.0, "smile": 0.3}))
+```
+
+Weights run from 0 (no change) to 1 and mix: two faces at 0.5 are halfway
+between them. The faces are deliberately big, because from the fair camera a
+face is only about 50 pixels tall. They are slides and turns of the face bones
+added to whatever the clips and the head turn do, scaled to the size of the head
+(children make smaller faces). The tongue only comes out once the jaw is open
+and goes over the lower teeth on the way. Two quirks of the meshes are handled:
+gum vertices that two heads skin to the tongue follow the jaw instead (mended
+when the avatar is loaded), and cheeks under a headscarf puff forward rather
+than through it.
+
 ## The trade-fair scene
 
 [`scenes/fair.py`](src/bifold_demo/scenes/fair.py) builds a 44 × 72 m exhibition
@@ -598,6 +636,7 @@ src/bifold_demo/
                yoga.py (yoga pose clips), yoga_clips.py (built in a worker process, cached),
                performer.py (a pose in the middle of a behaviour),
                accessories.py (hats, glasses, signs, t-shirts),
+               faces.py (funny faces with the face bones),
                rocketbox.py + library.py + cli.py (bifold-characters),
                rocketbox_catalog.json (avatar labels)                   ← 3D people
   people/      prompts.py, generator.py (text-to-image), cutout.py,

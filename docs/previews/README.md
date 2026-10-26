@@ -97,3 +97,8 @@ work goes on. The people are avatars from the
   the audience dressed by key (a straw hat and a red t-shirt; the welcome sign,
   black glasses and the logo t-shirt; a navy hat, sunglasses, the yoga sign and
   a white t-shirt); the tag of the selected one says what they wear.
+- `faces.jpg`: the funny faces of `characters/faces.py` (columns: neutral,
+  smile, grin, tongue, puff, surprise, scrunch, fish, wink, sideways,
+  cross-eyed, roar, pout) on four avatars: a woman in a headscarf (her cheeks
+  puff forward rather than through the scarf), a man, a girl, and a man seen
+  from 35°.

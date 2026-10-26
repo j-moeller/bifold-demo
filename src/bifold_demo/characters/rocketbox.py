@@ -755,7 +755,8 @@ def read_character(cache_dir, name: str, textures: str = "path", metadata: dict 
 
     ``textures="path"`` puts the PNG file paths into the primitives (the renderer decodes each file once and
     shares it); ``"array"`` decodes them into RGBA ``uint8`` arrays (row 0 = top), like the FBX loader;
-    ``"none"`` leaves them out. ``metadata`` replaces the stored JSON metadata.
+    ``"none"`` leaves them out. ``metadata`` replaces the stored JSON metadata. A slip in the skinning of a few heads
+    is mended on the way (:func:`mend_tongue`), so a model is the same from its first use on.
     """
     if textures not in ("path", "array", "none"):
         raise ValueError("textures must be 'path', 'array' or 'none'")
@@ -774,7 +775,58 @@ def read_character(cache_dir, name: str, textures: str = "path", metadata: dict 
     for i, p in enumerate(meta["primitives"]):
         primitives.append(SkinnedPrimitive(p["name"], *(arrays[f"p{i}_{k}"] for k in _PRIMITIVE_ARRAYS),
                                            texture=images.get(p.get("texture"))))
-    return CharacterModel(name, skeleton, primitives, arrays["inverse_bind"], dict(meta))
+    model = CharacterModel(name, skeleton, primitives, arrays["inverse_bind"], dict(meta))
+    mend_tongue(model)
+    return model
+
+
+def mend_tongue(model: CharacterModel) -> int:
+    """Give the jaw the few vertices that some heads skin to the tongue bone by mistake; returns how many.
+
+    Two of the Rocketbox heads (``Female_Adult_13``, ``Male_Child_02``) have bits of the gums beside the tongue
+    skinned to it, which fly out of the mouth when the tongue turns or is stuck out (see :mod:`.faces`). The tongue
+    is the largest patch of triangles whose corners follow the tongue bone (vertices split by texture seams count as
+    one); the tongue-skinned vertices outside it follow the jaw instead, like the gums around them.
+    :func:`read_character` does this for every avatar it reads, before anything can draw the model or fingerprint
+    its mesh; it changes nothing on a model without these bones or slips (and on one already mended).
+    """
+    tongue, jaw = model.skeleton.find("Bip01 MTongue"), model.skeleton.find("Bip01 MJaw")
+    if tongue is None or jaw is None:
+        return 0
+    mended = 0
+    for prim in model.primitives:
+        on_tongue = prim.joints == tongue
+        weight = np.where(on_tongue, prim.weights, 0.0).sum(axis=1)
+        if not (weight > 0.5).any():
+            continue
+        _, welded = np.unique(np.round(np.asarray(prim.positions, np.float64) * 1e5).astype(np.int64), axis=0,
+                              return_inverse=True)
+        welded = welded.ravel()
+        dominant = np.zeros(welded.max() + 1, dtype=bool)
+        dominant[welded[weight > 0.5]] = True
+        corners = welded[np.asarray(prim.indices, dtype=np.int64)]
+        edges = corners[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2)
+        patch = _patches(len(dominant), edges[dominant[edges[:, 0]] & dominant[edges[:, 1]]])
+        tongue_patch = np.bincount(patch[welded[weight > 0.5]]).argmax()
+        stray = (weight > 0.5) & (patch[welded] != tongue_patch)
+        if stray.any():
+            prim.joints[stray[:, None] & on_tongue] = jaw
+            mended += int(stray.sum())
+    return mended
+
+
+def _patches(count: int, edges: np.ndarray) -> np.ndarray:
+    """A label for each of ``count`` vertices: vertices joined by ``edges`` (index pairs) get the same one."""
+    label = np.arange(count)
+    while True:
+        least = np.minimum(label[edges[:, 0]], label[edges[:, 1]])
+        joined = label.copy()
+        np.minimum.at(joined, edges[:, 0], least)
+        np.minimum.at(joined, edges[:, 1], least)
+        joined = joined[joined]  # follow the labels' own labels: far fewer rounds on long chains
+        if np.array_equal(joined, label):
+            return label
+        label = joined
 
 
 def save_clip(clip: AnimationClip, cache_dir, metadata: dict | None = None, path=None) -> Path:
