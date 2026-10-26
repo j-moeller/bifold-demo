@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+
+# model weights (they live in ~/.cache/bifold-morph) and demo output
+*.pt
+*.pth
+*.pth.tar
+*.onnx
+screenshots/
+*_morph.png
+.DS_Store

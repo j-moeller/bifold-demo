@@ -1,0 +1,275 @@
+"""The live demo: webcam in, faces edited as the sliders say, video out."""
+
+from __future__ import annotations
+
+import copy
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+import cv2
+import numpy as np
+import torch
+
+from . import models
+from .directions import AGE_END, Directions
+from .e4e import E4E
+from .editor import FaceEditor, FrameResult, Settings
+from .faces import FaceDetector
+from .mivolo import MiVOLO
+from .sources import Source, open_source
+from .ui import Panel, Slider, Window, describe_label, draw_face
+
+TITLE = "bifold morph"
+KEYS_HELP = "drag the sliders | Space original | D mode | E MiVOLO | R reset | H help | Q quit"
+
+
+def pick_device(name: str = "auto") -> torch.device:
+    if name != "auto":
+        return torch.device(name)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def load_editor(device: torch.device, size: int = 256, max_faces: int = 2, readout: bool = True,
+                half: bool = False, folder=None, download: bool = True, progress=print) -> FaceEditor:
+    """The editor with its models from the models folder (fetching missing ones when ``download``)."""
+    directions_file = models.directions_path(folder)
+    if not directions_file.is_file():
+        raise FileNotFoundError(f"no age and gender directions in {directions_file}: run `bifold-morph setup` once "
+                                "(it downloads the models and finds the directions, a few minutes on a GPU)")
+    detector = FaceDetector(models.ensure(models.YUNET, folder, download, progress))
+    if progress:
+        progress(f"[morph] loading e4e + StyleGAN2 on {device} ...")
+    e4e = E4E.load(models.ensure(models.E4E, folder, download, progress))
+    mivolo = None
+    if readout:
+        try:
+            mivolo = MiVOLO.load(models.ensure(models.MIVOLO, folder, download, progress), device)
+        except (OSError, RuntimeError, ValueError, ImportError) as error:
+            if progress:
+                progress(f"[morph] MiVOLO not loaded ({error}); no age and gender read-out")
+    return FaceEditor(e4e, Directions.load(directions_file), detector, device, size=size, max_faces=max_faces,
+                      mivolo=mivolo, half=half)
+
+
+@dataclass
+class _Job:
+    frame: np.ndarray
+    timestamp: float
+    settings: Settings
+    reset: bool
+
+
+class Worker:
+    """Runs the editor on a thread of its own: :meth:`submit` hands it the newest frame (replacing one it has not
+    started yet), :meth:`take` returns the newest result once."""
+
+    def __init__(self, editor: FaceEditor):
+        self.editor = editor
+        self.error: BaseException | None = None
+        self.busy_seconds = 0.0  # how long the newest result took
+        self._cond = threading.Condition()
+        self._job: _Job | None = None
+        self._result: FrameResult | None = None
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, name="editor", daemon=True)
+        self._thread.start()
+
+    def submit(self, frame: np.ndarray, timestamp: float, settings: Settings, reset: bool = False) -> None:
+        with self._cond:
+            reset = reset or (self._job is not None and self._job.reset)
+            self._job = _Job(frame, timestamp, copy.copy(settings), reset)
+            self._cond.notify_all()
+
+    def take(self) -> FrameResult | None:
+        with self._cond:
+            result, self._result = self._result, None
+        return result
+
+    def _loop(self) -> None:
+        while True:
+            with self._cond:
+                self._cond.wait_for(lambda: self._job is not None or not self._running)
+                if not self._running:
+                    return
+                job, self._job = self._job, None
+            start = time.perf_counter()
+            try:
+                if job.reset:
+                    self.editor.tracker.reset()
+                result = self.editor.process(job.frame, job.settings, job.timestamp)
+            except Exception as error:  # shown in the window; the next frame tries again
+                self.error = error
+                continue
+            self.error = None
+            self.busy_seconds = time.perf_counter() - start
+            with self._cond:
+                self._result = result
+
+    def stop(self) -> None:
+        with self._cond:
+            self._running = False
+            self._cond.notify_all()
+        self._thread.join(timeout=5.0)
+
+
+def make_sliders() -> tuple[Slider, Slider]:
+    def years(v: float) -> str:
+        return "as is" if v == 0 else f"{v:+.0f} years"
+
+    def gender(v: float) -> str:
+        return "as is" if v == 0 else f"{abs(v):.0%} towards {'female' if v < 0 else 'male'}"
+
+    return (Slider("Age", -AGE_END, AGE_END, "younger", "older", years, step=5.0),
+            Slider("Gender", -1.0, 1.0, "female", "male", gender, step=0.1))
+
+
+class App:
+    def __init__(self, editor: FaceEditor, source: Source, settings: Settings, fullscreen: bool = False,
+                 screenshots: Path = Path("screenshots")):
+        self.editor, self.source, self.settings = editor, source, settings
+        self.age, self.gender = make_sliders()
+        self.age.value, self.gender.value = settings.age, settings.gender
+        self.panel = Panel([self.age, self.gender])
+        self.window = Window(TITLE, on_mouse=self._on_mouse, fullscreen=fullscreen)
+        self.worker = Worker(editor)
+        self.screenshots = screenshots
+        self.show_panel = True
+        self.show_boxes = True
+        self.message, self._message_until = "", 0.0
+        self._video_height = 0
+        self._shown: FrameResult | None = None
+        self._fps = 0.0
+        self._last_result_time: float | None = None
+        self._reset_tracks = False
+
+    def _on_mouse(self, event: int, x: int, y: int, flags: int) -> None:
+        if self.show_panel and y >= self._video_height:
+            self.panel.mouse(event, x, y - self._video_height, flags)
+        elif event == cv2.EVENT_LBUTTONUP:
+            self.panel.mouse(event, x, y, flags)  # a drag that ended over the video
+
+    def say(self, text: str, seconds: float = 2.5) -> None:
+        self.message, self._message_until = text, time.perf_counter() + seconds
+
+    def _status(self) -> str:
+        s = self.settings
+        parts = [f"{self._fps:4.1f} fps", str(self.editor.device)]
+        n = len(self._shown.faces) if self._shown else 0
+        parts.append(f"{n} face{'s' if n != 1 else ''}")
+        parts.append("ORIGINAL" if not s.enabled else "replace face" if s.replace else "change only")
+        if self.editor.mivolo is not None:
+            parts.append(f"MiVOLO {'on' if s.readout else 'off'}")
+        if self.worker.error is not None:
+            parts.append(f"error: {self.worker.error}")
+        elif self.source.error:
+            parts.append(self.source.error)
+        if time.perf_counter() < self._message_until:
+            parts.append(self.message)
+        return "  |  ".join(parts)
+
+    def _compose(self, result: FrameResult) -> np.ndarray:
+        image = result.image.copy()
+        edited = self.settings.edits
+        for face in result.faces:
+            label = describe_label(face.before, face.after, edited) if self.settings.readout else ""
+            draw_face(image, face.box, label, self.show_boxes)
+        self._video_height = image.shape[0]
+        if not self.show_panel:
+            return image
+        strip = self.panel.draw(image.shape[1], self._status(), KEYS_HELP)
+        return np.vstack([image, strip])
+
+    def _key(self, key: int) -> bool:
+        """Handle a key; ``False`` to quit."""
+        s = self.settings
+        if key in (ord("q"), 27):
+            return False
+        if self.panel.key(key):
+            pass
+        elif key == ord(" "):
+            s.enabled = not s.enabled
+            self.say("showing the original" if not s.enabled else "editing again")
+        elif key == ord("r"):
+            self.age.set(0.0)
+            self.gender.set(0.0)
+        elif key in (ord("1"), ord("2")):
+            self.age.nudge(-1 if key == ord("1") else 1)
+        elif key in (ord("3"), ord("4")):
+            self.gender.nudge(-1 if key == ord("3") else 1)
+        elif key == ord("d"):
+            s.replace = not s.replace
+            self.say("the generated face replaces the real one" if s.replace else "only the change is added")
+        elif key == ord("e"):
+            s.readout = not s.readout
+        elif key == ord("b"):
+            self.show_boxes = not self.show_boxes
+        elif key == ord("h"):
+            self.show_panel = not self.show_panel
+        elif key == ord("f"):
+            self.window.toggle_fullscreen()
+        elif key == ord("m"):
+            self.source.mirror = not self.source.mirror
+            self._reset_tracks = True
+        elif key == ord("p") and self._shown is not None:
+            self.screenshots.mkdir(parents=True, exist_ok=True)
+            path = self.screenshots / time.strftime("morph_%Y%m%d_%H%M%S.png")
+            cv2.imwrite(str(path), self._compose(self._shown))
+            self.say(f"saved {path}")
+        return True
+
+    def run(self) -> None:
+        try:
+            while self.window.is_open():
+                self.settings.age, self.settings.gender = self.age.value, self.gender.value
+                frame = self.source.read(timeout=0.03)
+                if frame is not None:
+                    self.worker.submit(frame.image, frame.timestamp, self.settings, reset=self._reset_tracks)
+                    self._reset_tracks = False
+                result = self.worker.take()
+                if result is not None:
+                    now = time.perf_counter()
+                    if self._last_result_time is not None:
+                        rate = 1.0 / max(now - self._last_result_time, 1e-6)
+                        self._fps = rate if self._fps == 0 else 0.9 * self._fps + 0.1 * rate
+                    self._last_result_time = now
+                    self._shown = result
+                if self._shown is not None:
+                    self.window.show(self._compose(self._shown))
+                key = self.window.poll_key(1)
+                if key is not None and not self._key(key):
+                    break
+        finally:
+            self.worker.stop()
+            self.source.stop()
+            self.window.close()
+
+
+def run(source: str = "0", device: str = "auto", size: int = 256, max_faces: int = 2, readout: bool = True,
+        half: bool = False, width: int = 1280, height: int = 720, mirror: bool | None = None,
+        fullscreen: bool = False, age: float = 0.0, gender: float = 0.0, replace: bool = False) -> None:
+    dev = pick_device(device)
+    editor = load_editor(dev, size=size, max_faces=max_faces, readout=readout, half=half)
+    src = open_source(source, width, height, mirror)
+    settings = Settings(age=age, gender=gender, replace=replace, readout=readout)
+    print(f"[morph] running on {dev}; {KEYS_HELP}")
+    App(editor, src, settings, fullscreen=fullscreen).run()
+
+
+def edit_file(path, output, age: float, gender: float, device: str = "auto", size: int = 1024,
+              replace: bool = False, readout: bool = True) -> FrameResult:
+    """Edit the faces in one picture and save it to ``output``."""
+    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise FileNotFoundError(f"cannot read image {path}")
+    editor = load_editor(pick_device(device), size=size, max_faces=8, readout=readout)
+    result = editor.process(image, Settings(age=age, gender=gender, replace=replace, readout=readout))
+    Path(output).parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(output), result.image):
+        raise OSError(f"cannot write {output}")
+    return result
