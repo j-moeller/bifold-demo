@@ -24,8 +24,8 @@ the body part below it (the pelvis to the character).
 from __future__ import annotations
 
 import math
-from functools import partial
 from dataclasses import dataclass, field, replace
+from functools import partial
 
 import numpy as np
 
@@ -182,13 +182,21 @@ def _align(a, b) -> np.ndarray:
 # -- the avatar --------------------------------------------------------------------------------------
 
 
+_BIPED = ("Bip01", "Bip01 Spine2", "Bip01 L Thigh", "Bip01 R Hand")
+
+
+def supports(model: CharacterModel) -> bool:
+    """Whether ``model`` has the (3ds Max Biped) skeleton the poses are made for."""
+    return all(model.skeleton.find(n) is not None for n in _BIPED)
+
+
 class Body:
     """Bones and rest measurements of an avatar (``Bip01 ...`` Biped names), for posing it."""
 
     def __init__(self, model: CharacterModel):
         sk = model.skeleton
         self.model, self.skeleton = model, sk
-        missing = [n for n in ("Bip01", "Bip01 Spine2", "Bip01 L Thigh", "Bip01 R Hand") if sk.find(n) is None]
+        missing = [n for n in _BIPED if sk.find(n) is None]
         if missing:
             raise ValueError(f"{model.name} is not a Biped skeleton (no {', '.join(missing)})")
 

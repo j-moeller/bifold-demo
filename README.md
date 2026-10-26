@@ -57,11 +57,39 @@ for your terminal app. Allow it, then run the command again.
 | `Space`   | pause or resume the scene's simulation time               |
 | `R`       | restart the scene (time 0, physics reset)                 |
 | `[` / `]` | lower / raise the confidence threshold                    |
+| `Y`/`Tab` | select a person in the 3D scene (see below)               |
 | `F`       | toggle fullscreen                                         |
 | `P`       | save a screenshot to `screenshots/`                       |
 | `M`       | mirror the webcam on or off                               |
 | `H`       | hide or show the status panel                             |
 | `Q`/`Esc` | quit                                                      |
+
+**Selecting people for yoga.** `Y` (or `Tab`) selects the most prominent of
+the 3D people in the picture and marks them with a tag. In this selection mode
+the keys are:
+
+| Key                     | Action                                                  |
+|-------------------------|---------------------------------------------------------|
+| `Tab` / `Shift`+`Tab`   | next person to the right / left (also `→` / `←`)        |
+| `1` … `6`               | the selected person does a yoga pose (see the table in [Yoga poses](#yoga-poses)) |
+| the same number again   | keep holding the pose                                   |
+| `0` / `Backspace`       | stop: out of the pose and back to what they were doing  |
+| `Esc` / `Y`             | end selection mode (poses already started go on)        |
+
+People who are drawn shorter than 30 pixels (far away) cannot be selected. When
+the selected person walks out of the picture, is hidden or is removed from the
+scene, the person nearest to where they were is selected instead. A person asked
+for a pose stops where they are and turns so the camera sees the pose from its
+best side. They step aside a little if that keeps the mat clear of the other
+people and of the furniture. After the pose they carry on exactly where they
+left off. Several people can do poses at once.
+
+Each avatar's pose is solved the first time it is needed, in the background
+(up to about 3 s), and then cached in `~/.cache/bifold-demo/characters/yoga`.
+While the demo is in selection mode it also solves the poses of the people in
+the picture ahead of time. `bifold-characters yoga` solves every avatar's poses
+once in advance, so the demo always starts them at once. On Windows the
+`Shift`+`Tab` key looks the same as `Tab` to OpenCV; use `←` there.
 
 ## The trade-fair scene
 
@@ -165,6 +193,7 @@ bifold-characters fetch --set all           # all 115, incl. uniforms (~5 GB)
 bifold-characters fetch --avatars Business_Female_01 Male_Adult_04 --clips basic
 bifold-characters list                      # what is prepared: sex, age group, skin tone, height
 bifold-characters info Business_Female_01
+bifold-characters yoga                      # solve every avatar's yoga poses ahead of time (a few minutes)
 ```
 
 Re-running `fetch` skips what is already there. `--dry-run` shows the
@@ -207,16 +236,17 @@ catalog, but the conference set includes them anyway.
 
 For a later demo that recognises yoga poses, [`characters/yoga.py`](src/bifold_demo/characters/yoga.py)
 animates the 3D people through yoga poses. Each pose is a looping clip: from a
-starting pose into the pose, holding it for two breaths, and back.
+starting pose into the pose, holding it for two breaths, and back. In the demo,
+select a person with `Y` and press the pose's key (see [Controls](#controls)).
 
-| Pose | `yoga_clip(model, ...)` | Starts from |
-|------|-------------------------|-------------|
-| Yogi Squat (Malasana) | `"yogi_squat"` | standing |
-| Cow Pose (Bitilasana) | `"cow"` | standing, down to hands and knees (crouch, kneel with toes tucked, tabletop) |
-| Warrior 1 (Virabhadrasana I) | `"warrior_1"` | standing, the right foot steps back, the arms sweep up |
-| Downward Facing Dog (Adho Mukha Svanasana) | `"downward_dog"` | standing, down to hands and knees, toes tucked, the hips lift |
-| Warrior 2 (Virabhadrasana II) | `"warrior_2"` | standing, the right foot steps out wide, the arms open |
-| Upward Facing Dog (Urdhva Mukha Svanasana) | `"upward_dog"` | standing, down to hands and knees, a step back to plank, the hips lower |
+| Key | Pose | `yoga_clip(model, ...)` | Starts from |
+|-----|------|-------------------------|-------------|
+| `1` | Yogi Squat (Malasana) | `"yogi_squat"` | standing |
+| `2` | Cow Pose (Bitilasana) | `"cow"` | standing, down to hands and knees (crouch, kneel with toes tucked, tabletop) |
+| `3` | Warrior 1 (Virabhadrasana I) | `"warrior_1"` | standing, the right foot steps back, the arms sweep up |
+| `4` | Downward Facing Dog (Adho Mukha Svanasana) | `"downward_dog"` | standing, down to hands and knees, toes tucked, the hips lift |
+| `5` | Warrior 2 (Virabhadrasana II) | `"warrior_2"` | standing, the right foot steps out wide, the arms open |
+| `6` | Upward Facing Dog (Urdhva Mukha Svanasana) | `"upward_dog"` | standing, down to hands and knees, a step back to plank, the hips lower |
 
 ```python
 from bifold_demo.characters.character import Character
@@ -480,12 +510,14 @@ src/bifold_demo/
   display/     overlay.py (boxes, HUD), window.py                      ← module 3: on screen
   characters/  model.py (skeleton, clips, posing), fbx.py + fbx_convert.py (FBX reader),
                character.py (skinned scene object), behaviour.py, crowd.py,
-               yoga.py (yoga pose clips),
+               yoga.py (yoga pose clips), yoga_clips.py (built in a worker process, cached),
+               performer.py (a pose in the middle of a behaviour),
                rocketbox.py + library.py + cli.py (bifold-characters),
                rocketbox_catalog.json (avatar labels)                   ← 3D people
   people/      prompts.py, generator.py (text-to-image), cutout.py,
                library.py, defaults.py, cli.py (bifold-people)          ← 2D people generator
-  app.py       main loop and command line; loader.py loads and reloads scene files
+  app.py       main loop and command line; loader.py loads and reloads scene files;
+               selection.py (selection mode: people and their yoga poses)
   scenes/      fair.py (default trade-fair hall), fair3d.py (static 3D poses), basic.py
 examples/      example scenes
 uploads/       drop textures here while the demo runs

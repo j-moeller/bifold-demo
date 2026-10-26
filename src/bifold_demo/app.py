@@ -11,12 +11,15 @@ from pathlib import Path
 import cv2
 
 from .detection import DEFAULT_MODEL, AsyncDetector, DetectionResult
-from .display import Window, draw_banner, draw_detections, draw_panel
+from .display import Window, draw_banner, draw_detections, draw_panel, draw_selection
+from .display.window import TAB
 from .loader import SceneReloader, load_scene
 from .scene import Scene
+from .selection import Selection, person_name
 from .sources import FixedStepClock, Frame, SceneSource, SimulationClock, SourceSwitcher, WebcamSource
 
-HELP = "S source | D detect | Space pause | R reset | [ ] confidence | F fullscreen | P screenshot | H hide | Q quit"
+HELP = ("S source | D detect | Space pause | R reset | [ ] confidence | Y people | F fullscreen | P screenshot | "
+        "H hide | Q quit")
 STALE_AFTER = 1.0  # seconds after which old detections are no longer drawn
 
 
@@ -93,6 +96,7 @@ class DemoApp:
         self._last_canvas = None
         self._last_reload_check = 0.0
         self._running = True
+        self.selection = Selection()  # Y: pick a person, number keys: yoga poses
 
     def _prepare_scene(self, scene: Scene) -> None:
         if self.config.uploads:
@@ -143,6 +147,10 @@ class DemoApp:
             while self._running:
                 frame = self.switcher.active.read(timeout=0.5)
                 if frame is not None:
+                    if frame.source == "scene":
+                        message = self.selection.update(self.scene_source.scene, frame.size)
+                        if message:
+                            self.notify(message)
                     result = self._detections_for(frame)
                     self._last_canvas = self._compose(frame, result)
                     self.display_rate.tick(time.perf_counter())
@@ -164,6 +172,7 @@ class DemoApp:
         finally:
             if self.worker:
                 self.worker.stop()
+            self.selection.close()
             self.switcher.stop()
             if self._writer is not None:
                 self._writer.release()
@@ -189,10 +198,15 @@ class DemoApp:
         canvas = frame.image.copy()  # the detector may still be reading the original
         if result is not None:
             draw_detections(canvas, result.detections, None if result.frame_size == frame.size else result.frame_size)
+        selecting = self.selection.active and frame.source == "scene"
+        if selecting and self.selection.box is not None:
+            t = self.scene_source.scene.time
+            draw_selection(canvas, self.selection.box, person_name(self.selection.selected),
+                           self.selection.describe(self.selection.selected, t))
         if self.show_hud:
             draw_panel(canvas, self._status_lines(frame, result))
             if not self.config.headless:
-                draw_panel(canvas, [HELP], corner="bottom-left")
+                draw_panel(canvas, self.selection.help_lines() if selecting else [HELP], corner="bottom-left")
         if self._message and time.perf_counter() < self._message[1]:
             text, _expiry, is_error = self._message
             draw_banner(canvas, text, color=(40, 40, 200) if is_error else (60, 140, 40))
@@ -222,15 +236,24 @@ class DemoApp:
                     counts[det.label] = counts.get(det.label, 0) + 1
                 summary = ", ".join(f"{n} {label}" for label, n in sorted(counts.items(), key=lambda kv: -kv[1]))
                 lines.append(f"objects: {summary or 'none'}")
+        if frame.source == "scene":
+            lines += self.selection.status_lines(self.scene_source.scene.time)
         return lines
 
     def _handle_key(self, key: int, window: Window) -> None:
         clock = self.scene_source.clock
+        if self.switcher.active_name == "scene":
+            handled, message = self.selection.handle_key(key, self.scene_source.scene.time)
+            if handled:
+                if message:
+                    self.notify(message, 3.0)
+                return
         if key in (ord("q"), 27):
             self._running = False
         elif key == ord("s"):
             target = "webcam" if self.switcher.active_name == "scene" else "scene"
             if self.switcher.switch(target):
+                self.selection.leave()
                 self.notify(f"source: {target}")
             else:
                 self.notify(self.switcher.last_error, 5, error=True)
@@ -245,7 +268,14 @@ class DemoApp:
             self.notify("paused" if clock.toggle_pause() else "running", 1.0)
         elif key == ord("r"):
             self.scene_source.reset()
+            self.selection.reset()
             self.notify("scene reset", 1.0)
+        elif key in (ord("y"), TAB):
+            if self.switcher.active_name != "scene":
+                self.notify("people can only be selected in the 3D scene (S switches to it)", 3.0, error=True)
+            else:
+                source = self.scene_source
+                self.notify(self.selection.enter(source.scene, (source.width, source.height)), 4.0)
         elif key in (ord("["), ord("]")) and self.detector is not None:
             step = 0.05 if key == ord("]") else -0.05
             self.detector.conf = round(min(0.95, max(0.05, self.detector.conf + step)), 2)

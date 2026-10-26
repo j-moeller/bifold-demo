@@ -771,13 +771,13 @@ def read_character(cache_dir, name: str, textures: str = "path", metadata: dict 
     return CharacterModel(name, skeleton, primitives, arrays["inverse_bind"], dict(meta))
 
 
-def save_clip(clip: AnimationClip, cache_dir, metadata: dict | None = None) -> Path:
-    """Write ``clip`` to ``<cache_dir>/clips/<name>.npz`` (float32 arrays plus JSON info)."""
-    folder = Path(cache_dir).expanduser() / "clips"
+def save_clip(clip: AnimationClip, cache_dir, metadata: dict | None = None, path=None) -> Path:
+    """Write ``clip`` to ``<cache_dir>/clips/<name>.npz`` (float32 arrays plus JSON info), or to ``path``."""
+    folder = Path(cache_dir).expanduser() / "clips" if path is None else Path(path).parent
     folder.mkdir(parents=True, exist_ok=True)
     info = {"name": clip.name, "fps": float(clip.fps), "loop": bool(clip.loop), "root": clip.root,
             "format": FORMAT, "metadata": {**clip.metadata, **(metadata or {})}}
-    path = folder / f"{clip.name}.npz"
+    path = folder / f"{clip.name}.npz" if path is None else Path(path)
     _write_atomic(path, lambda f: np.savez(
         f, bone_names=np.array(clip.bone_names), rotations=np.asarray(clip.rotations, np.float32),
         translations=np.asarray(clip.translations, np.float32), info=np.array(_json(info))))

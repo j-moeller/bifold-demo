@@ -89,3 +89,31 @@ def draw_banner(image: np.ndarray, message: str, color=(40, 40, 200)) -> None:
     y = round(12 * s)
     cv2.rectangle(image, (x, y), (min(iw - 1, x + tw + 2 * pad), y + th + baseline + 2 * pad), color, -1)
     cv2.putText(image, message, (x + pad, y + pad + th), FONT, font_scale, _text_color(color), thickness, cv2.LINE_AA)
+
+
+def draw_selection(image: np.ndarray, box, label: str, detail: str = "", color=(0, 200, 255)) -> None:
+    """Mark a selected person: corner brackets around ``box`` (x0, y0, x1, y1) and a tag with ``label`` (and
+    ``detail`` on a second line) above it, or below it when there is no room above."""
+    s = _ui_scale(image)
+    ih, iw = image.shape[:2]
+    x0, y0, x1, y1 = (round(v) for v in box)
+    thickness = max(2, round(2.5 * s))
+    arm = max(6, round(0.25 * min(x1 - x0, y1 - y0)))
+    for cx, cy, dx, dy in ((x0, y0, 1, 1), (x1, y0, -1, 1), (x0, y1, 1, -1), (x1, y1, -1, -1)):
+        cv2.line(image, (cx, cy), (cx + dx * arm, cy), color, thickness, cv2.LINE_AA)
+        cv2.line(image, (cx, cy), (cx, cy + dy * arm), color, thickness, cv2.LINE_AA)
+    lines = [label] + ([detail] if detail else [])
+    font_scale, text_thickness = 0.55 * s, max(1, round(1.4 * s))
+    sizes = [cv2.getTextSize(line, FONT, font_scale, text_thickness) for line in lines]
+    pad, gap = max(3, round(5 * s)), max(2, round(4 * s))
+    line_h = max(th + baseline for (_tw, th), baseline in sizes)
+    width = max(tw for (tw, _th), _b in sizes) + 2 * pad
+    height = len(lines) * line_h + (len(lines) - 1) * gap + 2 * pad
+    top = y0 - height - gap
+    if top < 0:
+        top = min(y1 + gap, ih - height)
+    left = min(max(0, x0), max(0, iw - width))
+    cv2.rectangle(image, (left, top), (left + width, top + height), color, -1)
+    for k, (line, ((_tw, th), _baseline)) in enumerate(zip(lines, sizes)):
+        y = top + pad + k * (line_h + gap) + th
+        cv2.putText(image, line, (left + pad, y), FONT, font_scale, _text_color(color), text_thickness, cv2.LINE_AA)

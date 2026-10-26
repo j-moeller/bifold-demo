@@ -5,6 +5,38 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+# Keys without a character of their own, as :meth:`Window.poll_key` returns them (beyond Unicode: never a character)
+TAB, BACKSPACE = 9, 8
+BACKTAB, LEFT, RIGHT = 0x110001, 0x110002, 0x110003  # Shift+Tab, arrow keys
+
+# what the HighGUI backends report for them (cv2.waitKeyEx)
+_SPECIAL = {
+    25: BACKTAB, 127: BACKSPACE, 0xF702: LEFT, 0xF703: RIGHT,  # macOS: Shift+Tab types a back-tab, delete a DEL
+    0x01000002: BACKTAB, 0x01000003: BACKSPACE, 0x01000012: LEFT, 0x01000014: RIGHT,  # Qt (Linux wheels)
+    0x250000: LEFT, 0x270000: RIGHT,  # Windows (cannot tell Shift+Tab from Tab)
+}
+_GTK = {0xFE20: BACKTAB, 0xFF51: LEFT, 0xFF53: RIGHT}  # keysyms; GTK adds the modifiers above bit 16
+
+
+def key_code(raw: int) -> int | None:
+    """A ``cv2.waitKeyEx`` code as :meth:`Window.poll_key` returns it: characters as their code (letters
+    lower-cased), Escape 27, Return 13, Tab ``TAB``; Shift+Tab, the left and right arrows and Backspace as
+    ``BACKTAB``, ``LEFT``, ``RIGHT`` and ``BACKSPACE``; ``None`` for other keys (function keys, ...) or no key."""
+    if raw < 0:
+        return None
+    if raw in _SPECIAL:
+        return _SPECIAL[raw]
+    if raw >> 16 == 0x100:  # other Qt special keys
+        return None
+    key = raw & 0xFFFF  # GTK puts the modifier keys above bit 16
+    if key in _GTK:
+        return _GTK[key]
+    if 0xFF00 <= key <= 0xFF1F:  # GTK BackSpace, Tab, Return, Escape: their ASCII codes
+        key &= 0xFF
+    if key == 0 or key > 0xFF:  # Windows special keys have the low bits clear; other function keys
+        return None
+    return ord(chr(key).lower()) if chr(key).isalpha() else key
+
 
 class Window:
     """Shows frames at their native resolution; can switch to fullscreen."""
@@ -27,12 +59,8 @@ class Window:
         self._shown = True
 
     def poll_key(self, delay_ms: int = 1) -> int | None:
-        """Process window events; return the pressed key code (lower-cased letters) or ``None``."""
-        key = cv2.waitKey(delay_ms)
-        if key < 0:
-            return None
-        key &= 0xFF
-        return ord(chr(key).lower()) if chr(key).isalpha() else key
+        """Process window events; return the pressed key (see :func:`key_code`) or ``None``."""
+        return key_code(cv2.waitKeyEx(delay_ms))
 
     def is_open(self) -> bool:
         if not self._shown:

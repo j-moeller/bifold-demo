@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 import warnings
@@ -153,6 +154,51 @@ def cmd_info(args) -> int:
     return _error(library.explain(args.name), 1)
 
 
+def _pose_names() -> list[str]:
+    from . import yoga
+
+    return list(yoga.POSES)
+
+
+def _yoga_job(dest: str, name: str, pose: str) -> tuple[str, str, float, str | None]:
+    """Solve (or find cached) one avatar's pose; runs in a worker process."""
+    from . import yoga_clips
+
+    start = time.perf_counter()
+    try:
+        model = CharacterLibrary(dest).load(name, textures="none")
+        path = yoga_clips.cache_path(Path(dest) / "yoga", model, pose)
+        yoga_clips.load_or_build(model, pose, path, yoga_clips.model_key(model))
+    except Exception as exc:  # noqa: BLE001 - reported per clip
+        return name, pose, time.perf_counter() - start, f"{type(exc).__name__}: {exc}"
+    return name, pose, time.perf_counter() - start, None
+
+
+def cmd_yoga(args) -> int:
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    from . import yoga
+
+    dest, _ = _folders(args)
+    library = CharacterLibrary(dest)
+    available = library.available()
+    names = args.avatars or sorted(available)
+    missing = [n for n in names if n not in available]
+    if missing:
+        return _error(library.explain(missing[0]), 1)
+    poses = args.poses or list(yoga.POSES)
+    jobs = [(str(dest), name, pose) for name in names for pose in poses]
+    report, failed = _progress("yoga"), 0
+    with ProcessPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+        futures = [pool.submit(_yoga_job, *job) for job in jobs]
+        for done, future in enumerate(as_completed(futures), 1):
+            name, pose, seconds, error = future.result()
+            failed += error is not None
+            report(done, len(jobs), f"{name} {pose}", error or f"{seconds:.1f} s")
+    print(f"[yoga] {len(jobs) - failed} clips ready in {dest / 'yoga'}" + (f", {failed} failed" if failed else ""))
+    return 1 if failed else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bifold-characters", description="Download and prepare 3D people "
                                      "(Microsoft Rocketbox avatars and animations, MIT licence).")
@@ -189,6 +235,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     lst = add("list", cmd_list, "list the prepared avatars")
     lst.add_argument("--all", action="store_true", help="also list the avatars that are not prepared yet")
+
+    y = add("yoga", cmd_yoga, "solve the yoga poses of the prepared avatars ahead of time, so the demo starts them at "
+                              "once (otherwise each is solved the first time it is asked for)")
+    y.add_argument("--avatars", nargs="+", metavar="NAME", help="only these avatars (default: all prepared)")
+    y.add_argument("--poses", nargs="+", choices=_pose_names(), metavar="POSE",
+                   help=f"only these poses (default: all of {', '.join(_pose_names())})")
+    y.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1),
+                   help="poses solved at the same time (default: one per CPU core but one)")
 
     i = add("info", cmd_info, "show the details of an avatar or animation clip")
     i.add_argument("name", help="avatar or clip name, e.g. Business_Female_01 or m_walk_neutral_01")
