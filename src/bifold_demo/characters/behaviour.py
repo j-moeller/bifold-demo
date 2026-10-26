@@ -74,6 +74,7 @@ _FADE_SPEED = 200.0  # crossfades last long enough that the clips' head yaw diff
 _MAX_FADE = 1.0
 _WALK_TURN = 20.0  # walks starting more than this off the current heading turn in place first
 _SHARP = 120.0  # corners sharper than this (degrees of deflection) stop and turn in place
+_MAX_TURN = 300.0  # the longest way round a turn may be made to keep the face off the camera
 _PACE = {"child": (1.0, 1.25), "adult": (0.92, 1.1), "older": (0.85, 1.0)}  # walking speed / the clip's own speed
 _STRIDE = {"child": 0.72, "adult": 1.0, "older": 0.97}  # default stride_scale when the style gives none
 
@@ -638,22 +639,24 @@ class Behaviour:
             if not isinstance(segment, (Walk, Idle, Turn, Hide)):
                 raise TypeError(f"unknown segment {segment!r}")
         state = self.rng.getstate()
-        self._build(segments, set())
-        flips = self._choose_turns()
-        if flips:
+        self._build(segments, set(), {})
+        layout = self._layout()
+        if layout is not None:
             self.rng.setstate(state)
-            self._build(segments, flips)
+            self._build(segments, *layout)
         self._plan_head()
 
     # -- building ------------------------------------------------------------------------------------
 
-    def _build(self, segments: list, flips: set[int]) -> None:
-        """Lay out the pieces and the clip track; the automatic turns numbered in ``flips`` go the other way round."""
+    def _build(self, segments: list, flips: set[int], windows: dict[int, float]) -> None:
+        """Lay out the pieces and the clip track. The turns with a choice of direction numbered in ``flips`` go the
+        other way round; ``windows`` gives idles (by number) their window offset (see :meth:`_idle_options`)."""
         self._pieces: list = []
         self._entries: list[_Entry] = []
         self._walk_clips: dict[str, AnimationClip | None] = {}
-        self._side = 0
+        self._side = None
         self._flips, self._choices = flips, []
+        self._windows, self._idles = windows, []
         self._t, self._pos, self._heading = 0.0, self.start, self.start_heading
         for k, segment in enumerate(segments):
             following = segments[k + 1] if k + 1 < len(segments) else None
@@ -676,74 +679,90 @@ class Behaviour:
                 fade = min(max(FADE, gap / _FADE_SPEED), _MAX_FADE)
                 entry.fade = min(fade, 0.5 * (before.t1 - before.t0), 0.5 * (entry.t1 - entry.t0))
 
-    def _choose_turns(self) -> set[int] | None:
-        """Which turns with a choice of direction (automatic turns, ``Turn(either_way=True)``) to make the other way.
+    def _layout(self) -> tuple[set[int], dict[int, float]] | None:
+        """``(flips, windows)`` for a second build that lets the face avoid the camera all along the loop.
 
-        The face can avoid the camera all along the loop only if ``psi = heading + clip yaw - camera bearing``
-        (unwrapped) stays inside one window ``(w - HEAD_YAW_LIMIT, 360 - w + HEAD_YAW_LIMIT) + 360 k``, where ``w`` is
-        the angle to keep: the face ``psi + head_yaw`` must stay inside one of the gaps between the camera
-        directions. In particular ``psi`` must wind around as often as the camera bearing does over a loop. Flipping
-        a turn of ``d`` degrees to ``d -/+ 360`` shifts ``psi`` by -/+ 360 from then on, so this picks the flips
-        that fit ``psi`` into a window (with room to spare) and turn the least; ``None`` keeps the turns as they are.
+        With the head turning up to ``HEAD_YAW_LIMIT``, the face can keep ``w`` degrees (``min_angle`` plus margins)
+        off the camera only while ``psi = heading + clip yaw - camera bearing`` (unwrapped) stays inside one window
+        ``(w - HEAD_YAW_LIMIT, 360 - w + HEAD_YAW_LIMIT) + 360 k``: the face, ``psi + head_yaw``, must stay in one
+        gap between camera directions. In particular ``psi`` must come back to where it started after a loop.
+        Flipping a turn with a choice of direction (automatic turns, ``Turn(either_way=True)``) from ``d`` degrees
+        to ``d -/+ 360`` shifts ``psi`` by -/+ 360 from then on, so this picks the flips that fit ``psi`` (walk and
+        turn clips included) into a window with room to spare while turning the least, and tells every idle which
+        window its clips' head motion must fit. ``None``: the first build is as good.
         """
         cam = self.camera.nominal
-        if cam is None or not self._choices or any(not p.visible for p in self._pieces):
+        if cam is None or any(not p.visible for p in self._pieces):
             return None
         n = max(8, int(math.ceil(self.duration / _PLAN_DT)))
-        times = np.arange(n + 1) * (self.duration / n)
-        samples = np.array([self._body(tl)[:3] + (self._body(tl)[6],) for tl in times[:n]] +
-                           [self._body(0.0)[:3] + (self._body(0.0)[6],)])
-        dx, dz = cam[0] - samples[:, 0], cam[1] - samples[:, 1]
+        times = np.arange(n) * (self.duration / n)
+        body = [self._body(tl) for tl in times]
+        dx = cam[0] - np.array([b[0] for b in body])
+        dz = cam[1] - np.array([b[1] for b in body])
         distance = np.hypot(dx, dz)
         if distance.min() < MIN_CAMERA_DISTANCE + self.camera.radius:
             return None
-        bearing = np.degrees(np.unwrap(np.radians(np.arctan2(dx, dz) * (180.0 / math.pi))))
-        psi = samples[:, 2] + samples[:, 3] - bearing
-        psi[-1] = psi[0] + (self._heading - self.start_heading) - (bearing[-1] - bearing[0])  # the loop's closure
-        width = self.min_angle + _MARGIN + 3.0 + float(np.degrees(np.arcsin(min(
-            self.camera.radius / max(float(distance.min()), 1e-9), 0.5))))
-        low, high = width - HEAD_YAW_LIMIT, 360.0 - width + HEAD_YAW_LIMIT
-        # intervals of the grid: between turns (shifted by the flips before them) and turns (stretched if flipped)
-        bounds = [(int(np.searchsorted(times, t0)), int(np.searchsorted(times, t1)), d) for t0, t1, d in self._choices]
-        flippable = [k for k, (_, _, d) in enumerate(bounds) if abs(d) >= 90.0][:10]
-        pieces, i = [], 0
-        for k, (i0, i1, d) in enumerate(bounds):
+        bearing = np.degrees(np.unwrap(np.arctan2(dx, dz)))
+        winding = bearing[-1] - bearing[0] + _wrap(bearing[0] - bearing[-1])
+        base = np.array([b[2] for b in body]) - bearing  # psi without any clip
+        inherent = np.array([b[6] if b[4].walk is not None or b[4].after is not None else 0.0 for b in body])
+        psi = base + inherent  # idle clips are chosen afterwards, to fit
+        psi = np.append(psi, psi[0] + self._heading - self.start_heading - winding)  # index n: the end of the loop
+        low, high = self._window(float(distance.min()))
+        turns = [(int(np.searchsorted(times, t0)), int(np.searchsorted(times, t1)), d) for t0, t1, d in self._choices]
+        flippable = sorted((k for k, (_, _, d) in enumerate(turns) if abs(d) >= 360.0 - _MAX_TURN),
+                           key=lambda k: -abs(turns[k][2]))[:10]
+        parts, i = [], 0  # (turn index or None, start value, end value, min, max) along the loop
+        for k, (i0, i1, _) in enumerate(turns):
             if i0 > i:
-                pieces.append((None, float(psi[i:i0].min()), float(psi[i:i0].max())))
-            a, b = float(psi[min(i0, n)]), float(psi[min(i1, n)])
-            seg = psi[min(i0, n):min(i1, n) + 1]
-            pieces.append((k, a, b, float(seg.min()) - min(a, b), float(seg.max()) - max(a, b)))
-            i = max(i, i1)
+                parts.append((None, 0.0, 0.0, float(psi[i:i0].min()), float(psi[i:i0].max())))
+            seg = psi[i0:i1 + 1]
+            parts.append((k, float(psi[i0]), float(psi[i1]), float(seg.min()), float(seg.max())))
+            i = i1 + 1
         if i <= n:
-            pieces.append((None, float(psi[i:].min()), float(psi[i:].max())))
+            parts.append((None, 0.0, 0.0, float(psi[i:].min()), float(psi[i:].max())))
         best = None
         for mask in range(1 << len(flippable)):
             flips = {flippable[j] for j in range(len(flippable)) if mask >> j & 1}
             offset, lo, hi, turned = 0.0, math.inf, -math.inf, 0.0
-            for piece in pieces:
-                if piece[0] is None:
-                    lo, hi = min(lo, piece[1] + offset), max(hi, piece[2] + offset)
+            for k, a, b, seg_lo, seg_hi in parts:
+                if k is None:
+                    lo, hi = min(lo, seg_lo + offset), max(hi, seg_hi + offset)
                     continue
-                k, a, b, below, above = piece
-                d = bounds[k][2]
+                d = turns[k][2]
                 shift = -math.copysign(360.0, d) if k in flips else 0.0
                 turned += abs(d + shift)
-                ends = (a + offset, b + offset + shift)
-                lo, hi = min(lo, min(ends) + below), max(hi, max(ends) + above)
+                ends = (a + offset, b + offset + shift)  # a flipped turn sweeps the other way between its ends
+                lo = min(lo, min(ends) + seg_lo - min(a, b))
+                hi = max(hi, max(ends) + seg_hi - max(a, b))
                 offset += shift
-            if abs(offset + psi[-1] - psi[0] - (psi[-1] - psi[0])) > 1e-6 and abs(offset) > 1e-6:
-                pass
-            if abs(psi[-1] + offset - psi[0] - 360.0 * round((psi[-1] + offset - psi[0]) / 360.0)) > 1e-6 or \
-                    round((psi[-1] + offset - psi[0]) / 360.0) != 0:
-                continue  # the loop must close without winding around the camera
-            k = round(((lo - low) + (hi - high)) / 2.0 / 360.0)
-            room = min(lo - low - 360.0 * k, 360.0 * k - (hi - high))
+            if abs(psi[n] + offset - psi[0]) > 180.0:
+                continue  # psi would wind around the camera over a loop
+            window = round(((lo - low) + (hi - high)) / 720.0)
+            room = min(lo - low - 360.0 * window, 360.0 * window + high - hi)
             score = (min(room, 10.0), -turned)
             if best is None or score > best[0]:
-                best = (score, flips)
-        if best is None or not best[1]:
+                best = (score, flips, window)
+        if best is None:
             return None
-        return best[1]
+        _, flips, window = best
+        windows = {}
+        for index, piece, _ in self._idles:
+            i = min(int(np.searchsorted(times, piece.t0)), n - 1)
+            unwrapped = base[i] + sum(-math.copysign(360.0, turns[k][2]) for k in flips if turns[k][1] <= i)
+            windows[index] = 360.0 * round((360.0 * window - unwrapped + _wrap(unwrapped)) / 360.0)
+        if not flips and windows == self._used_windows():
+            return None
+        return flips, windows
+
+    def _window(self, distance: float) -> tuple[float, float]:
+        """``(low, high)``: ``heading + clip yaw - camera bearing`` must stay inside this (plus a multiple of 360)
+        for a head turn within ``HEAD_YAW_LIMIT`` to keep the face ``min_angle`` (plus margins) off the camera."""
+        width = self.min_angle + _MARGIN + 3.0 + self._camera_spread(distance)
+        return width - HEAD_YAW_LIMIT, 360.0 - width + HEAD_YAW_LIMIT
+
+    def _used_windows(self) -> dict[int, float]:
+        return {index: window for index, _, window in self._idles}
 
     def _add_auto_turn(self, delta: float) -> None:
         """Turn in place by ``delta`` (wrapped) the way :meth:`_turn_direction` suggests (unless flipped)."""
@@ -848,13 +867,14 @@ class Behaviour:
         self._t, self._heading = piece.t1, self._heading + degrees
 
     def _extend_or_add_idle(self, t0: float, t1: float, role: str) -> None:
+        """Play ``role`` from ``t0`` to ``t1``: continue the clip playing until ``t0`` if it is one, else start one."""
         last = self._entries[-1] if self._entries else None
+        has = self.library is not None and self.library.has(role)
         if last is not None and last.walk is None and last.after is None and last.t1 == t0 and \
-                (last.clip is not None or self.library is None or not self.library.has(role)):
+                (last.role == role or not has):
             last.t1 = t1
             return
-        clip = self.library.role(role, self.style.sex, self.rng) if self.library and self.library.has(role) else None
-        self._add_idle_entry(t0, t1, clip, role)
+        self._add_idle_entry(t0, t1, self.library.role(role, self.style.sex, self.rng) if has else None, role)
 
     def _add_idle_entry(self, t0: float, t1: float, clip: AnimationClip | None, role: str) -> None:
         """Add a clip from ``t0`` to ``t1``, starting where its head yaw is close to the previous clip's and ending
@@ -876,35 +896,50 @@ class Behaviour:
         entry.phase = best[1]
         self._entries.append(entry)
 
-    def _idle_options(self, roles, side: int) -> list[tuple[str, AnimationClip]]:
-        """``(role, clip)`` pairs for an idle here whose own head motion leaves room to avoid the camera."""
+    def _idle_options(self, roles, following, index: int) -> tuple[list[tuple[str, AnimationClip]], float]:
+        """``(role, clip)`` pairs for an idle here whose own head motion keeps ``psi`` (see :meth:`_layout`) inside
+        the idle's window, and the window offset (0: the face stays left of the camera, -360: right of it)."""
         lib = self.library
-        if lib is None:
-            return []
-        options = self._role_clips(roles)
         cam = self.camera.nominal
+        options = self._role_clips(roles) if lib is not None else []
         if cam is None or not options:
-            return options
+            return options, 0.0
         distance = math.hypot(cam[0] - self._pos[0], cam[1] - self._pos[1])
         if distance < MIN_CAMERA_DISTANCE:
-            return options
-        r = _wrap(_bearing(*self._pos, *cam) - self._heading)
-        width = self.min_angle + _MARGIN + self._camera_spread(distance) + 3.0
-        bins = np.arange(-HEAD_YAW_LIMIT, HEAD_YAW_LIMIT + 1e-9, _BIN)
+            return options, 0.0
+        rel = _wrap(self._heading - _bearing(*self._pos, *cam))
+        low, high = self._window(distance)
 
-        def fits(clip):  # at every frame, a head yaw on ``side`` of the camera direction or no conflict at all
-            centre = _wrap_array(r - np.asarray(lib.head_yaw(clip))[:: max(1, clip.frames // 60)])
-            clear = np.abs(centre) >= HEAD_YAW_LIMIT + width
-            return bool(np.all(clear | np.any(side * (bins[None, :] - centre[:, None]) >= width, axis=1)))
+        def fits(clip, offset):
+            yaw = rel + np.asarray(lib.head_yaw(clip))[:: max(1, clip.frames // 60)]
+            return bool(yaw.min() > low + offset and yaw.max() < high + offset)
 
-        good = [(role, clip) for role, clip in options if fits(clip)]
-        if good:
-            return good
-        others = self._role_clips(("idle", "listen", "phone", "look_around", "talk"))
-        good = [(role, clip) for role, clip in others if fits(clip)]
-        if good:
-            return good
-        return [min(options, key=lambda rc: float(np.ptp(lib.head_yaw(rc[1]))))]
+        offset = self._windows.get(index)
+        if offset is None:
+            offset = self._guess_window(following, rel, low, high, [c for _, c in options], fits)
+        for pool in (options, self._role_clips(("idle", "listen", "phone", "look_around", "talk"))):
+            good = [(role, clip) for role, clip in pool if fits(clip, offset)]
+            if good:
+                return good, offset
+        return [min(options, key=lambda rc: float(np.ptp(lib.head_yaw(rc[1]))))], offset
+
+    def _guess_window(self, following, rel: float, low: float, high: float, clips, fits) -> float:
+        """The window offset for an idle before the whole loop is known: the one the following turn needs, else the
+        side away from the camera, else (facing it) the side most clips fit, kept for later idles."""
+        if isinstance(following, Turn) and abs(following.degrees) >= 45.0:
+            d = following.degrees
+            if following.either_way and len(self._choices) in self._flips:
+                d -= math.copysign(360.0, d)
+            fit = [o for o in (0.0, -360.0) if min(rel, rel + d) > low + o and max(rel, rel + d) < high + o]
+            if len(fit) == 1:
+                return fit[0]
+        if abs(rel) > 2.0:
+            return 0.0 if rel > 0 else -360.0
+        if self._side is None:
+            counts = {o: sum(fits(c, o) for c in clips) for o in (0.0, -360.0)}
+            self._side = max(counts, key=counts.get) if counts[0.0] != counts[-360.0] else \
+                self.rng.choice((0.0, -360.0))
+        return self._side
 
     def _role_clips(self, roles) -> list[tuple[str, AnimationClip]]:
         """``(role, clip)`` for the clips of ``roles`` (with fallbacks); ``role`` is the one the clip really plays."""
@@ -916,22 +951,13 @@ class Behaviour:
                     out.append((actual, clip))
         return out
 
-    def _idle_side(self, following) -> int:
-        if isinstance(following, Turn) and abs(following.degrees) >= 90.0:
-            flipped = following.either_way and len(self._choices) in self._flips
-            return 1 if (following.degrees > 0) != flipped else -1
-        if not self._side:
-            cam = self.camera.nominal
-            r = _wrap(_bearing(*self._pos, *cam) - self._heading) if cam is not None else 0.0
-            self._side = (-1 if r > 0 else 1) if abs(r) > 2.0 else self.rng.choice((-1, 1))
-        return self._side
-
     def _add_idle(self, idle: Idle, following) -> None:
+        index = len(self._idles)
         duration = float(idle.duration)
         if duration <= 0:
             return
         x, z = self._pos
-        options = self._idle_options(tuple(idle.roles), self._idle_side(following))
+        options, window = self._idle_options(tuple(idle.roles), following, index)
         t, end, previous = self._t, self._t + duration, None
         while end - t > 1e-9:
             length = self.rng.uniform(3.5, 7.0)
@@ -946,7 +972,9 @@ class Behaviour:
             self._add_idle_entry(t, t1, clip, role)
             previous = clip
             t = t1
-        self._pieces.append(_Stand(self._t, duration, x, z, self._heading))
+        piece = _Stand(self._t, duration, x, z, self._heading)
+        self._pieces.append(piece)
+        self._idles.append((index, piece, window))
         self._t = end
 
     def _add_hide(self, hide: Hide) -> None:
@@ -1285,8 +1313,8 @@ def walk_by(points, speed: float | None = None, *, library: MotionLibrary | None
     if return_mode == "turn":
         at_end, at_start = _turns_around(pts[-1], _bearing(*pts[-2], *pts[-1]), pts[0], _bearing(*pts[1], *pts[0]),
                                          camera, rng)
-        segments += [Idle(rng.uniform(*pause), ("look_around", "idle")), Turn(at_end), Walk(pts[::-1][1:], speed),
-                     Idle(rng.uniform(*pause), ("look_around", "idle")), Turn(at_start)]
+        segments += [Idle(rng.uniform(*pause), ("look_around", "idle")), Turn(at_end, True), Walk(pts[::-1][1:], speed),
+                     Idle(rng.uniform(*pause), ("look_around", "idle")), Turn(at_start, True)]
         segments = [s for s in segments if not isinstance(s, Idle) or s.duration > 0.3]
     else:
         segments.append(Hide(rng.uniform(*gap)))
@@ -1331,9 +1359,9 @@ def approach(start, stop_point=None, camera=None, *, library: MotionLibrary | No
     heading = _bearing(*path[0], *path[1])
     at_stop, at_start = _turns_around(stop_point, _bearing(*path[-2], *path[-1]), start, _bearing(*path[1], *path[0]),
                                       camera, rng)
-    segments = [Walk(path[1:], speed), Idle(rng.uniform(*idle), ("phone", "look_around", "idle")), Turn(at_stop),
-                Walk(path[::-1][1:], speed), Idle(rng.uniform(*far_pause), ("look_around", "idle", "phone")),
-                Turn(at_start)]
+    segments = [Walk(path[1:], speed), Idle(rng.uniform(*idle), ("phone", "look_around", "idle")),
+                Turn(at_stop, True), Walk(path[::-1][1:], speed),
+                Idle(rng.uniform(*far_pause), ("look_around", "idle", "phone")), Turn(at_start, True)]
     behaviour = Behaviour(segments, library, start=start, heading=heading, style=style, camera=camera, rng=rng,
                           look_at=look_at, min_angle=min_angle)
     return _offset(rng, offset, behaviour)
