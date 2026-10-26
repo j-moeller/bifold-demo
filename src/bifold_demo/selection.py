@@ -42,7 +42,8 @@ def menus() -> list[tuple[str, str, list[str]]]:
     poses = list(yoga.POSES)
     pages = [poses[k:k + PAGE] for k in range(0, len(poses), PAGE)]
     titles = [f"Yoga {k + 1}/{len(pages)}" if len(pages) > 1 else "Yoga" for k in range(len(pages))]
-    return [(title, "yoga", page) for title, page in zip(titles, pages)] + [("Items", "items", list(accessories.ITEMS))]
+    items = [*accessories.ITEMS, "face"]  # face: a known person's face (recognition.cast)
+    return [(title, "yoga", page) for title, page in zip(titles, pages)] + [("Items", "items", items)]
 
 
 def short_title(pose: str) -> str:
@@ -63,10 +64,13 @@ def _same(a, b) -> bool:
     return isinstance(a, tuple) and isinstance(b, tuple) and a == b
 
 
+_TITLES = {**accessories.TITLES, "face": "face"}
+
+
 def _item_title(look_name: str, item: str) -> str:
     """``"navy hat"`` for the look ``"navy"`` (or ``"navy hat"``) of the hat, but ``"sunglasses"``, not
     ``"sunglasses glasses"``."""
-    title = accessories.TITLES[item]
+    title = _TITLES[item]
     return look_name if title in look_name.lower() else f"{look_name} {title}"
 
 
@@ -116,6 +120,7 @@ class Selection:
     def __init__(self, clips: YogaClips | None = None, wardrobe: Wardrobe | None = None):
         self.clips = clips if clips is not None else YogaClips()
         self.wardrobe = wardrobe if wardrobe is not None else Wardrobe()
+        self.cast = None  # the known people's faces (recognition.cast.FaceCast), when the demo has some
         self.menu = 0  # which of menus()
         self.active = False
         self.selected = None  # the Character
@@ -355,6 +360,8 @@ class Selection:
         character = self.selected
         if character is None:
             return "nobody selected"
+        if item == "face":
+            return self._face(character)
         if not accessories.supports(character.skinned_model):
             return f"{person_name(character)} cannot wear items"
         name = accessories.TITLES[item]
@@ -372,14 +379,33 @@ class Selection:
         again = "off" if index + 1 == len(looks) else "the next"
         return f"{person_name(character)}: {_item_title(worn.name, item)} ({index + 1} of {len(looks)}; again: {again})"
 
+    def _face(self, character) -> str:
+        """The selected person gets the next known person's face, or (after the last one) their own back."""
+        from .characters import face_photo
+
+        known = self.cast.known() if self.cast is not None else []
+        if not known:
+            return "nobody known yet: put photos of people in the faces folder (a folder per person)"
+        if face_photo.head_layout(character.skinned_model) is None:
+            return f"{person_name(character)} has no face to put a photo on"
+        current = self.cast.wears(character)
+        index = known.index(current) + 1 if current in known else 0
+        if index >= len(known):
+            return self.cast.put(character, None)
+        again = "their own" if index + 1 == len(known) else "the next"
+        return f"{self.cast.put(character, known[index])} ({index + 1} of {len(known)}; again: {again})"
+
     def undress(self, t: float) -> str:
-        """The selected person takes everything off."""
+        """The selected person takes everything off (a known person's face too)."""
         character = self.selected
         if character is None:
             return "nobody selected"
         worn = accessories.wearing(character)
         for item in worn:
             accessories.dress(character, item, None, t=t)
+        if self.cast is not None and self.cast.wears(character) is not None:
+            self.cast.put(character, None)
+            worn = {**worn, "face": None}
         return f"{person_name(character)} takes everything off" if worn else f"{person_name(character)} wears nothing"
 
     def stop(self, t: float) -> str:
@@ -607,10 +633,11 @@ class Selection:
             text += f", then {short_title(_pose_of(performer.queued[0]))}" + (" (held)" if performer.queued[3] else "")
         return text
 
-    @staticmethod
-    def wears(character) -> str:
-        """What ``character`` wears, e.g. ``"navy hat, welcome sign"`` (empty when nothing)."""
-        return ", ".join(_item_title(worn.name, item) for item, worn in accessories.wearing(character).items())
+    def wears(self, character) -> str:
+        """What ``character`` wears, e.g. ``"navy hat, welcome sign, Ada's face"`` (empty when nothing)."""
+        items = [_item_title(worn.name, item) for item, worn in accessories.wearing(character).items()]
+        face = self.cast.wears(character) if self.cast is not None else None
+        return ", ".join(items + ([f"{face}'s face"] if face else []))
 
     def detail(self, character, t: float) -> str:
         """The second line of the selected person's tag: what they are doing, else what they wear."""
@@ -634,7 +661,7 @@ class Selection:
         """The key help of the current menu."""
         all_menus = menus()
         title, kind, entries = all_menus[min(self.menu, len(all_menus) - 1)]
-        keys = [f"{k + 1} {short_title(e) if kind == 'yoga' else accessories.TITLES[e]}"
+        keys = [f"{k + 1} {short_title(e) if kind == 'yoga' else _TITLES[e]}"
                 for k, e in enumerate(entries)]
         people = "Click a person, or Tab / Shift+Tab: next to the right / left | Up / Down: menu | Esc: done"
         if kind == "yoga":  # eight pose names do not fit one line: four to a line

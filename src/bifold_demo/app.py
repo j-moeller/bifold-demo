@@ -52,6 +52,7 @@ class DemoConfig:
     items: str | None = "items"  # looks for the hats, glasses, signs and t-shirts (see characters.accessories)
     faces: str = "faces"  # photos of the people the face recognition knows (see recognition.gallery)
     recognize: bool = False  # start with the face recognition on (N toggles it)
+    cast: bool = True  # put the known people's faces on 3D people (when the faces folder has photos)
     title: str = "bifold demo"
 
 
@@ -89,6 +90,8 @@ class DemoApp:
         self.detector = None
         self.worker: AsyncDetector | None = None
         self.detect_enabled = config.detect
+        self.gallery = None  # the known people (recognition.gallery), loaded when first needed
+        self.cast = None  # their faces on the 3D people (recognition.cast)
         self.recognizer = None  # the face recognition (N), loaded when first switched on
         self.face_worker: AsyncDetector | None = None
         self.recognize_enabled = False
@@ -136,27 +139,51 @@ class DemoApp:
             self.worker = AsyncDetector(self.detector).start()
         return True
 
-    def _load_recognizer(self) -> bool:
-        """Load the face models (downloading them the first time) and the known people; on failure keep the video
-        running and show the error (``N`` retries)."""
+    def _load_gallery(self):
+        """The known people (loading the face models, downloading them the first time), or ``None`` on failure (the
+        video goes on; the error is shown)."""
+        if self.gallery is not None:
+            return self.gallery
         from .recognition.gallery import Gallery
-        from .recognition.recognizer import FaceRecognizer
 
         try:
             gallery = Gallery(self.config.faces)
-            self.recognizer = FaceRecognizer(gallery)
+            gallery.engine  # noqa: B018 - load the models now, not on the first frame
             gallery.refresh(force=True)
         except Exception as exc:  # noqa: BLE001 - e.g. the models cannot be downloaded
-            self.recognizer = None
             self._face_error = f"face recognition unavailable: {type(exc).__name__}: {exc}"
             print(f"[faces] {self._face_error}")
-            return False
+            return None
         self._face_error = None
         people = gallery.people()
         print(f"[faces] {len(people)} known: {', '.join(people) or f'nobody yet (photos go in {gallery.folder}/)'}")
+        self.gallery = gallery
+        return gallery
+
+    def _load_recognizer(self) -> bool:
+        """The face recognition (``N``); on failure keep the video running and show the error (``N`` retries)."""
+        from .recognition.recognizer import FaceRecognizer
+
+        gallery = self._load_gallery()
+        if gallery is None:
+            return False
+        self.recognizer = FaceRecognizer(gallery)
         if not self.sync:
             self.face_worker = AsyncDetector(self.recognizer).start()
         return True
+
+    def _load_cast(self) -> None:
+        """Put the known people's faces on the 3D people, when the faces folder has photos (see recognition.cast)."""
+        from .recognition.gallery import has_photos
+
+        if not self.config.cast or not has_photos(self.config.faces):
+            return
+        gallery = self._load_gallery()
+        if gallery is not None:
+            from .recognition.cast import FaceCast
+
+            self.cast = FaceCast(gallery)
+            self.selection.cast = self.cast
 
     def _faces_for(self, frame: Frame):
         """The recognised faces of ``frame`` (or of a frame just before it), or ``None``; kept for the status panel."""
@@ -194,6 +221,7 @@ class DemoApp:
             self._load_detector()
         if cfg.recognize:
             self.recognize_enabled = self._load_recognizer()
+        self._load_cast()
         window = None if cfg.headless else Window(cfg.title, cfg.fullscreen)
         if window:
             print(f"[demo] controls: {HELP}")
@@ -204,6 +232,9 @@ class DemoApp:
                 if frame is not None:
                     if frame.source == "scene":
                         message = self.selection.update(self.scene_source.scene, frame.size)
+                        if self.cast is not None:
+                            for note in self.cast.update(self.scene_source.scene):
+                                self.notify(note, 3.0)
                         if message:
                             self.notify(message)
                     result = self._detections_for(frame)
@@ -231,6 +262,8 @@ class DemoApp:
                 self.worker.stop()
             if self.face_worker:
                 self.face_worker.stop()
+            if self.cast is not None:
+                self.cast.close()
             self.selection.close()
             self.switcher.stop()
             if self._writer is not None:
@@ -453,6 +486,8 @@ def parse_args(argv=None) -> DemoConfig:
     g.add_argument("--faces", default="faces",
                    help="folder of photos of the people to recognise, a folder per person (default: faces)")
     g.add_argument("--recognize", action="store_true", help="start with the face recognition on (N toggles it)")
+    g.add_argument("--no-cast", dest="cast", action="store_false",
+                   help="do not put the faces of the known people on the 3D people")
     g.add_argument("--items", default="items",
                    help="folder of looks for the hats, glasses, signs and t-shirts of selection mode, e.g. "
                         "items/sign_logo.png ('' for the built-in ones only)")
@@ -477,7 +512,7 @@ def parse_args(argv=None) -> DemoConfig:
         mirror=a.mirror, model=a.model, device=a.device, conf=a.conf, iou=a.iou, imgsz=a.imgsz, classes=a.classes,
         detect=a.detect, sync=a.sync, fullscreen=a.fullscreen, record=a.record, headless=a.headless,
         frames=a.frames, reload=a.reload, uploads=a.uploads or None, items=a.items or None, faces=a.faces,
-        recognize=a.recognize,
+        recognize=a.recognize, cast=a.cast,
     )
 
 

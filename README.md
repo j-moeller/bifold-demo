@@ -91,6 +91,7 @@ In the items menu (see [Accessories](#accessories)):
 | Key                     | Action                                                  |
 |-------------------------|---------------------------------------------------------|
 | `1` hat, `2` glasses, `3` sign, `4` t-shirt | the selected person puts it on; the same number again changes it to its next look, after the last look it comes off |
+| `5` face                | the face of a known person (see [Face recognition](#face-recognition)); again: the next one, after the last their own face |
 | `0` / `Backspace`       | take everything off                                     |
 
 The bottom panel shows the keys of the current menu.
@@ -454,9 +455,15 @@ for face, embedding in engine.faces(image):
 
 ### Known faces on the 3D people
 
-[`characters/face_photo.py`](src/bifold_demo/characters/face_photo.py) paints a
-person's face from a photo onto a 3D person, so the recognition can find them
-in the fair:
+When `faces/` has photos, the demo puts every known person's face on one of the
+3D people, those standing in front of the camera first, so the recognition
+finds them in the fair (`--no-cast` to leave the 3D people as they are). People
+added to the folder while it runs get a 3D person a second later; a person
+removed from it gives the face back. In selection mode `5` (in the items menu)
+puts a known face on the selected person by hand.
+[`recognition/cast.py`](src/bifold_demo/recognition/cast.py) does the casting,
+[`characters/face_photo.py`](src/bifold_demo/characters/face_photo.py) the
+painting:
 
 ```python
 from bifold_demo.characters.face_photo import put_face, take_face_off
@@ -734,6 +741,7 @@ src/bifold_demo/
                rocketbox.py + library.py + cli.py (bifold-characters),
                rocketbox_catalog.json (avatar labels)                   ← 3D people
   recognition/ engine.py (find and fingerprint faces), gallery.py (known people),
+               recognizer.py (faces over frames), cast.py (known faces on 3D people),
                models.py, cli.py (bifold-faces)                          ← face recognition
   people/      prompts.py, generator.py (text-to-image), cutout.py,
                library.py, defaults.py, cli.py (bifold-people)          ← 2D people generator

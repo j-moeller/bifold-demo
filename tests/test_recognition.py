@@ -232,3 +232,101 @@ def test_followed_faces_average_their_frames_and_keep_their_names(tmp_path):
     assert elsewhere.name is None and elsewhere.track != first.track  # another face, on its own
     engine.frames = [[((16, 12, 40, 40), weak)]]
     assert recognizer.recognize(None, now=2.0)[0].track not in (first.track, elsewhere.track)  # forgotten after 1 s
+
+
+class _People:
+    """A stand-in gallery: ``people`` maps names to their photos."""
+
+    engine = None
+
+    def __init__(self, people):
+        self.people_ = dict(people)
+
+    def refresh(self, *args, **kwargs):
+        return False
+
+    def people(self):
+        return {name: len(photos) for name, photos in sorted(self.people_.items())}
+
+    def photos(self, name):
+        return list(self.people_.get(name, []))
+
+
+@pytest.fixture
+def cast_scene(monkeypatch):
+    from test_yoga import synthetic_biped
+
+    from bifold_demo.characters import face_photo
+    from bifold_demo.characters.character import Character
+    from bifold_demo.characters.model import CharacterState
+    from bifold_demo.recognition import cast as cast_module
+    from bifold_demo.scene import Scene
+    from bifold_demo.scene.textures import Texture
+
+    model = synthetic_biped()
+    layout = type("Layout", (), {"primitive": 0})()
+    monkeypatch.setattr(face_photo, "head_layout", lambda m: layout)
+    monkeypatch.setattr(cast_module, "_painted", lambda character, photo, engine: Texture.solid("#ff0000", str(photo)))
+    scene = Scene()
+    for name in ("walker1", "approach1", "audience2", "audience1"):
+        scene.add(Character(model, lambda t: CharacterState((0.0, 0.0, 0.0), 0.0, []), name=name), name=name)
+    return scene
+
+
+def _settle(cast, scene, now):
+    import time
+
+    messages = cast.update(scene, now=now)
+    deadline = time.monotonic() + 5.0
+    while cast._painting and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return messages + cast.update(scene, now=now)
+
+
+def test_the_known_people_get_3d_people_in_front_of_the_camera_first(cast_scene):
+    from bifold_demo.recognition.cast import FaceCast
+
+    gallery = _People({"Ada": ["ada.jpg"], "Ben": ["ben.jpg", "ben2.jpg"]})
+    cast = FaceCast(gallery)
+    try:
+        messages = _settle(cast, cast_scene, now=0.0)
+        head = cast_scene["audience1"].skinned_model.primitives[0].name
+        assert cast.wears(cast_scene["audience1"]) == "Ada" and cast.wears(cast_scene["audience2"]) == "Ben"
+        assert head in cast_scene["audience1"].texture_overrides and not cast_scene["walker1"].texture_overrides
+        assert "audience1 has Ada's face" in messages
+        gallery.people_["Cleo"] = ["cleo.jpg"]  # a new person a moment later: the next one in front of the camera
+        _settle(cast, cast_scene, now=0.5)
+        assert cast.wears(cast_scene["approach1"]) is None  # looked at once a second
+        _settle(cast, cast_scene, now=1.5)
+        assert cast.wears(cast_scene["approach1"]) == "Cleo"
+        del gallery.people_["Ada"]  # gone from the folder: the face comes off
+        messages = _settle(cast, cast_scene, now=3.0)
+        assert cast.wears(cast_scene["audience1"]) is None and not cast_scene["audience1"].texture_overrides
+        assert any("Ada is no longer known" in m for m in messages)
+        assert cast.put(cast_scene["walker1"], "Ben").startswith("putting Ben's face")  # by hand: Ben moves
+        _settle(cast, cast_scene, now=3.1)
+        assert cast.wears(cast_scene["walker1"]) == "Ben" and cast.wears(cast_scene["audience2"]) is None
+        assert cast.put(cast_scene["walker1"], None) == "walker1 has their own face again"
+        assert cast.put(cast_scene["walker1"], "Nobody") == "no photo of Nobody with a face"
+    finally:
+        cast.close()
+
+
+def test_the_face_key_of_selection_mode_steps_through_the_known_people(cast_scene):
+    from bifold_demo.recognition.cast import FaceCast
+    from bifold_demo.selection import Selection
+
+    cast = FaceCast(_People({"Ada": ["ada.jpg"], "Ben": ["ben.jpg"]}), auto=False)
+    selection = Selection.__new__(Selection)
+    selection.cast, selection.selected = cast, cast_scene["walker1"]
+    try:
+        assert selection.wear("face", 0.0).startswith("putting Ada's face on walker1 (1 of 2; again: the next)")
+        _settle(cast, cast_scene, now=0.0)
+        assert selection.wears(cast_scene["walker1"]) == "Ada's face"
+        assert selection.wear("face", 0.0).endswith("(2 of 2; again: their own)")
+        _settle(cast, cast_scene, now=0.1)
+        assert selection.wear("face", 0.0) == "walker1 has their own face again"
+        selection.cast = None
+        assert selection.wear("face", 0.0).startswith("nobody known yet")
+    finally:
+        cast.close()

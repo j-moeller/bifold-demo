@@ -73,6 +73,12 @@ def _photos(folder: Path) -> list[Path]:
     return found
 
 
+def has_photos(folder) -> bool:
+    """Whether ``folder`` has any photos of people (cheap: nothing is loaded)."""
+    folder = Path(folder).expanduser()
+    return folder.is_dir() and any(_person(p, folder) is not None for p in _photos(folder))
+
+
 class Gallery:
     """Known people from ``folder`` (see the module docs), embedded with ``engine`` (a :class:`~.engine.FaceEngine`;
     made when first needed). Thread safe."""
