@@ -28,6 +28,9 @@ bifold-characters = "bifold_demo.characters.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"bifold_demo.characters" = ["*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

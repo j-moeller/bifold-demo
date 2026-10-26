@@ -1,8 +1,13 @@
-"""Trade-fair hall: visitors standing in a half circle in front of the camera, people walking by in
-the background, exhibitor booths and a keynote stage, all inside a large exhibition hall.
+"""Trade-fair hall with exhibitor booths and a keynote stage, seen by a fixed camera, full of people.
 
-People come from the ``people/`` folder (fill it with ``bifold-people generate -n 30``); until it
-has people, default people cut out of the Ultralytics sample photos stand in.
+People are animated 3D characters (Microsoft Rocketbox avatars, prepared once with
+``bifold-characters fetch --set conference``): some walk down the aisle towards the camera, stop and
+turn around, others walk by along the cross aisles or wander about, small groups chat, exhibitors
+stand behind their counters talking to visitors, and a speaker is on the stage. Nobody looks at
+the camera. The crowd mixes women and men, skin tones and ages (see ``characters.crowd``).
+
+Until the characters are prepared, 2D cut-out people stand in: from the ``people/`` folder
+(``bifold-people generate -n 30``) or cut out of the Ultralytics sample photos.
 
 Everything is laid out by the constants below. Objects you can re-texture by dropping
 ``uploads/<name>.jpg``: ``booth1_wall`` ... ``booth8_wall``, ``booth1_sign``, ``booth1_counter``,
@@ -15,10 +20,15 @@ from __future__ import annotations
 import math
 import random
 import zlib
+from dataclasses import replace
+from functools import partial
 
 import cv2
 import numpy as np
 
+from bifold_demo.characters.behaviour import approach, chat, stand, walk_by, wander
+from bifold_demo.characters.crowd import age_group, describe_crowd, populate, sample_crowd
+from bifold_demo.characters.library import CharacterLibrary
 from bifold_demo.people import people_for_scene
 from bifold_demo.scene import Box, Camera, Cylinder, Fog, Keyframes, Plane, Quad, Scene, Sphere, Texture, oscillate, spin
 from bifold_demo.scene.transforms import rotation_y
@@ -53,7 +63,10 @@ COMPANIES = [  # fictional exhibitors: name, tagline, main colour, accent colour
 
 
 def build_scene(people=None) -> Scene:
-    """The hall; ``people`` are 2D cut-outs (default: ``PEOPLE_FOLDER`` or default people; ``[]`` = an empty hall)."""
+    """The hall with animated 3D people when they are prepared, otherwise 2D cut-outs.
+
+    ``people``: use these 2D cut-outs instead (``[]`` = an empty hall).
+    """
     rng = random.Random(SEED)
     scene = Scene(
         background=(205, 207, 212),
@@ -65,6 +78,15 @@ def build_scene(people=None) -> Scene:
     scene.camera = Camera(position=CAMERA_POSITION, target=CAMERA_TARGET, fov=55, near=0.1)
     add_hall(scene)
     add_stage(scene)
+    if people is None and PEOPLE_3D:
+        library = CharacterLibrary()
+        if crowd_ready(library):
+            for index, origin, yaw in booth_layout():
+                add_booth(scene, index, origin, yaw, COMPANIES[(index - 1) % len(COMPANIES)], Crowd([], rng), rng)
+            add_3d_people(scene, library, random.Random(CROWD_SEED))
+            return scene
+        print("[fair] no 3D people prepared yet (run: bifold-characters fetch --set conference); "
+              "showing 2D cut-outs instead")
     people = Crowd(people_for_scene(PEOPLE_FOLDER) if people is None else people, rng)
     for index, origin, yaw in booth_layout():
         add_booth(scene, index, origin, yaw, COMPANIES[(index - 1) % len(COMPANIES)], people, rng)
@@ -149,6 +171,163 @@ def add_walkers(scene: Scene, people: Crowd, rng: random.Random) -> None:
         texture = person.facing_texture("right" if direction > 0 else "left")
         scene.add(Quad(height=person.height, texture=texture, position=position, face_camera=True, lit=False),
                   name=f"walker{i + 1}")
+
+
+# -- animated 3D people -------------------------------------------------------------------------
+
+PEOPLE_3D = True  # False: always use the 2D cut-outs
+CROWD_SEED = 5  # change for a different crowd and different timings
+# walk from far away towards the camera, stop (3-5 m from it), turn around, walk back: (start, stop) on the floor
+APPROACHES = [((-0.8, -16.0), (-1.7, 2.4)), ((1.4, -22.0), (1.6, 1.2)), ((0.3, -12.5), (0.2, 3.0))]
+CROSSINGS = [(-7.0, 1), (-6.2, -1), (-7.6, 1), (-20.5, -1), (-19.8, 1), (-21.2, -1), (-34.0, 1)]  # (z, direction)
+WANDER_AREAS = [((-8.0, -4.5), (-4.0, 1.5)), ((9.0, -5.0), (13.0, -1.0)), ((-3.0, -42.0), (3.0, -36.0))]
+CHAT_GROUPS = [((4.6, -2.4), 2), ((3.8, -12.5), 3), ((-3.6, -15.6), 2)]  # (centre, size); a child may join
+MIN_DISTANCE = 0.6  # metres people keep from each other (walk timings are shifted until they do)
+
+
+def crowd_ready(library) -> bool:
+    """Prepared avatars plus walk and idle clips (turns without clips are done by hand)."""
+    roles = library.roles()
+    return bool(library.available()) and bool(roles.get("walk")) and bool(roles.get("idle"))
+
+
+def _bearing(frm, to) -> float:
+    return math.degrees(math.atan2(to[0] - frm[0], to[1] - frm[1]))
+
+
+def _on_stage(make, height: float):
+    """A behaviour factory whose people stand ``height`` metres above the floor (on the stage)."""
+    def build(**kwargs):
+        inner = make(**kwargs)
+
+        def behaviour(t):
+            state = inner(t)
+            x, y, z = state.position
+            return replace(state, position=(x, y + height, z))
+
+        behaviour.inner = inner
+        return behaviour
+
+    return build
+
+
+def people_slots():
+    """``(kind, behaviour factory, child allowed, prefers business clothes)`` for everyone in the hall."""
+    cam = CAMERA_POSITION
+    booths = booth_layout()
+    booth_points = [(o[0], 1.5, o[2]) for _, o, _ in booths]
+    slots = []
+    for (x0, z0), (x1, z1) in APPROACHES:
+        slots.append(("approach", partial(approach, (x0, 0.0, z0), (x1, 0.0, z1), camera=cam, stop_distance=(2.5, 5.0),
+                                          look_at=booth_points), False, False))
+    half = HALL_WIDTH / 2 - 1.0  # walkers appear and vanish at the side walls, out of view
+    for z, direction in CROSSINGS:
+        ends = [(-half * direction, 0.0, z), (half * direction, 0.0, z)]
+        slots.append(("walker", partial(walk_by, ends, camera=cam, return_mode="teleport", look_at=booth_points),
+                      False, False))
+    for area in WANDER_AREAS:
+        slots.append(("wanderer", partial(wander, area, camera=cam, look_at=booth_points), True, False))
+    for g, ((cx, cz), size) in enumerate(CHAT_GROUPS):
+        to_camera = _bearing((cx, cz), (cam[0], cam[2]))
+        angles = {2: (95, -95), 3: (0, 105, -105)}[size]  # nobody on the far side, facing the camera
+        spots = [(cx + 0.7 * math.sin(math.radians(to_camera + a)), cz + 0.7 * math.cos(math.radians(to_camera + a)))
+                 for a in angles]
+        for k, (x, z) in enumerate(spots):
+            partners = [(px, 1.6, pz) for j, (px, pz) in enumerate(spots) if j != k]
+            slots.append((f"chat{g + 1}_", partial(chat, (x, 0.0, z), (cx, 0.0, cz), partners=partners, camera=cam),
+                          k == size - 1, False))
+    d = BOOTH_DEPTH
+    for index, origin, yaw in booths:
+        at = _placer(origin, yaw)
+        staff = at((0.9, 0.0, d / 2 - 1.55))
+        slots.append(("staff", partial(stand, staff, heading=yaw, roles=("idle", "look_around", "talk"), camera=cam),
+                      False, True))
+        if index % 2:
+            guest = at((0.7, 0.0, d / 2 + 0.45))
+            slots.append(("guest", partial(chat, guest, staff, partners=[(staff[0], 1.6, staff[2])],
+                                           roles=("listen", "talk"), camera=cam), False, False))
+    speaker = partial(stand, (2.5, 0.0, STAGE_Z + 1.0), heading=20.0, roles=("talk", "idle"), camera=cam)
+    slots.append(("speaker", _on_stage(speaker, 1.0), False, True))
+    return slots
+
+
+def add_3d_people(scene: Scene, library, rng: random.Random) -> list:
+    """Fill the hall with animated people chosen by :func:`~bifold_demo.characters.crowd.sample_crowd`."""
+    slots = people_slots()
+    catalog = library.available()
+    names = assign_people(sample_crowd(catalog, len(slots), rng), slots, catalog, rng)
+    people = populate(library, names, [make for _, make, _, _ in slots], rng=rng)
+    keep_apart([p.behaviour for p in people], [kind for kind, *_ in slots], rng)
+    counts: dict[str, int] = {}
+    for (kind, *_), person in zip(slots, people):
+        counts[kind] = counts.get(kind, 0) + 1
+        scene.add(person, name=f"{kind}{counts[kind]}" if kind != "speaker" else "speaker")
+    summary = describe_crowd(catalog, names)
+    print(f"[fair] {len(people)} animated people ({summary['unique']} different avatars): "
+          + "; ".join(f"{key.replace('_', ' ')} " + ", ".join(f"{v} {k}" for k, v in summary[key].items())
+                      for key in ("sex", "age_group", "skin_band")))
+    return people
+
+
+def assign_people(names: list[str], slots, catalog: dict, rng: random.Random) -> list[str]:
+    """Order ``names`` to fit the slots: children in groups or wandering, business clothes behind counters."""
+    pool = list(names)
+    result: list[str | None] = [None] * len(slots)
+    kids = [n for n in pool if age_group(catalog.get(n, {})) == "child"]
+    for i, (_, _, child_ok, _) in enumerate(slots):
+        if child_ok and kids:
+            result[i] = kids.pop(0)
+            pool.remove(result[i])
+    adults = [n for n in pool if age_group(catalog.get(n, {})) != "child"] or pool
+    formal = [n for n in adults if catalog.get(n, {}).get("outfit") in ("business", "smart_casual")]
+    for i, (_, _, _, business) in enumerate(slots):
+        if business and result[i] is None:
+            choice = formal.pop(rng.randrange(len(formal))) if formal else None
+            if choice is None and adults:
+                choice = adults[rng.randrange(len(adults))]
+            if choice is not None:
+                result[i] = choice
+                pool.remove(choice)
+                if choice in adults:
+                    adults.remove(choice)
+    rng.shuffle(pool)
+    grown_ups = [n for n in names if age_group(catalog.get(n, {})) != "child"]
+    rest = [n for n in pool if age_group(catalog.get(n, {})) != "child"]
+    for i in range(len(slots)):
+        if result[i] is None:  # children left over (more than child places) are replaced by grown-ups
+            result[i] = rest.pop(0) if rest else rng.choice(grown_ups or names)
+    return result
+
+
+def keep_apart(behaviours, kinds, rng: random.Random, seconds: float = 90.0, step: float = 0.25,
+               rounds: int = 25) -> int:
+    """Shift the timing of moving people until nobody comes closer than ``MIN_DISTANCE`` to anyone else.
+
+    Returns the number of close encounters left (0 when the layout keeps standing people off the walkways).
+    """
+    times = np.arange(0.0, seconds, step)
+    moving = [k in ("approach", "walker", "wanderer") and hasattr(b, "offset") for b, k in zip(behaviours, kinds)]
+
+    def track(b):
+        states = [b(t) for t in times]
+        return np.array([(s.position[0], s.position[2]) if s.visible else (np.nan, np.nan) for s in states])
+
+    tracks = np.stack([track(b) for b in behaviours])  # (people, times, 2)
+    conflicts = []
+    for _ in range(rounds):
+        diff = tracks[:, None] - tracks[None, :]
+        distance = np.hypot(diff[..., 0], diff[..., 1])
+        closest = np.where(np.isnan(distance), np.inf, distance).min(axis=2)  # nan = someone out of sight
+        np.fill_diagonal(closest, np.inf)
+        conflicts = [(i, j) for i, j in zip(*np.nonzero(np.triu(closest < MIN_DISTANCE)))
+                     if moving[i] or moving[j]]
+        if not conflicts:
+            return 0
+        for i, j in conflicts:
+            k = rng.choice([x for x in (i, j) if moving[x]])
+            behaviours[k].offset = rng.uniform(0.0, behaviours[k].duration)
+            tracks[k] = track(behaviours[k])
+    return len(conflicts)
 
 
 # -- booths -------------------------------------------------------------------------------------

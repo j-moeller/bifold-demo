@@ -113,15 +113,21 @@ def sample_crowd(catalog: dict[str, dict], n: int, rng, weights=None, *, older_f
         names.sort(key=lambda name: (-fits[name], order[name]))
     counts: Counter = Counter()
     used = Counter()  # picks per attribute value so far
-    while sum(counts.values()) < n:
-        m = min(n - sum(counts.values()), len(pool))
+    taken = Counter()  # picks per cell so far (repeats cycle through the cell's avatars)
+    first = min(n, len(pool))
+    rounds = [(first, {key: len(names) for key, names in cells.items()})]  # everyone once before any repeat
+    if n > first:
+        rounds.append((n - first, {key: n for key in cells}))  # then repeats, as many per cell as the shares ask
+    for m, capacity in rounds:
         total = sum(counts.values()) + m
         targets = [{v: max(0.0, share.get(v, 0.0) * total - used[(a, v)]) for v in share}
                    for a, share in enumerate(shares)]
-        picks = _allocate(m, {key: len(names) for key, names in cells.items()}, targets, rng)
+        picks = _allocate(m, capacity, targets, rng)
         for key, k in picks.items():
-            for name in cells[key][:k]:
-                counts[name] += 1
+            names = cells[key]
+            for j in range(k):
+                counts[names[(taken[key] + j) % len(names)]] += 1
+            taken[key] += k
             for a, value in enumerate(key):
                 used[(a, value)] += k
     return _spread(counts, rng)

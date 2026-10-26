@@ -1,8 +1,9 @@
-"""The trade-fair hall with 3D people: Rocketbox avatars standing in natural poses (a static preview).
+"""The trade-fair hall with 3D people frozen in natural poses (a still life of ``bifold_demo.scenes.fair``).
 
-Everyone is frozen in one frame of an idle, talk, listen or walk clip: groups chatting near the camera,
-exhibitors behind their counters, visitors at the booths, people caught mid-stride in the aisles and a speaker
-on the stage. Nobody faces the camera. Walking, turning and coming closer arrive with the behaviours.
+The default scene (``fair``) animates its people; this one freezes everyone in one frame of an idle, talk,
+listen or walk clip: groups chatting near the camera, exhibitors behind their counters, visitors at the
+booths, people caught mid-stride in the aisles and a speaker on the stage. Nobody faces the camera. Useful
+for checking avatars and detections on a still scene.
 
 Prepare the people once (downloads and converts about 900 MB of Rocketbox files)::
 

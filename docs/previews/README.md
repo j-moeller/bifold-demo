@@ -19,3 +19,6 @@ work goes on. The people are avatars from the
 - `approach_closeup.jpg`: close-up of the end of that test: the woman who walks
   up to the camera keeps her head lowered and turned aside, the man behind her
   turns around.
+- `fair_animated.jpg`: the default trade-fair scene with 33 animated 3D people
+  (at 0, 4, 8 and 12 s) and YOLO's detections: people approaching the camera
+  and turning around, walking by, wandering, chatting, staffing booths.

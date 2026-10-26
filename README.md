@@ -5,11 +5,14 @@ from the **webcam** or from a **customizable 3D scene** rendered on the GPU.
 Every frame goes through a **YOLO** detector, and the video is shown on screen
 at its normal resolution with the detections drawn on top.
 
-The default scene is a **trade-fair hall**: visitors standing in a half circle
-in front of the camera, people walking by in the background, exhibitor booths
-and a keynote stage. Its people come from a separate **people generator**
-(`bifold-people`), which creates realistic, made-up people with an open
-text-to-image model and cuts them out for the scene.
+The default scene is a **trade-fair hall** seen by a fixed camera, full of
+**animated 3D people**. Some walk up to the camera, stop and turn around.
+Others walk by, wander, chat in small groups, staff the booths or give a talk
+on the stage, and nobody looks into the camera. The people are rigged
+[Microsoft Rocketbox](https://github.com/microsoft/Microsoft-Rocketbox)
+avatars (MIT licence), skinned on the GPU and driven by motion-captured
+walk, turn, idle and gesture clips. The crowd mixes women and men, skin
+tones and ages, including children.
 
 ```
  ┌──────────────── sources ────────────────┐     ┌── detection ──┐     ┌──── display ────┐
@@ -30,14 +33,19 @@ cd bifold-demo
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
+bifold-characters fetch --set conference   # once: download + convert the 3D people (~2.3 GB)
 
 bifold-demo                      # the trade-fair hall (default scene)
 bifold-demo --source webcam      # start with the webcam
 bifold-demo --scene bifold_demo.scenes.basic    # a small scene with a few photo objects
 ```
 
-The first run downloads the YOLO weights (`yolo26n.pt`, about 5 MB) into
-`models/`. The first time you use the webcam, macOS asks for camera access
+`bifold-characters fetch` downloads 58 avatars and 74 animation clips from
+the Rocketbox repository on GitHub. It converts them once into
+`~/.cache/bifold-demo/characters`, about 0.6 GB with `--delete-raw`, which
+also removes the downloaded originals. Without that step the hall shows 2D
+cut-out people instead. The first run downloads the YOLO weights
+(`yolo26n.pt`, about 5 MB) into `models/`. The first time you use the webcam, macOS asks for camera access
 for your terminal app. Allow it, then run the command again.
 
 ### Controls
@@ -58,41 +66,126 @@ for your terminal app. Allow it, then run the command again.
 ## The trade-fair scene
 
 [`scenes/fair.py`](src/bifold_demo/scenes/fair.py) builds a 44 × 72 m exhibition
-hall with:
+hall, seen by a fixed camera at eye height (`CAMERA_POSITION`, `CAMERA_TARGET`).
+It contains:
 
-- **Visitors**: 6 people standing in a half circle in front of the camera,
-  swaying slightly.
-- **Walkers**: 11 people walking by along the cross aisles, at different
-  speeds and in both directions.
-- **Booths**: 8 booths for fictional exhibitors. Each has a printed back wall,
-  a counter with staff behind it, a screen cycling through slides, a slowly
-  spinning hanging sign and a plant; some have a guest in front.
-- **Stage**: a keynote stage at the back of the hall, with an LED wall, trusses
-  and a welcome banner.
 - **The hall**: floor tiles, carpeted aisles, walls with high windows,
   pillars, roof trusses, ceiling lights and a light haze (fog) for depth.
+- **Booths**: 8 booths for fictional exhibitors. Each has a printed back wall,
+  a counter, a screen cycling through slides, a slowly spinning hanging sign
+  and a plant.
+- **Stage**: a keynote stage at the back, with an LED wall, trusses and a
+  welcome banner.
+- **33 animated people** (see [3D people](#3d-people)):
 
-The constants at the top of the file control the layout: number of visitors
-and walkers, the radius of the half circle, booth rows, company names and
-colours, the event name and the random `SEED`. Save the file while the demo
-runs and the scene reloads.
+| Who | What they do | Configured by |
+|-----|--------------|---------------|
+| 3 approaching | walk down the aisle towards the camera, stop 3–5 m from it, idle, turn around, walk back | `APPROACHES` |
+| 7 walkers | walk across the hall along the cross aisles, both directions, appearing at the side walls | `CROSSINGS` |
+| 3 wanderers | stroll between random points in an area, pausing | `WANDER_AREAS` |
+| 3 groups (7 people) | stand and chat, alternating talking and listening, with small shifts | `CHAT_GROUPS` |
+| 8 exhibitors | stand behind their counters | `booth_layout()` |
+| 4 visitors | talk to exhibitors at the left-hand booths | |
+| 1 speaker | talks on the stage | |
 
-**People.** The scene takes its people from the `people/` folder (see
-[Generating people](#generating-people)). Until that folder has people, a few
-default people cut out of the Ultralytics sample photos stand in. With only
-two of them the crowd is visibly cloned, so generate a library for the real
-thing.
+The behaviours guarantee that nobody's face points at the camera. While
+someone approaches or stands close by, the head stays turned aside or lowered.
+The crowd is sampled from the prepared avatars with conference demographics:
+about 5% children, 80% adults and 15% older people, half women and half men,
+and every skin-tone band represented. Children only appear in groups or
+wandering, never alone in the aisles. Exhibitors and the speaker get business
+clothes when possible. Moving people's timings are shifted until nobody walks
+through anyone else.
+
+`CROWD_SEED` gives a different crowd and different timings, and `PEOPLE_3D =
+False` brings back the 2D cut-outs. Save the file while the demo runs and the
+scene reloads. The terminal prints the crowd's make-up, for example
+`33 animated people: 16 female, 17 male; 1 child, 30 adult, 2 older; skin band 20 1-3, 10 4-6, 3 7-10`.
+
+**Without prepared 3D people**, the hall shows 2D cut-outs instead: from the
+`people/` folder (see [Generating 2D people](#generating-2d-people)) or, until
+then, people cut out of the Ultralytics sample photos.
 
 **Your own graphics.** Every part has a name, so you can put your own images
 on it through the uploads folder, e.g. `uploads/booth1_wall.png` for a booth's
 back wall. The names are `booth1_wall` … `booth8_wall`, `booth1_counter`,
-`booth1_sign`, `booth1_screen`, `stage_screen`, `banner`, `floor`, and the
-people `visitor1` … `visitor6`, `walker1` … `walker11`, `staff1` … `staff8` and
-`speaker`.
+`booth1_sign`, `booth1_screen`, `stage_screen`, `banner` and `floor`.
 
-## Generating people
+## 3D people
 
-`bifold-people` is the component that creates the crowd. For each person it:
+The [`characters`](src/bifold_demo/characters) package turns Rocketbox avatars
+into animated people. It has five parts:
+
+1. **Assets** (`rocketbox.py`, `library.py`, `bifold-characters`).
+   `bifold-characters fetch` downloads exactly the files it needs from GitHub:
+   per avatar its FBX file and colour/opacity textures, plus the animation
+   clips. It then converts them with a pure-Python FBX reader (`fbx.py`,
+   `fbx_convert.py`), so no Blender or FBX SDK is needed. The result is a fast
+   cache: an avatar loads in a few milliseconds.
+2. **Model and posing** (`model.py`). A skeleton (81 Biped bones), skinned
+   meshes and animation clips. Clips drive the bone rotations and the avatar
+   keeps its own proportions, so one clip fits adults and children.
+3. **Rendering** (`character.py`). A `Character` is a scene object. It poses
+   its skeleton every frame and is skinned on the GPU (4 bone weights per
+   vertex). It adds head turns on top of the clip and a soft contact shadow.
+4. **Behaviours** (`behaviour.py`). `approach`, `walk_by`, `wander`, `chat`
+   and `stand` build looping timelines of walking, turning (with turn clips)
+   and idling (idle, look-around, talk, listen, phone clips), with crossfades.
+   - Walk clips play at the speed people move, so feet never slide.
+   - The head plan keeps the face at least 35° away from the camera.
+   - A behaviour is a pure function of time, so pausing (`Space`) and
+     restarting (`R`) just work.
+5. **Crowds** (`crowd.py`). `sample_crowd` picks avatars to match target
+   shares of age group, sex and skin-tone band, using the labels in
+   `rocketbox_catalog.json`. `populate` turns avatar names and behaviours into
+   `Character` objects.
+
+```bash
+bifold-characters fetch --set small         # 12 diverse avatars, a quick start (~0.5 GB)
+bifold-characters fetch --set conference    # 58 avatars that suit a fair, incl. children (~2.3 GB)
+bifold-characters fetch --set all           # all 115, incl. uniforms (~5 GB)
+bifold-characters fetch --avatars Business_Female_01 Male_Adult_04 --clips basic
+bifold-characters list                      # what is prepared: sex, age group, skin tone, height
+bifold-characters info Business_Female_01
+```
+
+Re-running `fetch` skips what is already there. `--dry-run` shows the
+download size first, and `--delete-raw` removes the originals after
+converting. Set `BIFOLD_CHARACTERS=DIR` (or `--dest DIR`) to keep the cache
+elsewhere. `prepare --raw DIR` converts a Rocketbox clone you already have.
+
+Using 3D people in your own scene:
+
+```python
+from functools import partial
+from bifold_demo.characters.behaviour import approach, walk_by
+from bifold_demo.characters.crowd import populate, sample_crowd
+from bifold_demo.characters.library import CharacterLibrary
+
+camera = (0, 1.6, 6)
+library = CharacterLibrary()
+names = sample_crowd(library.available(), 2, rng=1)
+people = populate(library, names, [
+    partial(approach, (0, 0, -15), camera=camera),                        # comes closer, turns around
+    partial(walk_by, [(-8, 0, -5), (8, 0, -5)], camera=camera),           # walks by and back
+])
+for person in people:
+    scene.add(person)
+```
+
+**Limits of the avatar library.** Rocketbox has 115 avatars but few clearly
+elderly people: the oldest look about 58, and those count as older. It also
+has few conference-suitable people in the darkest skin-tone band, since most
+of those wear uniforms. The crowd therefore reaches its share of older people
+only partly. Change the targets with `sample_crowd(..., weights={...},
+older_from_age=...)`. Children are rated unusual at a trade fair in the
+catalog, but the conference set includes them anyway.
+
+## Generating 2D people
+
+The 2D alternative, used when no 3D people are prepared: `bifold-people`
+creates made-up people with an open text-to-image model and cuts them out as
+flat pictures. For each person it:
 
 1. writes a random description (age, gender, appearance, trade-fair outfit,
    lanyard or coffee cup, standing or walking),
@@ -328,13 +421,17 @@ src/bifold_demo/
                animation.py, physics.py, renderer.py (ModernGL)        ← the 3D scene
   detection/   yolo.py (YoloDetector), worker.py (AsyncDetector)      ← module 2: recognition
   display/     overlay.py (boxes, HUD), window.py                      ← module 3: on screen
+  characters/  model.py (skeleton, clips, posing), fbx.py + fbx_convert.py (FBX reader),
+               character.py (skinned scene object), behaviour.py, crowd.py,
+               rocketbox.py + library.py + cli.py (bifold-characters),
+               rocketbox_catalog.json (avatar labels)                   ← 3D people
   people/      prompts.py, generator.py (text-to-image), cutout.py,
-               library.py, defaults.py, cli.py (bifold-people)          ← people generator
+               library.py, defaults.py, cli.py (bifold-people)          ← 2D people generator
   app.py       main loop and command line; loader.py loads and reloads scene files
-  scenes/      fair.py (default trade-fair hall), basic.py
+  scenes/      fair.py (default trade-fair hall), fair3d.py (static 3D poses), basic.py
 examples/      example scenes
 uploads/       drop textures here while the demo runs
-people/        generated / imported people cut-outs used by the fair scene
+people/        2D cut-outs (used by the fair scene when no 3D people are prepared)
 tests/         pytest suite
 ```
 
@@ -347,7 +444,10 @@ pytest
 
 The tests that need an OpenGL context are skipped when none is available. On
 a headless Linux machine, run them with `xvfb-run -a pytest`. The tests marked
-`yolo` download the nano weights on first use.
+`yolo` download the nano weights on first use. The FBX tests also check real
+Rocketbox files when `BIFOLD_ROCKETBOX_TEST_DIR` points to a folder with
+`Avatars/` and `Animations/`, and skip otherwise. The tests never use your
+prepared characters (`BIFOLD_CHARACTERS` is redirected to an empty folder).
 
 ## Troubleshooting
 
@@ -361,6 +461,12 @@ a headless Linux machine, run them with `xvfb-run -a pytest`. The tests marked
   should print `arm64`), not one running under Rosetta.
 - **OpenGL errors on startup**: the scene renderer needs OpenGL 3.3 or newer.
   Current Macs provide OpenGL 4.1. On Linux without a display, use `xvfb-run`.
+- **The hall shows flat cut-out people**: no 3D people are prepared. Run
+  `bifold-characters fetch --set conference`, then check `bifold-characters list`.
+- **Too slow with many people**: fewer people (shorten the lists at the top of
+  `scenes/fair.py`), a smaller window (`--size 960x540`), or `--imgsz 480`
+  for YOLO. Every person is ~7–9k triangles and costs ~0.3 ms of Python per
+  frame.
 - **`bifold-people generate` runs out of memory or is very slow**: use a
   smaller model (`--model sd-turbo`) or a smaller image (`--size 576x1024`).
   Close other apps; the model needs most of the Mac's memory.
@@ -369,7 +475,9 @@ a headless Linux machine, run them with `xvfb-run -a pytest`. The tests marked
 
 ## Licensing note
 
-Ultralytics YOLO is licensed under AGPL-3.0. That is fine for running demos.
+The 3D people are Microsoft Rocketbox avatars and animations (MIT licence).
+They are downloaded by `bifold-characters` and are not part of this
+repository. Ultralytics YOLO is licensed under AGPL-3.0. That is fine for running demos.
 Embedding it in a closed-source product requires an Ultralytics Enterprise
 licence. The sample photos used for the default people (`bus.jpg`, `zidane.jpg`)
 ship with the `ultralytics` package; this repository does not contain them. The

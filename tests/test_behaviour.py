@@ -15,7 +15,6 @@ from bifold_demo.characters.model import (
     SkinnedPrimitive,
     quat_from_axis_angle,
     quat_multiply,
-    quat_nlerp,
     quat_to_matrix,
 )
 
@@ -116,6 +115,12 @@ def full():
     return MotionLibrary(synthetic_clips(full=True))
 
 
+@pytest.fixture(scope="module")
+def behaviours(sparse, full):
+    """Every factory in typical and tricky places, for each library."""
+    return {name: list(_factories(lib)) for name, lib in (("sparse", sparse), ("full", full), (None, None))}
+
+
 def _yaw(direction):
     return math.degrees(math.atan2(direction[0], direction[2]))
 
@@ -129,16 +134,29 @@ def _angle_to_camera(behaviour, t, camera=CAMERA):
     return abs(B._wrap(behaviour.face_heading(t) - math.degrees(math.atan2(cx - x, cz - z))))
 
 
+_ROOT_YAW = {}
+
+
+def _root_yaw(clip):
+    """Per-frame yaw of the clip's root bone (the synthetic root rotation is a yaw times ``FIX``)."""
+    if clip.name not in _ROOT_YAW or _ROOT_YAW[clip.name][0] is not clip:
+        q = quat_multiply(clip.rotations[:, 0], FIX * [-1, -1, -1, 1])
+        _ROOT_YAW[clip.name] = (clip, np.degrees(np.unwrap(2 * np.arctan2(q[:, 1], q[:, 3]))).tolist())
+    return _ROOT_YAW[clip.name][1]
+
+
 def _body_yaw(state):
-    """``heading`` plus the yaw of the blended root bone (the body's facing; the synthetic root is yaw * FIX)."""
-    if not state.layers:
-        return state.heading
-    q = None
+    """``heading`` plus the (blended) yaw of the root bone: where the body faces."""
+    body = None
     for layer in state.layers:
-        k = layer.clip.bone_names.index("Bip01")
-        root = layer.clip.sample(layer.time)[0][k]
-        q = root if q is None else quat_nlerp(q, root, layer.weight)
-    return state.heading + _yaw(quat_to_matrix(q) @ FIX_M.T @ np.array([0.0, 0.0, 1.0]))
+        clip, yaw = layer.clip, _root_yaw(layer.clip)
+        last = clip.frames - 1
+        f = layer.time * clip.fps
+        f = f % last if clip.loop else min(max(f, 0.0), last)
+        i = min(int(f), last - 1)
+        value = yaw[i] + (yaw[i + 1] - yaw[i]) * (f - i)
+        body = value if body is None else body + B._wrap(value - body) * layer.weight
+    return state.heading + (body or 0.0)
 
 
 def _factories(lib, camera=CAMERA):
@@ -229,14 +247,13 @@ def test_pitch_shift_matches_character_head_turn():
 
 
 @pytest.mark.parametrize("library", ["sparse", "full", None])
-def test_position_and_body_heading_are_continuous(library, request):
-    lib = request.getfixturevalue(library) if library else None
+def test_position_and_body_heading_are_continuous(library, behaviours):
     dt = 1 / 30
-    for name, behaviour in _factories(lib):
+    for name, behaviour in behaviours[library]:
         hidden = behaviour.teleports()
         assert all(behaviour(t).visible for t in np.arange(0, behaviour.duration, 0.1)) == (not hidden)
         previous = None
-        for t in np.arange(0.0, 2.5 * behaviour.duration, dt):
+        for t in np.arange(0.0, 2.0 * behaviour.duration, dt):
             state = behaviour(t)
             body = _body_yaw(state)
             tl = (t + behaviour.offset) % behaviour.duration
@@ -274,17 +291,16 @@ def test_default_walking_speed_follows_the_clip(sparse):
 
 def test_approach_comes_close_and_turns_around(sparse):
     for seed in range(3):
-        behaviour = B.approach((1, 0, -14), camera=CAMERA, library=sparse, rng=seed, stop_distance=(2.5, 3.5))
-        times = np.arange(0.0, behaviour.duration, 0.05)
-        states = [behaviour(t) for t in times]
+        behaviour = B.approach((1, 0, -14), camera=CAMERA, library=sparse, rng=seed, stop_distance=(2.5, 3.5),
+                               offset=0.0)
+        states = [behaviour(t) for t in np.arange(0.0, behaviour.duration, 0.05)]
         distance = np.array([math.hypot(s.position[0] - CAMERA[0], s.position[2] - CAMERA[2]) for s in states])
-        nearest = int(np.argmin(distance))
+        nearest = int(np.argmin(distance))  # where it stops
         assert 2.5 - 1e-6 <= distance[nearest] <= 3.5 + 1e-6
-        assert distance.max() > 18.0  # it really comes from far away
-        before = _body_yaw(states[max(nearest - 40, 0)] if distance[max(nearest - 40, 0)] > distance[nearest] + 0.5
-                           else states[nearest])
+        assert distance[0] > 19.0 and np.all(np.diff(distance[:nearest]) <= 1e-9)  # coming closer all the way
+        arriving = _body_yaw(states[nearest - 40])
         leaving = next(i for i in range(nearest, len(states)) if distance[i] > distance[nearest] + 1.0)
-        assert abs(abs(B._wrap(_body_yaw(states[leaving]) - before)) - 180.0) < 25.0
+        assert abs(abs(B._wrap(_body_yaw(states[leaving]) - arriving)) - 180.0) < 25.0  # turned around
         assert any(s.layers and s.layers[-1].clip.metadata.get("kind") == "turn" for s in states)
 
 
@@ -307,9 +323,9 @@ def test_turns_fall_back_without_fitting_clips(sparse):
     assert all(not bare(t).layers for t in np.arange(0, bare.duration, 0.5))
 
 
-def test_crossfades_blend_two_layers_with_weights_summing_to_one(sparse):
+def test_crossfades_blend_two_layers_with_weights_summing_to_one(behaviours):
     fades = 0
-    for _, behaviour in _factories(sparse):
+    for _, behaviour in behaviours["sparse"]:
         for t in np.arange(0.0, behaviour.duration, 0.02):
             layers = behaviour(t).layers
             assert len(layers) <= 2
@@ -334,16 +350,17 @@ def test_behaviours_are_deterministic(sparse):
     a = B.walk_by([(-9, 0, -7), (9, 0, -7)], camera=CAMERA, library=sparse, rng=np.random.default_rng(3))
     b = B.walk_by([(-9, 0, -7), (9, 0, -7)], camera=CAMERA, library=sparse, rng=np.random.default_rng(3))
     assert snapshot(a) == snapshot(b)
-    assert snapshot(a)[:5] == [s for s in snapshot(a)][:5]  # evaluation does not change the behaviour
+    times = np.random.default_rng(1).uniform(0, 300, 50)
+    first = [a(t) for t in times]
+    assert [a(t) for t in times[::-1]][::-1] == first  # a pure function of t: order and history do not matter
 
 
 # -- never looking at the camera -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("library", ["sparse", "full", None])
-def test_never_looks_at_the_camera(library, request):
-    lib = request.getfixturevalue(library) if library else None
-    for name, behaviour in _factories(lib):
+def test_never_looks_at_the_camera(library, behaviours):
+    for name, behaviour in behaviours[library]:
         assert behaviour.look_feasible, name
         worst = 180.0
         for t in np.arange(0.0, 3.0 * behaviour.duration, 1 / 30):

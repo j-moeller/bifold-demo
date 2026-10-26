@@ -12,7 +12,7 @@ default trade-fair scene:
 | `stage_screen.jpg`    | the LED wall on the stage               |
 | `banner.png`          | the welcome banner above the stage      |
 | `floor.jpg`           | the hall floor                          |
-| `visitor1.png`        | a visitor (use a transparent PNG)       |
+| `visitor1.png`        | a 2D visitor (only when the hall shows 2D cut-outs) |
 
 Overwrite the file to update the texture again; delete it to restore the
 original. Matching is case-insensitive and any common image or video format

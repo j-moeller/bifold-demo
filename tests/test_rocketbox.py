@@ -64,8 +64,12 @@ def test_avatar_sets():
     fallback = rocketbox.avatar_set("conference", catalog={})
     assert "Business_Male_02" in fallback and "Female_Child_01" in fallback and "Fire_Male_01" not in fallback
     assert len(fallback) == 40 + 4 + 11
-    catalog = {"Male_Adult_01": {"conference_fit": 3}, "Fire_Male_01": {"conference_fit": 1}}
-    assert rocketbox.avatar_set("conference", catalog=catalog) == ["Male_Adult_01"]
+    catalog = {"Male_Adult_01": {"conference_fit": 3}, "Fire_Male_01": {"conference_fit": 1},
+               "Female_Child_01": {"conference_fit": 1, "age_group": "child"}}
+    chosen = rocketbox.avatar_set("conference", catalog=catalog)
+    children = [n for n, a in rocketbox.AVATARS.items() if a.age_group == "child"]
+    assert chosen == ["Male_Adult_01"] + children or sorted(chosen) == sorted(["Male_Adult_01"] + children)
+    assert "Fire_Male_01" not in chosen  # children always come along, other poor fits do not
     assert len(rocketbox.avatar_set("all")) == 115
     with pytest.raises(ValueError, match="unknown avatar set"):
         rocketbox.avatar_set("everyone")

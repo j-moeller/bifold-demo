@@ -269,6 +269,7 @@ class MotionLibrary:
             np.asarray(head_forward, dtype=np.float64) / np.linalg.norm(head_forward)
         self._yaw: dict[int, tuple[AnimationClip, tuple[list[float], list[float]]]] = {}
         self._after: dict[int, tuple[AnimationClip, AnimationClip]] = {}
+        self._chains: dict[int, tuple[AnimationClip, list[int]]] = {}
 
     def register(self, role: str, clip_name: str) -> None:
         """Use the clip called ``clip_name`` for ``role``."""
@@ -342,7 +343,7 @@ class MotionLibrary:
                      weights) -> tuple[np.ndarray, np.ndarray] | None:
         """Head yaw and elevation (degrees) while ``first`` crossfades into ``second`` (``weights`` of ``second``),
         with the chain bones blended as the :class:`Poser` blends them; ``None`` if the clips' head chains differ."""
-        chain_a, chain_b = _chain(first), _chain(second)
+        chain_a, chain_b = self._chain(first), self._chain(second)
         if not chain_a or [first.bone_names[k] for k in chain_a] != [second.bone_names[k] for k in chain_b]:
             return None
         weights = np.asarray(weights, dtype=np.float64)[:, None]
@@ -356,6 +357,12 @@ class MotionLibrary:
         yaw = np.degrees(np.arctan2(d[:, 0], d[:, 2]))
         elevation = np.degrees(np.arcsin(np.clip(-d[:, 1] / np.linalg.norm(d, axis=1), -1.0, 1.0)))
         return yaw, elevation
+
+    def _chain(self, clip: AnimationClip) -> list[int]:
+        cached = self._chains.get(id(clip))
+        if cached is None or cached[0] is not clip:
+            cached = self._chains[id(clip)] = (clip, _chain(clip))
+        return cached[1]
 
     def after_turn(self, clip: AnimationClip) -> AnimationClip:
         """``clip`` with its root yawed back by its ``turn``: its pose once the heading has taken the turn."""
@@ -658,6 +665,9 @@ class Behaviour:
         look_at: points worth glancing at (booths, screens). partners: people to look at while talking/listening.
         min_angle: degrees the face keeps away from the camera direction.
         offset: seconds added to ``t`` (where in its loop the behaviour is at ``t = 0``).
+
+    Attributes: ``duration`` (seconds of one loop), ``offset``, ``look_feasible`` (the camera guarantee holds, see
+    the module docs), ``style``. :meth:`face_heading`, :meth:`body_heading` and :meth:`teleports` help to check it.
     """
 
     def __init__(self, segments, library: MotionLibrary | None = None, *, start=(0.0, 0.0), heading: float = 0.0,
@@ -1145,22 +1155,25 @@ class Behaviour:
         else:
             path = _plan(deviation, dt)
         yaw = _periodic_smooth(bins[path], 0.15 / dt)
+        near = []
         if cam is not None and self.look_feasible:
             d = _wrap_array(face[np.arange(n), path] - face_centre)
             low = np.where(constrained & (d >= 0), bins[path] - (d - width), -HEAD_YAW_LIMIT)
             high = np.where(constrained & (d < 0), bins[path] - d - width, HEAD_YAW_LIMIT)
             yaw = np.clip(yaw, np.maximum(low, -HEAD_YAW_LIMIT), np.minimum(high, HEAD_YAW_LIMIT))
+            close = constrained & (np.abs(d) < self.min_angle + 30.0)  # where the face comes anywhere near the camera
+            near = np.nonzero(close | np.roll(close, -1))[0].tolist()
         self._grid_yaw = [float(v) for v in np.clip(yaw, -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT)]
         self._grid_pitch = [float(v) for v in pitch]
         self._grid_yaw.append(self._grid_yaw[0])
         self._grid_pitch.append(self._grid_pitch[0])
         if self.look_feasible and cam is not None and self.camera.fn is None:
-            self.look_feasible = self._verify()
+            self.look_feasible = self._verify(near)
 
-    def _verify(self) -> bool:
-        """Whether the face keeps ``min_angle`` from the (fixed) camera half way between the plan's steps too."""
+    def _verify(self, steps) -> bool:
+        """Whether the face keeps ``min_angle`` from the (fixed) camera half way after the plan's ``steps`` too."""
         cam = self.camera.nominal
-        for i in range(len(self._grid_yaw) - 1):
+        for i in steps:
             tl = (i + 0.5) * self._dt
             state, clip_yaw, elevation = self._state(tl, tl)
             x, _, z = state.position

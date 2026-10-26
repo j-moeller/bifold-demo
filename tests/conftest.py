@@ -34,3 +34,9 @@ def two_tone_png(tmp_path):
     path = tmp_path / "two_tone.png"
     cv2.imwrite(str(path), image)
     return path
+
+
+@pytest.fixture(autouse=True)
+def no_prepared_characters(tmp_path_factory, monkeypatch):
+    """Point the character library at an empty folder so a real cache never changes what tests see."""
+    monkeypatch.setenv("BIFOLD_CHARACTERS", str(tmp_path_factory.mktemp("no_characters")))

@@ -308,8 +308,9 @@ def avatar_metadata(name: str, catalog: dict | None = None) -> dict:
 def avatar_set(name: str, catalog: dict | None = None) -> list[str]:
     """Avatar names of a named set: ``"conference"``, ``"all"`` or ``"small"``.
 
-    ``conference`` uses the catalog (``conference_fit >= 2``) when it exists, else the Adults, the Children
-    and the Business people.
+    ``conference`` uses the catalog when it exists: people that fit a conference (``conference_fit >= 2``)
+    plus all children (families visit fairs too; the catalog rates children as unusual), else the Adults,
+    the Children and the Business people.
     """
     if name == "all":
         return list(AVATARS)
@@ -318,7 +319,8 @@ def avatar_set(name: str, catalog: dict | None = None) -> list[str]:
     if name == "conference":
         catalog = load_catalog() if catalog is None else catalog
         if catalog:
-            return [n for n in AVATARS if float(catalog.get(n, {}).get("conference_fit", 0) or 0) >= 2]
+            return [n for n in AVATARS if float(catalog.get(n, {}).get("conference_fit", 0) or 0) >= 2
+                    or catalog.get(n, {}).get("age_group", AVATARS[n].age_group) == "child"]
         return [n for n, a in AVATARS.items() if a.category != "Professions" or n.startswith("Business_")]
     raise ValueError(f"unknown avatar set {name!r}; choose one of {', '.join(AVATAR_SETS)}")
 
