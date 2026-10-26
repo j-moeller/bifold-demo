@@ -452,6 +452,38 @@ for face, embedding in engine.faces(image):
     match = gallery.match(embedding)   # match.name (None: unknown), match.score
 ```
 
+### Known faces on the 3D people
+
+[`characters/face_photo.py`](src/bifold_demo/characters/face_photo.py) paints a
+person's face from a photo onto a 3D person, so the recognition can find them
+in the fair:
+
+```python
+from bifold_demo.characters.face_photo import put_face, take_face_off
+
+put_face(person, "faces/Ada Lovelace/portrait.jpg")   # her biggest face in the photo
+take_face_off(person)
+```
+
+The photo's five landmarks are lined up with the same five points on the
+avatar (its eye and mouth-corner bones and the tip of its nose, seen from the
+front). Every part of the head that can be seen from the front is then painted
+with the photo pixels in front of it, in the head texture's own layout (a depth
+buffer of the front view leaves out the inside of the mouth and the teeth). The
+painted area fades into the avatar's skin at the edges and where the head
+turns sideways, only the photo's face (not its hair or background) is used, and
+the photo's skin tone moves half way to the avatar's. Since the face is a
+texture on the avatar's own mesh, it turns and talks with the head and makes
+the funny faces. The texture is that person's own (`texture_overrides`); others
+with the same avatar keep their face. Painting takes about 0.4 s.
+
+Tested with photos of three real people painted on four avatars (women, men, a
+child), the recognition named the right person in 24 of 24 close-ups (front and
+turned 40°; similarity 0.37-0.58) and, from the fair camera with the faces about
+30 pixels tall, in 98 of 120 analysed frames.
+[docs/previews/face_photo.jpg](docs/previews/face_photo.jpg) shows it with
+renders of other avatars as the "photos".
+
 ## Generating 2D people
 
 The 2D alternative, used when no 3D people are prepared: `bifold-people`
@@ -698,6 +730,7 @@ src/bifold_demo/
                performer.py (a pose in the middle of a behaviour),
                accessories.py (hats, glasses, signs, t-shirts),
                faces.py (funny faces with the face bones),
+               face_photo.py (a photo's face painted on a 3D person),
                rocketbox.py + library.py + cli.py (bifold-characters),
                rocketbox_catalog.json (avatar labels)                   ← 3D people
   recognition/ engine.py (find and fingerprint faces), gallery.py (known people),

@@ -43,7 +43,8 @@ class Character(SceneObject):
     What the person wears (see :mod:`.accessories`): ``worn`` skinned primitives drawn with the same palette,
     ``props`` (rigid scene objects that follow bones; updated after the pose and drawn with the character), and
     ``pose_adjusters``: ``fn(local, character, t)`` that edit the local bone transforms of the clips before the
-    skeleton is posed (an arm holding a sign).
+    skeleton is posed (an arm holding a sign). ``texture_overrides`` maps a primitive's name to a texture this person
+    has instead of the model's (a real face painted on the head, see :mod:`.face_photo`).
     Creating a character starts decoding its texture files, visible or not (``texture_jobs``: the futures
     from :func:`preload_textures`).
     """
@@ -74,6 +75,7 @@ class Character(SceneObject):
         self.worn: list = []
         self.props: list = []
         self.pose_adjusters: list = []
+        self.texture_overrides: dict[str, object] = {}  # primitive name -> this person's own texture (a face)
         self._time = 0.0
         self.update(0.0)
 

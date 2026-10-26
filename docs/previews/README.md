@@ -102,3 +102,6 @@ work goes on. The people are avatars from the
   cross-eyed, roar, pout) on four avatars: a woman in a headscarf (her cheeks
   puff forward rather than through the scarf), a man, a girl, and a man seen
   from 35°.
+- `face_photo.jpg`: `characters/face_photo.py`: a "photo" (here a close-up
+  render of another avatar, standing in for a photo of a real person), the
+  avatar as it is, with the photo's face painted on, and turned 35°.

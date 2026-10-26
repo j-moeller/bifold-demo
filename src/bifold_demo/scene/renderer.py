@@ -272,8 +272,11 @@ class Renderer:
             u["u_color"].value = (r / 255.0, g / 255.0, b / 255.0)
             u["u_lit"].value = bool(obj.lit)
             self._joint_texture(obj).use(1)
+            overrides = getattr(obj, "texture_overrides", None)
             for primitive in (*obj.skinned_model.primitives, *getattr(obj, "worn", ())):
                 vao, texture = self._skinned_primitive(primitive)
+                if overrides:
+                    texture = overrides.get(primitive.name, texture)
                 self._gl_texture(texture.at_time(t)).use(0)
                 vao.render(triangles)
         shadows = [obj for obj in characters if getattr(obj, "shadow", False)]
