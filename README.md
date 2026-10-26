@@ -417,7 +417,10 @@ apps, in two steps:
 In the demo `N` (or `--recognize`) turns it on: every face in the picture gets
 a box with the name of the person and the similarity under it, or `?` for a
 stranger, and the status panel lists who is in the picture. It runs on its own
-thread beside the object detection.
+thread beside the object detection. A face only 30 pixels tall gives a noisy
+fingerprint, so faces are followed from frame to frame and named from the
+average of their last eight fingerprints, and a named face keeps its name
+while that average stays near the cut (no flickering names).
 
 The known people are the photos in [`faces/`](faces/README.md) (`--faces DIR`
 for another folder), a folder per person with as many photos as you like

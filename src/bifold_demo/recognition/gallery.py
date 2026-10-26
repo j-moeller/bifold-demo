@@ -222,6 +222,15 @@ class Gallery:
         second = float(best[order[1]]) if len(order) > 1 else -1.0
         return Match(names[order[0]] if top >= self.threshold else None, top, second)
 
+    def score(self, vector: np.ndarray, name: str) -> float:
+        """How similar the face with embedding ``vector`` is to the closest photo of ``name`` (-1: not known)."""
+        with self._lock:
+            matrix, owners, names = self._matrix, self._owners, self._names
+        if name not in names:
+            return -1.0
+        mine = matrix[owners == names.index(name)]
+        return float((mine @ np.asarray(vector, np.float64)).max()) if len(mine) else -1.0
+
     # -- adding people ----------------------------------------------------------------------------------------
 
     def add(self, name: str, photos) -> list[str]:

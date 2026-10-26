@@ -198,3 +198,37 @@ def test_n_switches_the_face_recognition(gl, tmp_path, monkeypatch):
     assert app._faces_for(frame).faces == []
     app._handle_key(ord("n"), window)
     assert not app.recognize_enabled and app._faces_for(frame) is None and messages[-1] == "face recognition off"
+
+
+def test_followed_faces_average_their_frames_and_keep_their_names(tmp_path):
+    from bifold_demo.recognition.recognizer import FaceRecognizer
+
+    gallery = Gallery(tmp_path / "faces", FakeEngine())
+    _photo(tmp_path / "faces" / "Ada" / "a.png", (200, 10, 10))
+    gallery.refresh(force=True)
+    ada = _vector((200, 10, 10))
+    noise = np.zeros(128)
+    noise[10] = 1.0
+
+    class Frames:
+        """Each frame: (box, embedding) of the faces in it."""
+
+        def __init__(self):
+            self.frames = []
+
+        def faces(self, image, min_size=0):
+            return [(Face(box, ((0.0, 0.0),) * 5, 0.9), v / np.linalg.norm(v)) for box, v in self.frames.pop(0)]
+
+    engine = Frames()
+    recognizer = FaceRecognizer(gallery, engine)
+    weak = ada * 0.3 + noise * 0.95  # one frame alone is below the threshold
+    assert ada @ (weak / np.linalg.norm(weak)) < THRESHOLD
+    engine.frames = [[((10, 10, 40, 40), ada)], [((12, 11, 40, 40), weak)], [((14, 12, 40, 40), weak)],
+                     [((300, 10, 40, 40), weak)]]
+    first = recognizer.recognize(None, now=0.0)[0]
+    assert first.name == "Ada"
+    assert [recognizer.recognize(None, now=t)[0].name for t in (0.1, 0.2)] == ["Ada", "Ada"]  # followed: averaged
+    elsewhere = recognizer.recognize(None, now=0.3)[0]
+    assert elsewhere.name is None and elsewhere.track != first.track  # another face, on its own
+    engine.frames = [[((16, 12, 40, 40), weak)]]
+    assert recognizer.recognize(None, now=2.0)[0].track not in (first.track, elsewhere.track)  # forgotten after 1 s
