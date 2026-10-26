@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import math
-import weakref
+import os
+import queue
+import threading
+from concurrent.futures import Future
+from pathlib import Path
 
 import numpy as np
 
 from ..scene.animation import resolve
 from ..scene.geometry import Mesh
 from ..scene.scene import SceneObject
-from ..scene.textures import parse_color
+from ..scene.textures import IMAGE_EXTENSIONS, as_texture, parse_color
 from ..scene.transforms import vec3
 from .model import AnimationClip, CharacterModel, CharacterState, Layer, Poser
 
@@ -35,11 +39,14 @@ class Character(SceneObject):
     ``current_rotation = (0, heading, 0)``, ``current_visible``, ``pose`` (character-space bone transforms),
     ``skin_palette`` (``(B, 4, 4)`` float32 skinning matrices) and ``shadow_ellipse``. The renderer draws
     ``skinned_model`` with ``skin_palette``; the ``mesh`` property is only the static rest pose (for bounds).
+    Creating a character starts decoding its texture files, visible or not (``texture_jobs``: the futures
+    from :func:`preload_textures`).
     """
 
     def __init__(self, model: CharacterModel, behaviour=None, *, name: str | None = None, scale=1.0,
                  shadow: bool = True, head_bones: tuple[str, str] | None = None):
         self.skinned_model = model
+        self.texture_jobs = preload_textures(model)
         self.poser = _FastPoser(model)
         self.behaviour = behaviour
         self.shadow = shadow
@@ -137,6 +144,47 @@ class Character(SceneObject):
         return model, normal
 
 
+_texture_jobs: dict[str, Future] = {}  # image file -> its decode, queued by the first character that uses it
+_texture_queue: queue.SimpleQueue | None = None
+_texture_lock = threading.Lock()
+
+
+def preload_textures(model: CharacterModel) -> list[Future]:
+    """Start decoding the image files among ``model``'s textures on a background thread (each file once).
+
+    The decoded textures land in the shared file cache of :func:`bifold_demo.scene.as_texture`, where the renderer
+    finds them, so the first frame that shows a character does not decode its PNGs on the render thread. Textures
+    given as arrays or :class:`~bifold_demo.scene.Texture` need no decoding. Returns one future per file.
+    """
+    global _texture_queue
+    files = sorted({os.fspath(p.texture) for p in model.primitives if isinstance(p.texture, (str, os.PathLike))
+                    and Path(p.texture).suffix.lower() in IMAGE_EXTENSIONS})
+    jobs = []
+    with _texture_lock:
+        for file in files:
+            job = _texture_jobs.get(file)
+            if job is None:
+                if _texture_queue is None:
+                    _texture_queue = queue.SimpleQueue()
+                    threading.Thread(target=_decode_textures, args=(_texture_queue,), name="character-textures",
+                                     daemon=True).start()
+                job = _texture_jobs[file] = Future()
+                _texture_queue.put((file, job))
+            jobs.append(job)
+    return jobs
+
+
+def _decode_textures(jobs: queue.SimpleQueue) -> None:
+    """Background worker: one at a time, since the file cache decodes under its lock anyway."""
+    while True:
+        file, job = jobs.get()
+        if job.set_running_or_notify_cancel():
+            try:
+                job.set_result(as_texture(file))
+            except Exception as exc:  # noqa: BLE001 - the renderer raises it again when it draws the character
+                job.set_exception(exc)
+
+
 def skin_vertices(model: CharacterModel, palette: np.ndarray) -> list[np.ndarray]:
     """CPU linear-blend skinning (a reference for tests and debugging): ``(N, 3)`` points per primitive."""
     palette = np.asarray(palette, dtype=np.float64)
@@ -229,23 +277,6 @@ def _compose(rotations: np.ndarray, translations: np.ndarray) -> np.ndarray:
     return m
 
 
-_next_frames: dict[int, tuple] = {}  # id(clip) -> (weakref to clip, its rotations, next frame on the same hemisphere)
-
-
-def _aligned_next(clip: AnimationClip) -> np.ndarray:
-    """``(F, K, 4)``: each frame's successor (the last frame itself), sign-flipped onto the shorter arc."""
-    entry = _next_frames.get(id(clip))
-    if entry is not None and entry[0]() is clip and entry[1] is clip.rotations:
-        return entry[2]
-    rotations = np.asarray(clip.rotations, dtype=np.float64)
-    nxt = np.concatenate([rotations[1:], rotations[-1:]])
-    nxt = np.where(np.sum(rotations * nxt, axis=-1, keepdims=True) < 0, -nxt, nxt)
-    for key in [k for k, e in _next_frames.items() if e[0]() is None]:
-        del _next_frames[key]
-    _next_frames[id(clip)] = (weakref.ref(clip), clip.rotations, nxt)
-    return nxt
-
-
 def _nlerp(a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:
     """:func:`model.quat_nlerp` for ``(K, 4)`` arrays and a scalar ``t``."""
     q = a * (1 - t) + b * np.where(np.einsum("ij,ij->i", a, b) < 0, -t, t)[:, None]
@@ -260,12 +291,17 @@ def _sample(clip: AnimationClip, t: float, root_k: int | None) -> tuple[np.ndarr
     last = clip.frames - 1
     f = f % last if clip.loop else min(max(f, 0.0), float(last))
     i = int(f)
+    j = min(i + 1, last)
     a = f - i
-    q = clip.rotations[i] * (1 - a) + _aligned_next(clip)[i] * a
-    q /= np.sqrt(np.einsum("ij,ij->i", q, q))[:, None]
+    rotations = clip.rotations
+    if getattr(clip, "_continuous_rotations", None) is rotations:  # signs aligned when the clip was made
+        q = rotations[i] * (1 - a) + rotations[j] * a
+        q /= np.sqrt(np.einsum("ij,ij->i", q, q))[:, None]
+    else:
+        q = _nlerp(rotations[i], rotations[j], a)
     if root_k is None:
         return q, None
-    return q, clip.translations[i, root_k] * (1 - a) + clip.translations[min(i + 1, last), root_k] * a
+    return q, clip.translations[i, root_k] * (1 - a) + clip.translations[j, root_k] * a
 
 
 class _FastPoser(Poser):

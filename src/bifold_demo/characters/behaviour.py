@@ -84,6 +84,8 @@ _SHARP = 120.0  # corners sharper than this (degrees of deflection) stop and tur
 _MAX_TURN = 300.0  # the longest way round a turn may be made to keep the face off the camera
 _PACE = {"child": (1.0, 1.25), "adult": (0.92, 1.1), "older": (0.85, 1.0)}  # walking speed / the clip's own speed
 _STRIDE = {"child": 0.72, "adult": 1.0, "older": 0.97}  # default stride_scale when the style gives none
+STRIDE_STRETCH = 0.05  # walk clips play at most this much faster or slower than the body moves (to stop on a pass)
+_LEG = (("thigh", "upleg", "upperleg"), ("calf", "leg", "lowerleg", "shin"), ("foot",), ("toe0", "toebase", "toe"))
 
 
 def _wrap(a: float) -> float:
@@ -230,6 +232,71 @@ def _chain_quaternions(clip: AnimationClip, chain: list[int], times) -> np.ndarr
     return quat_nlerp(rotations[i][:, chain], rotations[j][:, chain], (f - i)[:, None])
 
 
+def _leg(clip: AnimationClip, side: str) -> list[int]:
+    """Clip bone indices of the left (``side="l"``) or right leg: thigh, calf, foot and toe (if any); empty if the
+    names are not recognised (``"Bip01 L Thigh"``, ``"mixamorig:LeftUpLeg"``, ...)."""
+    word = "left" if side == "l" else "right"
+    parts: dict[int, int] = {}
+    for k, name in enumerate(clip.bone_names):
+        tokens = name.lower().replace(":", " ").replace("_", " ").split()
+        if not tokens:
+            continue
+        if side in tokens[:-1] or word in tokens[:-1]:
+            part = tokens[-1]
+        elif tokens[-1].startswith(word):
+            part = tokens[-1][len(word):]
+        else:
+            continue
+        for p, names in enumerate(_LEG):
+            if part in names:
+                parts.setdefault(p, k)
+    return [parts[p] for p in range(len(_LEG)) if p in parts] if all(p in parts for p in range(3)) else []
+
+
+def _leg_end(clip: AnimationClip, leg: list[int]) -> np.ndarray:
+    """``(F, 3)`` positions of the leg's last joint (toe) in the frame of the thigh's parent, from the clip's own
+    bone translations (both legs share that frame, so distances between them do not depend on the bones above)."""
+    rotations = quat_to_matrix(np.asarray(clip.rotations, dtype=np.float64)[:, leg[:-1]])
+    translations = np.asarray(clip.translations, dtype=np.float64)[:, leg]
+    p = translations[:, -1]
+    for k in range(len(leg) - 2, -1, -1):
+        p = translations[:, k] + np.einsum("fij,fj->fi", rotations[:, k], p)
+    return p
+
+
+def _feet(clip: AnimationClip) -> np.ndarray | None:
+    """``(F, 2, 3)`` character-space left and right toe positions per frame, or ``None`` (:meth:`MotionLibrary.feet`).
+
+    The thighs hang from one of the bones from the root to the head (the spine in a Biped, else the pelvis or the
+    hips): the one that puts the lower toe on the floor.
+    """
+    legs = [_leg(clip, side) for side in ("l", "r")]
+    chain = _chain(clip) or ([clip.bone_names.index(clip.root)] if clip.root in clip.bone_names else [])
+    if not all(legs) or not chain:
+        return None
+    ends = np.stack([_leg_end(clip, leg) for leg in legs], axis=1)
+    rotations = quat_to_matrix(np.asarray(clip.rotations, dtype=np.float64)[:, chain])
+    translations = np.asarray(clip.translations, dtype=np.float64)[:, chain]
+    position, rotation, best = np.zeros((clip.frames, 3)), np.repeat(np.eye(3)[None], clip.frames, axis=0), None
+    for k in range(len(chain)):
+        position = position + np.einsum("fij,fj->fi", rotation, translations[:, k])
+        rotation = rotation @ rotations[:, k]
+        toes = position[:, None] + np.einsum("fij,fsj->fsi", rotation, ends)
+        error = float(np.mean(np.abs(toes[..., 1].min(axis=1))))
+        if best is None or error < best[0]:
+            best = (error, toes)
+    return best[1]
+
+
+def _foot_slide(feet: np.ndarray, standing: np.ndarray) -> np.ndarray:
+    """How far a crossfade between poses with toe positions ``feet`` (``(..., 2, 3)``, see
+    :meth:`MotionLibrary.feet`) and ``standing`` (``(2, 3)``) moves the feet on the floor: the horizontal toe
+    distances, a toe lifted (3 cm above the other) in either pose counting a quarter."""
+    lift = np.maximum(feet[..., 1] - feet[..., 1].min(axis=-1, keepdims=True), standing[:, 1] - standing[:, 1].min())
+    weight = np.where(lift < 0.03, 1.0, 0.25)
+    return (weight * np.linalg.norm((feet - standing)[..., [0, 2]], axis=-1)).sum(axis=-1)
+
+
 def _chain_rotation(clip: AnimationClip, chain: list[int], frames=slice(None)) -> np.ndarray:
     matrices = quat_to_matrix(np.asarray(clip.rotations, dtype=np.float64)[frames][:, chain])
     out = matrices[:, 0]
@@ -240,12 +307,12 @@ def _chain_rotation(clip: AnimationClip, chain: list[int], frames=slice(None)) -
 
 def stride_scale(model: CharacterModel, clip: AnimationClip) -> float:
     """The factor the :class:`Poser` scales ``clip`` by for ``model`` (pass it as ``style["stride_scale"]``)."""
+    from .model import root_scale
+
     root = model.skeleton.find(clip.root) if clip.root else None
     if root is None or clip.root not in clip.bone_names:
         return 1.0
-    clip_height = float(np.mean(np.asarray(clip.translations)[:, clip.bone_names.index(clip.root), 1]))
-    model_height = float(model.skeleton.rest_global[root, 1, 3])
-    return model_height / clip_height if clip_height > 1e-3 and model_height > 1e-3 else 1.0
+    return root_scale(model.skeleton, clip)
 
 
 class MotionLibrary:
@@ -270,6 +337,7 @@ class MotionLibrary:
         self._yaw: dict[int, tuple[AnimationClip, tuple[list[float], list[float]]]] = {}
         self._after: dict[int, tuple[AnimationClip, AnimationClip]] = {}
         self._chains: dict[int, tuple[AnimationClip, list[int]]] = {}
+        self._feet: dict[int, tuple[AnimationClip, np.ndarray | None]] = {}
 
     def register(self, role: str, clip_name: str) -> None:
         """Use the clip called ``clip_name`` for ``role``."""
@@ -363,6 +431,24 @@ class MotionLibrary:
         if cached is None or cached[0] is not clip:
             cached = self._chains[id(clip)] = (clip, _chain(clip))
         return cached[1]
+
+    def feet(self, clip: AnimationClip, time) -> np.ndarray | None:
+        """Character-space positions of the left and right toe joints at clip ``time`` (seconds, or an array of
+        times): ``(2, 3)`` (or ``(T, 2, 3)``), from the clip's own bone lengths and root translation; ``None`` when
+        the clip has no recognisable legs (:func:`_leg`). For comparing the poses of clips of one rig."""
+        cached = self._feet.get(id(clip))
+        if cached is None or cached[0] is not clip:
+            cached = self._feet[id(clip)] = (clip, _feet(clip))
+        toes = cached[1]
+        if toes is None:
+            return None
+        last = clip.frames - 1
+        if last <= 0:
+            return toes[np.zeros(np.shape(time), dtype=np.int64)]
+        f = np.asarray(time, dtype=np.float64) * clip.fps
+        f = f % last if clip.loop else np.clip(f, 0.0, last)
+        i = np.minimum(f.astype(np.int64), last - 1)
+        return toes[i] + (toes[i + 1] - toes[i]) * (f - i)[..., None, None]
 
     def after_turn(self, clip: AnimationClip) -> AnimationClip:
         """``clip`` with its root yawed back by its ``turn``: its pose once the heading has taken the turn."""
@@ -719,6 +805,7 @@ class Behaviour:
                 self._add_hide(segment)
         self._close_loop()
         self.duration = self._t
+        self._time_walks()
         self._piece_starts = [p.t0 for p in self._pieces]
         self._entry_starts = [e.t0 for e in self._entries]
         for j, entry in enumerate(self._entries):
@@ -876,6 +963,38 @@ class Behaviour:
             else:
                 self._entries.append(_Entry(piece.t0, piece.t1, None, role=role))
             self._t, self._pos, self._heading = piece.t1, (px[-1], pz[-1]), piece.ph[-1]
+
+    def _time_walks(self) -> None:
+        """Where each walk clip starts and how fast it plays (module docs): from the pose closest to the clip before
+        (or where the same clip left off), and up to ``STRIDE_STRETCH`` faster or slower so that it ends in the
+        pose closest to the clip after, so the crossfades barely move the feet on the floor (:func:`_foot_slide`).
+        Walks next to a hidden part or without clips with recognisable legs keep their random phase there."""
+        lib, entries = self.library, self._entries
+        for j, entry in enumerate(entries):
+            clip, piece = entry.clip, entry.walk
+            if clip is None or piece is None or piece.length <= 0.0 or lib.feet(clip, 0.0) is None:
+                continue
+            before, after = entries[j - 1], entries[(j + 1) % len(entries)]
+            starts, cost = np.arange(0.0, clip.duration, 0.25 / clip.fps), 0.0
+            if j and before.walk is not None and before.clip is clip and before.t1 == entry.t0:
+                starts, cost = np.array([before.sample(entry.t0)[1]]), np.zeros((1, 1))  # walking on: same stride
+            elif before.clip is not None:
+                standing = lib.feet(*before.sample(entry.t0 if j else self.duration)[:2])
+                if standing is not None:
+                    cost = _foot_slide(lib.feet(clip, starts), standing)[:, None]
+            advance = piece.length * entry.scale  # clip seconds the walk takes unstretched
+            stretch = np.linspace(-STRIDE_STRETCH, STRIDE_STRETCH, 41) if STRIDE_STRETCH > 0 else np.zeros(1)
+            ends = starts[:, None] + advance * (1.0 + stretch)
+            standing = None
+            if after.clip is not None and after.walk is None:
+                standing = lib.feet(*after.sample(entry.t1 if j + 1 < len(entries) else 0.0)[:2])
+            if standing is not None:
+                cost = cost + _foot_slide(lib.feet(clip, ends), standing) + 0.25 * np.abs(stretch) * piece.length
+            if np.ndim(cost) == 0:
+                continue  # nothing to match on either side: keep the random phase
+            i, k = np.unravel_index(int(np.argmin(np.broadcast_to(cost, ends.shape))), ends.shape)
+            entry.scale = (ends[i, k] - starts[i]) / piece.length
+            entry.phase = starts[i] / entry.scale
 
     def _turn_clip(self, degrees: float) -> AnimationClip | None:
         lib = self.library

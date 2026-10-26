@@ -15,6 +15,7 @@ from bifold_demo.characters.model import (
     quat_multiply,
     quat_nlerp,
     quat_to_matrix,
+    root_scale,
 )
 from bifold_demo.scene.transforms import euler_rotation
 
@@ -114,6 +115,54 @@ def test_poser_drives_rotations_and_keeps_the_models_bone_lengths():
     np.testing.assert_allclose(world[2, :3, 3], [0, 2.0, 0], atol=1e-12)  # bones keep the model's lengths
     tip = model.skinning_matrices(world)[2] @ [0, 2.5, 0, 1]  # the vertex 0.5 m past the lower joint
     np.testing.assert_allclose(tip[:3], [-0.5, 2.0, 0.0], atol=1e-9)  # swung 90 degrees about z
+
+
+LEG = ["Bip01", "Bip01 Pelvis", "Bip01 L Thigh", "Bip01 L Calf", "Bip01 L Foot", "Bip01 L Toe0"]
+
+
+def _leg_offsets(thigh=0.45, shin=0.45, ankle=0.08):
+    """Bone offsets of a one-legged Biped whose toe joint touches the floor in the rest pose."""
+    return np.array([(0, thigh + shin + ankle, 0), (0, 0, 0), (0.1, 0, 0), (0, -thigh, 0), (0, -shin, 0),
+                     (0, -ankle, 0.12)], dtype=np.float64)
+
+
+def _leg_model(**sizes):
+    rest = np.repeat(np.eye(4)[None], len(LEG), axis=0)
+    rest[:, :3, 3] = _leg_offsets(**sizes)
+    skeleton = Skeleton(LEG, list(range(-1, len(LEG) - 1)), rest)
+    return CharacterModel("leg", skeleton, [], np.linalg.inv(skeleton.rest_global))
+
+
+def _bent_knee_walk(frames=21):
+    """Knees bending up to 40 degrees with the foot kept flat; the root sinks so the clip's own toe stays on y = 0."""
+    bend = 40.0 * np.sin(np.linspace(0, np.pi, frames)) ** 2
+    rotations = np.zeros((frames, len(LEG), 4))
+    rotations[..., 3] = 1
+    axis = np.tile([1.0, 0, 0], (frames, 1))
+    rotations[:, 2], rotations[:, 3], rotations[:, 4] = (quat_from_axis_angle(axis, d) for d in (bend, -2 * bend, bend))
+    translations = np.repeat(_leg_offsets()[None], frames, axis=0)
+    translations[:, 0, 1] = 0.08 + 0.9 * np.cos(np.radians(bend))
+    return AnimationClip("knees", 30, LEG, rotations, translations, root="Bip01", metadata={"kind": "walk"})
+
+
+def test_root_scale_comes_from_the_leg_not_the_animated_root_height():
+    walk = _bent_knee_walk()
+    assert walk.translations[:, 0, 1].mean() < 0.96  # the pelvis sinks while the knees bend
+    assert root_scale(_leg_model().skeleton, walk) == pytest.approx(1.0, abs=1e-12)
+    assert root_scale(_leg_model(thigh=0.225, shin=0.225, ankle=0.04).skeleton, walk) == pytest.approx(0.5)
+    child = _leg_model(thigh=0.36, shin=0.36, ankle=0.05)  # shorter legs and a proportionally lower ankle
+    assert root_scale(child.skeleton, walk) == pytest.approx(0.77 / 0.98)  # hip heights, not the leg lengths
+    no_legs = _clip([0, 0], root_heights=(1.6, 2.0))
+    assert root_scale(_arm_skeleton(), no_legs) == pytest.approx(0.5)  # falls back to the clip's highest root
+
+
+@pytest.mark.parametrize("sizes, tolerance", [({}, 1e-9), ({"thigh": 0.225, "shin": 0.225, "ankle": 0.04}, 1e-9),
+                                              ({"thigh": 0.36, "shin": 0.36, "ankle": 0.05}, 4e-3)])
+def test_poser_keeps_the_feet_on_the_floor_when_the_knees_bend(sizes, tolerance):
+    model, walk = _leg_model(**sizes), _bent_knee_walk()
+    poser = Poser(model)
+    toe = [poser.global_pose([Layer(walk, f / walk.fps)])[-1, 1, 3] for f in range(walk.frames)]
+    np.testing.assert_allclose(toe, 0.0, atol=tolerance)
 
 
 def test_poser_blends_layers():

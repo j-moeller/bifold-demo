@@ -41,7 +41,8 @@ def load_character(fbx_path, texture_dir=None, lod="auto", max_texture_size=1024
         texture_dir: folder with the texture images (default: ``../Textures`` next to the file's folder,
             then the file's folder); names are matched case-insensitively by basename.
         lod: ``"auto"`` (the most detailed level with roughly 4k-12k triangles, else the one closest to
-            that range) or a level name such as ``"hipoly"`` / ``"lowpoly"`` / ``"lod1"`` or a mesh name.
+            that range), a level name such as ``"hipoly"`` / ``"lowpoly"`` / ``"lod1"``, or the name of one
+            mesh (case-insensitive; only that mesh is loaded).
         max_texture_size: textures are downscaled so that their longer side is at most this.
 
     Bones keep their FBX names except that Biped prefixes are unified (``Bip02 Head`` -> ``Bip01 Head``)
@@ -56,8 +57,7 @@ def load_character(fbx_path, texture_dir=None, lod="auto", max_texture_size=1024
     levels = scene.lod_levels()
     if not levels:
         raise ValueError(f"{fbx_path}: no skinned mesh found")
-    level = _choose_lod(levels, lod, fbx_path)
-    meshes = levels[level]["meshes"] + levels.get("", {"meshes": []})["meshes"] if level else levels[level]["meshes"]
+    level, meshes = _choose_lod(levels, lod, fbx_path, scene.name)
 
     index = {node_id: i for i, node_id in enumerate(bones)}
     parents = [index.get(scene.parent(node_id), -1) for node_id in bones]
@@ -113,8 +113,10 @@ def load_clip(fbx_path, name=None) -> AnimationClip:
     the clip is rotated about +Y so that the travel direction (walk) or the initial facing (other clips)
     is +Z, and turn clips report their total yaw in ``metadata["turn"]`` (degrees, positive = left).
     ``metadata["kind"]`` comes from the file name: walk, turn, idle or gesture (talk, listen, phone,
-    look around); ``metadata["root_height"]`` is the clip's mean root height in metres (``speed`` is
-    measured at that size). Only bones with animation curves are included; turn clips do not loop.
+    look around); ``metadata["root_height"]`` is the clip's mean animated root height in metres (for
+    information only: a walk's pelvis sits below its standing height, so posing scales clips by the leg
+    proportions, see :func:`.model.root_scale`). ``speed`` is measured at the clip's own size. Only bones
+    with animation curves are included; turn clips do not loop.
     """
     fbx_path = Path(fbx_path)
     name = name or fbx_path.name.split(".")[0]
@@ -631,25 +633,29 @@ def _clip_kind(name: str) -> str:
 # -- helpers: meshes, skins and textures -----------------------------------------------------------
 
 
-def _choose_lod(levels: dict[str, dict], lod: str, path: Path) -> str:
+def _choose_lod(levels: dict[str, dict], lod: str, path: Path, mesh_name) -> tuple[str, list[int]]:
+    """``(level, mesh ids)`` for a ``lod`` request; meshes without a level name come with every named level."""
     named = {k: v for k, v in levels.items() if k}
-    if not named:
-        return ""
+    unnamed = levels.get("", {"meshes": []})["meshes"]
     if lod != "auto":
+        for key, info in levels.items():
+            for mesh_id in info["meshes"]:
+                if mesh_name(mesh_id).lower() == str(lod).lower():
+                    return key, [mesh_id]
         wanted = str(lod).lower().replace("_", "")
-        for key in named:
-            if key == wanted:
-                return key
-        for key, info in named.items():
-            if wanted in key or any(wanted in str(m) for m in info["meshes"]):
-                return key
-        raise ValueError(f"{path}: no LOD {lod!r}; available: {sorted(named)}")
+        key = next((k for k in named if k == wanted), None) or next((k for k in named if wanted in k), None)
+        if key is not None:
+            return key, named[key]["meshes"] + unnamed
+        if named:
+            raise ValueError(f"{path}: no LOD or mesh {lod!r}; available levels: {sorted(named)}")
+    if not named:
+        return "", unnamed
     low, high = _AUTO_TRIANGLES
     ranked = sorted(named, key=lambda k: _LOD_RANK.get(k, 10 + int(k[3:]) if k[3:].isdigit() else 5))
-    for key in ranked:
-        if low <= named[key]["triangles"] <= high:
-            return key
-    return min(ranked, key=lambda k: abs(math.log(max(named[k]["triangles"], 1) / math.sqrt(low * high))))
+    key = next((k for k in ranked if low <= named[k]["triangles"] <= high), None)
+    if key is None:
+        key = min(ranked, key=lambda k: abs(math.log(max(named[k]["triangles"], 1) / math.sqrt(low * high))))
+    return key, named[key]["meshes"] + unnamed
 
 
 def _mesh_bind_matrix(scene: _Scene, mesh_id: int, clusters: list) -> np.ndarray:

@@ -285,6 +285,10 @@ def test_load_character_lod_and_texture_options(synthetic_avatar):
     assert all(p.texture is None for p in model.primitives)  # nothing to find there
     with pytest.raises(ValueError, match="hipoly"):
         load_character(synthetic_avatar, lod="lowpoly")
+    by_name = load_character(synthetic_avatar, lod="Test_HiPoly_Mesh", max_texture_size=2)  # a mesh name
+    assert by_name.metadata["lod"] == "hipoly" and by_name.metadata["meshes"] == ["test_hipoly_mesh"]
+    with pytest.raises(ValueError, match="no LOD"):
+        load_character(synthetic_avatar, lod="20")  # the mesh's FBX object id is not its name
     small = load_character(synthetic_avatar, max_texture_size=2)
     assert max(small.primitives[0].texture.shape[:2]) == 2
 
@@ -327,7 +331,10 @@ CLIPS = {
     "m_turn_left_180": "all_animations_max_motextr_xyz",
     "f_turn_right_90": "all_animations_max_motextr_xyz",
     "m_idle_neutral_01": "all_animations_max_motextr_static",
+    "f_walk_neutral_01": "all_animations_max_motextr_xy",
+    "f_idle_neutral_01": "all_animations_max_motextr_static",
 }
+SEX = {"Male_Adult_05": "m", "Female_Child_01": "f"}
 
 
 def _avatar_path(name):
@@ -380,7 +387,8 @@ def test_rocketbox_avatar(avatar):
 
 def test_rocketbox_clips(clips, avatar):
     _, model = avatar
-    walk, left, right, idle = (clips[n] for n in CLIPS)
+    walk, left, right, idle = (clips[n] for n in ("m_walk_neutral_01", "m_turn_left_180", "f_turn_right_90",
+                                                  "m_idle_neutral_01"))
     assert walk.metadata["kind"] == "walk" and 0.5 < walk.metadata["speed"] < 1.8 and walk.loop
     assert left.metadata["kind"] == "turn" and left.metadata["turn"] == pytest.approx(180, abs=15) and not left.loop
     assert right.metadata["turn"] == pytest.approx(-90, abs=15)
@@ -390,3 +398,33 @@ def test_rocketbox_clips(clips, avatar):
         assert set(model.skeleton.names) <= set(clip.bone_names)  # every avatar bone is animated
         root = clip.translations[:, clip.bone_names.index("Bip01")]
         assert np.abs(root[:, [0, 2]]).max() < 0.2 and 0.7 < root[:, 1].mean() < 1.0  # in place
+
+
+def _lowest_vertex(model, pose, keep) -> float:
+    """Lowest y of the vertices selected by ``keep`` (one mask per primitive) after CPU skinning."""
+    palette = model.skinning_matrices(pose)
+    lowest = np.inf
+    for prim, mask in zip(model.primitives, keep):
+        if not mask.any():
+            continue
+        m = np.einsum("nk,nkij->nij", prim.weights[mask].astype(np.float64), palette[prim.joints[mask]])
+        y = np.einsum("nj,nj->n", m[:, 1, :3], prim.positions[mask].astype(np.float64)) + m[:, 1, 3]
+        lowest = min(lowest, float(y.min()))
+    return lowest
+
+
+def test_rocketbox_walk_and_idle_keep_the_soles_on_the_floor(clips, avatar):
+    """Adults and children alike: the root scale comes from the legs, not the walk's lowered mean pelvis height."""
+    from bifold_demo.characters.behaviour import stride_scale
+    from bifold_demo.characters.model import Layer, Poser
+
+    name, model = avatar
+    poser = Poser(model)
+    feet = [p.positions[:, 1] < 0.15 for p in model.primitives]
+    for kind in ("walk", "idle"):
+        clip = clips[f"{SEX[name]}_{kind}_neutral_01"]
+        lows = [_lowest_vertex(model, poser.global_pose([Layer(clip, t)]), feet)
+                for t in np.linspace(0.0, min(clip.duration, 4.0), 24, endpoint=False)]
+        assert -0.015 < min(lows) < 0.005, (kind, min(lows))  # a sole reaches the floor (walks floated 1.4-2.9 cm)
+        assert max(lows) < (0.015 if kind == "walk" else 0.005), (kind, max(lows))
+        assert stride_scale(model, clip) == pytest.approx(poser._map(clip)[-1])  # walking speed matches body size

@@ -232,6 +232,8 @@ class AnimationClip:
     Attributes:
         bone_names: the ``K`` animated bones (matched to a skeleton by name).
         rotations: ``(F, K, 4)`` local rotations; translations: ``(F, K, 3)`` local translations (metres).
+            On construction each quaternion's sign is chosen so that consecutive frames lie on the same
+            hemisphere (non-negative dot product): neighbouring frames blend without sign checks.
         root: name of the bone that carries the whole-body motion (pelvis / centre of mass), if any.
         metadata: e.g. ``speed`` (m/s of forward motion that was removed), ``turn`` (degrees of yaw
             over the clip, positive = to the left / counter-clockwise seen from above), ``kind``.
@@ -245,6 +247,17 @@ class AnimationClip:
     loop: bool = True
     root: str | None = None
     metadata: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        q = np.asarray(self.rotations)
+        if q.ndim == 3 and len(q) > 1:
+            flips = np.einsum("fkc,fkc->fk", q[1:], q[:-1]) < 0
+            if flips.any():
+                sign = np.ones(q.shape[:2], dtype=q.dtype)
+                sign[1:] -= 2 * (np.cumsum(flips, axis=0) % 2)
+                q = q * sign[..., None]
+        self.rotations = q
+        self._continuous_rotations = q  # what the sign alignment was done for (``rotations`` may be reassigned)
 
     @property
     def frames(self) -> int:
@@ -277,6 +290,63 @@ class AnimationClip:
         return np.asarray(clip_idx), np.asarray(skel_idx)
 
 
+_LEG_CHAINS = (  # hip, knee, ankle, toe joints of each leg (3ds Max Biped names, then Mixamo-style names)
+    (("L Thigh", "LeftUpLeg"), ("L Calf", "LeftLeg"), ("L Foot", "LeftFoot"), ("L Toe0", "LeftToeBase")),
+    (("R Thigh", "RightUpLeg"), ("R Calf", "RightLeg"), ("R Foot", "RightFoot"), ("R Toe0", "RightToeBase")),
+)
+
+
+def _leg_chain(skeleton: Skeleton, joints, present) -> list[int]:
+    """Bones from the hip down a leg, up to the first joint that is missing (or not in ``present``) or not a child."""
+    chain: list[int] = []
+    for candidates in joints:
+        bone = skeleton.find(*candidates)
+        if bone is None or skeleton.names[bone] not in present or (chain and skeleton.parents[bone] != chain[-1]):
+            break
+        chain.append(bone)
+    return chain
+
+
+def _leg_height(skeleton: Skeleton, chain: list[int], offsets: np.ndarray) -> float:
+    """Height of the hip ``chain[0]`` above the lowest joint below it in the rest pose, with bone ``offsets``."""
+    m = skeleton.rest_global[chain[0]].copy()
+    lowest = hip = m[1, 3]
+    for bone, offset in zip(chain[1:], offsets):
+        local = skeleton.rest_local[bone].copy()
+        local[:3, 3] = offset
+        m = m @ local
+        lowest = min(lowest, m[1, 3])
+    return float(hip - lowest)
+
+
+def root_scale(skeleton: Skeleton, clip: AnimationClip) -> float:
+    """Size of ``skeleton`` relative to the skeleton ``clip`` was made for (scales the clip's root motion).
+
+    It is the ratio of the leg heights, hip joint to toe joint, in the rest pose: the model's from its own bone
+    offsets, the clip's from the clip's (constant) translations of the same bones, both with the model's rest
+    rotations. That keeps the soles on the floor when the clip's knees bend and makes the same bone lengths give
+    exactly 1. Without a common leg, it falls back to the ratio of the model's rest root height to the clip's
+    highest root height (its legs are straightest there), and to 1.
+    """
+    names = {name: k for k, name in enumerate(clip.bone_names)}
+    translations = np.asarray(clip.translations, dtype=np.float64)
+    for joints in _LEG_CHAINS:
+        chain = _leg_chain(skeleton, joints, names)
+        if len(chain) < 3:
+            continue
+        clip_offsets = np.median(translations[:, [names[skeleton.names[b]] for b in chain[1:]]], axis=0)
+        model_leg = _leg_height(skeleton, chain, skeleton.rest_local[chain[1:], :3, 3])
+        clip_leg = _leg_height(skeleton, chain, clip_offsets)
+        if model_leg > 1e-3 and clip_leg > 1e-3:
+            return model_leg / clip_leg
+    root = skeleton.find(clip.root) if clip.root else None
+    if root is None or clip.root not in names:
+        return 1.0
+    clip_height = float(translations[:, names[clip.root], 1].max())
+    model_height = float(skeleton.rest_global[root, 1, 3])
+    return model_height / clip_height if clip_height > 1e-3 and model_height > 1e-3 else 1.0
+
+
 @dataclass
 class Layer:
     """One clip contributing to a pose: ``clip`` at ``time`` seconds with blend ``weight``."""
@@ -291,8 +361,8 @@ class Poser:
 
     Clips drive bone *rotations*. Bone translations stay those of the model's own
     skeleton (so one clip fits children and adults alike), except for the clip's
-    ``root`` bone, whose translation is taken from the clip and scaled by the ratio
-    of the model's root height to the clip's root height (``root_scale``).
+    ``root`` bone, whose translation is taken from the clip and scaled by the size
+    of the model relative to the clip's skeleton (:func:`root_scale`).
     """
 
     def __init__(self, model: CharacterModel):
@@ -308,12 +378,7 @@ class Poser:
             clip_idx, skel_idx = clip.bone_map(self.skeleton)
             root = self.skeleton.find(clip.root) if clip.root else None
             root_k = clip.bone_names.index(clip.root) if clip.root in clip.bone_names else None
-            scale = 1.0
-            if root is not None and root_k is not None:
-                clip_height = float(np.mean(clip.translations[:, root_k, 1]))
-                model_height = float(self.skeleton.rest_global[root, 1, 3])
-                if clip_height > 1e-3 and model_height > 1e-3:
-                    scale = model_height / clip_height
+            scale = root_scale(self.skeleton, clip) if root is not None and root_k is not None else 1.0
             self._maps[key] = (clip, clip_idx, skel_idx, root, root_k, scale)
         return self._maps[key][1:]
 
