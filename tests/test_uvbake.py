@@ -52,3 +52,16 @@ def test_bakes_are_kept_while_the_model_lives():
     model = _Model([_square()])
     assert cached_bake(model, 0, 32) is cached_bake(model, 0, 32)
     assert cached_bake(model, 0, 16) is not cached_bake(model, 0, 32)
+
+
+def test_a_bake_comes_back_from_its_triangle_map():
+    from bifold_demo.characters.uvbake import from_triangles, rasterise
+
+    model = _Model([_square(bones=(3, 4, 5, 6))])
+    full = bake(model, 0, size=48)
+    triangle, overlap = rasterise(model.primitives[0], 48)
+    again = from_triangles(model, 0, triangle.astype(np.int16), overlap)
+    for name in ("covered", "triangle", "bone", "island", "overlap"):
+        assert np.array_equal(getattr(full, name), getattr(again, name)), name
+    assert np.allclose(full.position, again.position, equal_nan=True)
+    assert np.allclose(full.normal, again.normal, equal_nan=True)

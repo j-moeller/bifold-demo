@@ -8,7 +8,8 @@ Texels outside every triangle are not ``covered``. Where triangles overlap in UV
 last one drawn wins and ``overlap`` marks the texel.
 
 A bake takes a second or two for a Rocketbox primitive at 1024x1024 (on a CPU) and is kept per primitive (see
-:func:`cached_bake`).
+:func:`cached_bake`). Nearly all of that is :func:`rasterise` (which triangle covers each texel); :func:`from_triangles`
+works the other maps out again from its result in a fraction of the time, so a cache on disk only keeps that.
 """
 
 from __future__ import annotations
@@ -71,7 +72,13 @@ def islands(primitive) -> np.ndarray:
 
 def bake(model, primitive: int, size: int = 1024) -> UVBake:
     """The maps of ``model.primitives[primitive]`` (see the module docs)."""
-    prim = model.primitives[primitive]
+    triangle, overlap = rasterise(model.primitives[primitive], size)
+    return from_triangles(model, primitive, triangle, overlap)
+
+
+def rasterise(prim, size: int) -> tuple[np.ndarray, np.ndarray]:
+    """The slow part of a bake: ``(triangle, overlap)``, the triangle drawn last at each texel (-1 outside) and which
+    texels more than one triangle covers."""
     tri = np.asarray(prim.indices, np.int64).reshape(-1, 3)
     pixels = uv_pixels(prim.uvs, size)
     ids = np.full((size, size), -1, np.int32)
@@ -91,6 +98,17 @@ def bake(model, primitive: int, size: int = 1024) -> UVBake:
         ids[y0:y1, x0:x1][layer.astype(bool)] = k
         # for the overlaps: only texel centres strictly inside, so neighbours sharing an edge do not both count
         counts[y0:y1, x0:x1] += _strictly_inside(pixels[t] - offset, layer.shape)
+    return ids, counts > 1
+
+
+def from_triangles(model, primitive: int, triangle: np.ndarray, overlap: np.ndarray) -> UVBake:
+    """The bake whose :func:`rasterise` result is ``(triangle, overlap)``: the per-texel maps are quick to work out
+    again from the triangle map (a cache keeps only that)."""
+    prim = model.primitives[primitive]
+    size = triangle.shape[0]
+    ids = np.asarray(triangle, np.int32)
+    tri = np.asarray(prim.indices, np.int64).reshape(-1, 3)
+    pixels = uv_pixels(prim.uvs, size)
     covered = ids >= 0
     ys, xs = np.nonzero(covered)
     k = ids[ys, xs]
@@ -117,7 +135,7 @@ def bake(model, primitive: int, size: int = 1024) -> UVBake:
     bone[ys, xs] = joints[vertex, weights[vertex].argmax(axis=1)]
     island = np.full((size, size), -1, np.int32)
     island[ys, xs] = islands(prim)[k]
-    return UVBake(size, covered, ids, position, normal, bone, island, counts > 1)
+    return UVBake(size, covered, ids, position, normal, bone, island, np.asarray(overlap, bool))
 
 
 def _strictly_inside(corners: np.ndarray, shape) -> np.ndarray:
