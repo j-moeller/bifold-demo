@@ -482,3 +482,17 @@ def test_selection_keys_in_the_demo_app(gl, biped, tmp_path, monkeypatch):
         assert not app._running
     finally:
         app.selection.close()
+
+
+def test_the_key_help_of_every_menu_fits_the_picture():
+    import cv2
+
+    from bifold_demo.display.overlay import FONT
+    from bifold_demo.selection import menus
+
+    selection = Selection.__new__(Selection)
+    for menu in range(len(menus())):
+        selection.menu = menu
+        lines = selection.help_lines()
+        widths = [cv2.getTextSize(line, FONT, 0.55, 1)[0][0] for line in lines]
+        assert max(widths) + 2 * 10 + 12 < 1280, lines  # the panel at 1280x720, padding and margin included

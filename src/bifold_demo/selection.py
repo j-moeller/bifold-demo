@@ -606,12 +606,13 @@ class Selection:
         """The key help of the current menu."""
         all_menus = menus()
         title, kind, entries = all_menus[min(self.menu, len(all_menus) - 1)]
-        keys = "  ".join(f"{k + 1} {short_title(e) if kind == 'yoga' else accessories.TITLES[e]}"
-                         for k, e in enumerate(entries))
-        more = "same number again: keep holding | 0 stop" if kind == "yoga" else \
-            "again: next look, after the last: off | 0 all off"
+        keys = [f"{k + 1} {short_title(e) if kind == 'yoga' else accessories.TITLES[e]}" for k, e in enumerate(entries)]
+        if kind == "yoga":  # eight pose names do not fit one line: four to a line
+            return ["Tab / Shift+Tab: next / previous person | Up / Down: menu | Esc: done | 0 stop",
+                    f"[{title}] " + "  ".join(keys[:4]),
+                    "  ".join(keys[4:]) + " | same number again: keep holding"]
         return ["Tab / Shift+Tab: next / previous person | Up / Down: menu | Esc: done",
-                f"[{title}] {keys} | {more}"]
+                f"[{title}] {'  '.join(keys)} | again: next look, after the last: off | 0 all off"]
 
     _yoga_menu = 0  # the yoga menu ``I`` goes back to
 
