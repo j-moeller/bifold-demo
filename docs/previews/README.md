@@ -79,6 +79,11 @@ work goes on. The people are avatars from the
   and knees, the back rounding up towards the ceiling with the tailbone tucked
   under, the arms straight under the shoulders, the head dropped with the gaze
   to the navel, and back up.
+- `yoga_child.jpg`: the Child's Pose (Balasana) clip: down from standing to
+  hands and knees, then the hips sink back towards the heels (swinging round
+  the knees) while the hands slide a little forward, the torso folds over the
+  thighs and the forehead comes to the floor, the arms stretched forward, palms
+  down; and back up.
 - `selection.jpg`: selection mode in the fair: three of the audience doing Cow
   Pose, Downward Facing Dog and Upward Facing Dog (keys 2, 4 and 6), each at a
   spot they walked to where the camera sees the whole pose; the selected one is

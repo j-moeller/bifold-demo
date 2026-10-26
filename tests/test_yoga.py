@@ -508,6 +508,38 @@ def test_cat_rounds_the_back_on_hands_and_knees(body):
     assert all(abs(verts[body.knee_group(side), 1].min()) < 0.005 for side in body.sides)  # the knees rest on the floor
 
 
+def test_child_sits_back_on_the_heels_with_the_forehead_on_the_floor(body):
+    spec = yoga.POSES["child"]
+    pose = yoga.settle(body, spec.steps(body)[spec.main].pose)
+    _, glob = yoga.solve(body, pose)
+    verts = yoga.skin(body, glob)
+    knees = [glob[s["calf"], :3, 3] for s in body.sides.values()]
+    for side, s in body.sides.items():
+        hip, knee, ankle = glob[s["thigh"], :3, 3], glob[s["calf"], :3, 3], glob[s["foot"], :3, 3]
+        assert _bend(glob, s["thigh"], s["calf"], s["foot"]) > 135.0  # the knees folded deep ...
+        assert abs(verts[body.knee_group(side), 1].min()) < 0.015  # ... resting on the floor
+        assert knee[2] - hip[2] > 0.7 * s["thigh_length"] and abs(hip[2] - ankle[2]) < 0.12  # the hips over the heels
+        toes = glob[s["foot"], :3, :3] @ body.rest_rot[s["foot"]].T @ s["foot_forward"]
+        assert toes[2] < -0.5  # the toes point back: the feet rest on their tops
+        shoulder, wrist = glob[s["upper"], :3, 3], glob[s["hand"], :3, 3]
+        assert wrist[2] - shoulder[2] > 0.8 * body.arm  # the arms stretched forward ...
+        assert _bend(glob, s["upper"], s["fore"], s["hand"]) < 30.0 and getattr(pose, f"{side}_arm").contact
+        palm = glob[s["hand"], :3, :3] @ body.rest_rot[s["hand"]].T @ s["hand_back"]
+        assert palm[1] > 0.9  # ... on the floor, palms down
+    hips = glob[body.root, :3, 3]
+    shoulders = 0.5 * (glob[body.sides["left"]["upper"], :3, 3] + glob[body.sides["right"]["upper"], :3, 3])
+    fold = math.degrees(math.atan2(shoulders[1] - hips[1], shoulders[2] - hips[2]))
+    assert -30.0 < fold < 12.0 and shoulders[2] > max(k[2] for k in knees) - 0.05  # the torso folded over the thighs
+    assert hips[1] < 0.5 * body.leg  # (sitting low)
+    head = verts[body.group(body.head)]
+    assert abs(head[:, 1].min()) < 0.01  # the head on the floor ...
+    assert head[np.argmin(head[:, 1]), 2] > max(k[2] for k in knees)  # ... in front of the knees ...
+    turned = glob[body.head, :3, :3] @ body.rest_rot[body.head].T
+    crown, gaze = turned @ (0.0, 1.0, 0.0), turned @ (0.0, 0.0, 1.0)
+    assert crown[1] < -0.3 and crown[2] > 0.3 and gaze[1] < -0.3  # ... on the forehead, the face to the floor
+    assert pose.knees_down and pose.left_leg.contact and pose.right_leg.contact
+
+
 # -- every pose on real avatars --------------------------------------------------------------------------------
 
 

@@ -330,6 +330,7 @@ menu), then `1`.
 | `↓ 4` | Standing Forward Bend (Uttanasana) | `"forward_bend"` | standing, the arms open wide, a flat-back hinge with the arms out (swan dive), the fold down over straight legs to the hands beside the feet |
 | `↓ 5` | Plank Pose (Phalakasana) | `"plank"` | standing, down to hands and knees, toes tucked, the right foot then the left steps back, the hips lower into the plank |
 | `↓ 6` | Cat Pose (Marjaryasana) | `"cat"` | standing, down to hands and knees (crouch, kneel with toes tucked, tabletop), the back rounds up and the head drops |
+| `↓ 7` | Child's Pose (Balasana) | `"child"` | standing, down to hands and knees, the hips sink back towards the heels, the torso folds over the thighs, the forehead to the floor, the arms stretched forward |
 
 ```python
 from bifold_demo.characters.character import Character

@@ -111,10 +111,20 @@ def _limb_blend(a: Limb, b: Limb, w: float, lift: float = 0.0) -> Limb:
 
 
 def blend(a: BodyPose, b: BodyPose, w: float, lift: dict | None = None) -> BodyPose:
-    """The pose ``w`` of the way from ``a`` to ``b`` (0..1); ``lift``: limb name -> metres it rises mid-way."""
+    """The pose ``w`` of the way from ``a`` to ``b`` (0..1); ``lift``: limb name -> metres it rises mid-way, and
+    ``"pivot"`` -> a point ``(x, y, z)`` the hips swing round (seen from the side) instead of moving straight across,
+    as round the knees resting on the floor."""
     lift = lift or {}
     limbs = {name: _limb_blend(getattr(a, name), getattr(b, name), w, lift.get(name, 0.0)) for name in LIMBS}
-    return BodyPose(_lerp(a.root, b.root, w), pelvis=_lerp(a.pelvis, b.pelvis, w), spine=_lerp(a.spine, b.spine, w),
+    root = _lerp(a.root, b.root, w)
+    if lift.get("pivot") is not None:
+        _, y, z = lift["pivot"]
+        (ra, fa), (rb, fb) = [(math.hypot(r[1] - y, r[2] - z), math.atan2(r[1] - y, r[2] - z))
+                              for r in (a.root, b.root)]
+        fb += 2 * math.pi * round((fa - fb) / (2 * math.pi))  # the shorter way round
+        r, f = ra + (rb - ra) * w, fa + (fb - fa) * w
+        root = (root[0], y + r * math.sin(f), z + r * math.cos(f))
+    return BodyPose(root, pelvis=_lerp(a.pelvis, b.pelvis, w), spine=_lerp(a.spine, b.spine, w),
                     head=_lerp(a.head, b.head, w), knees_down=a.knees_down if w < 0.5 else b.knees_down,
                     flat_hands=a.flat_hands if w < 0.5 else b.flat_hands,
                     spine_shares=_lerp(a.spine_shares, b.spine_shares, w), **limbs)
@@ -497,7 +507,8 @@ def lowest(body: Body, pose: BodyPose) -> float:
 @dataclass(frozen=True)
 class Step:
     """Move into ``pose`` over ``seconds`` (eased), then hold it ``hold`` seconds (breathing when ``breathe``).
-    ``lift``: limb name -> metres a hand or foot rises on the way (stepping)."""
+    ``lift``: limb name -> metres a hand or foot rises on the way (stepping); ``"pivot"``: what the hips swing round
+    (see :func:`blend`)."""
 
     pose: BodyPose
     seconds: float = 0.0
@@ -1690,6 +1701,176 @@ def _cat_steps(body: Body) -> list[Step]:
                    Step(table, seconds=2.5, hold=1.0, breathe=False)] + _up_from(down)
 
 
+# -- resting on the floor ------------------------------------------------------------------------------
+
+
+def _bisect(f, low: float, high: float, steps: int = 20, tolerance: float = 1e-4) -> float:
+    """Where ``f`` (monotonic) crosses zero between ``low`` and ``high`` (within ``tolerance`` of zero, or after
+    ``steps`` tries: false position, the Illinois way); without a crossing, the end nearer it."""
+    f_low, f_high = f(low), f(high)
+    if f_low * f_high > 0:
+        return low if abs(f_low) < abs(f_high) else high
+    for _ in range(steps):
+        if abs(f_high) <= tolerance or f_high == f_low:
+            break
+        middle = high - f_high * (high - low) / (f_high - f_low)
+        f_middle = f(middle)
+        if f_middle * f_high < 0:
+            low, f_low = high, f_high
+        else:
+            f_low *= 0.5  # (the end kept twice: halved, so that it gives way)
+        high, f_high = middle, f_middle
+    return high
+
+
+def _lowest_of(body: Body, pose: BodyPose, vertices: np.ndarray) -> float:
+    """The height of the lowest of the mesh ``vertices`` of ``pose``."""
+    return float(skin(body, solve(body, pose)[1], vertices)[:, 1].min())
+
+
+POINT = 58.0  # how far (degrees from flat) a kneeling foot points its toes down at most (as in settle)
+
+
+def _pointed(limb: Limb, angle: float) -> Limb:
+    """The leg ``limb`` (the top of the foot down) with the foot pointed ``angle`` degrees from flat, toes down."""
+    axis = _across(_cross(limb.forward, (0.0, -1.0, 0.0)), _unit(limb.forward))
+    if axis is None:
+        return limb
+    tilted = math.degrees(math.acos(min(1.0, max(-1.0, -float(_unit(limb.up)[1])))))  # already, from flat
+    r = axis_rotation(axis, angle - tilted)
+    return replace(limb, forward=tuple(r @ limb.forward), up=tuple(r @ limb.up))
+
+
+def _point_foot(body: Body, pose: BodyPose, name: str, height: float = 0.0015) -> Limb:
+    """The kneeling leg ``name`` of ``pose`` with its foot pointed (at most :data:`POINT` degrees) until the lowest
+    point of the foot is ``height`` above the floor, or as near as it gets."""
+    limb, foot = getattr(pose, name), body.foot_group(name.split("_")[0])
+    def gap(angle):
+        return _lowest_of(body, replace(pose, **{name: _pointed(limb, angle)}), foot) - height
+
+    return _pointed(limb, _bisect(gap, 0.0, POINT, 10))
+
+
+def _lower(body: Body, pose: BodyPose, groups) -> BodyPose:
+    """A kneeling ``pose`` moved down (the hips and the ankles together) until the lowest of ``groups`` touches."""
+    verts = skin(body, solve(body, pose)[1])
+    dy = -min(float(verts[group, 1].min()) for group in groups)
+    legs = {}
+    for name in ("left_leg", "right_leg"):
+        leg = getattr(pose, name)
+        legs[name] = replace(leg, target=(leg.target[0], leg.target[1] + dy, leg.target[2]))
+    return replace(pose, root=(pose.root[0], pose.root[1] + dy, pose.root[2]), **legs)
+
+
+def _twist_free(side: dict, margin: float) -> float:
+    """How close (metres) a bent leg's hip may come to its ankle: ``margin`` short of where the shin stands at right
+    angles to the line from the hip to the ankle, where :func:`solve` turns the calf over (a thigh longer than the
+    shin gets there with the knee bent deep, as when sitting on the heels)."""
+    return math.sqrt(max(side["thigh_length"] ** 2 - side["shin_length"] ** 2, 0.0)) + margin
+
+
+def _kneel_flat(body: Body, pose: BodyPose, tilt: bool = True) -> BodyPose:
+    """A kneeling ``pose`` (``knees_down``, the tops of the feet down) resting on the floor: each shin tilted (its
+    ankle raised or lowered) until the knee is as low as the hem of the trouser leg at the ankle (a knee bent deep
+    lifts off otherwise) -- or, if the foot cannot point far enough to reach the floor then, until the knee and the
+    foot share the gap -- and the shin that comes out higher lowered at the ankle to the other's level; then the hips
+    and with them the ankles as low as the knees and shins let them, and each foot pointed until it just touches the
+    floor too. The ankles rise only so far that the hips stay clear of their ankles (:func:`_twist_free`). ``tilt``:
+    keep the shins as they are. The feet end within :func:`settle`'s reach of the floor, so settling leaves the pose
+    as it is."""
+    changes = {}
+    if tilt:
+        _, glob = solve(body, pose)
+        legs = {}
+        for side, s in body.sides.items():
+            name, knee, foot = f"{side}_leg", body.knee_group(side), body.foot_group(side)
+            hem = np.setdiff1d(body.shin_group(side, within=0.12), knee)
+            leg = getattr(pose, name)
+            hip, ankle = glob[s["thigh"], :3, 3], np.asarray(leg.target, float)
+            flat, top = (hip[0] - ankle[0]) ** 2 + (hip[2] - ankle[2]) ** 2, 0.06
+            if _twist_free(s, 0.015) ** 2 > flat:  # the ankle rises at most until the hip comes that close
+                top = min(top, float(hip[1] - ankle[1]) - math.sqrt(_twist_free(s, 0.015) ** 2 - flat))
+
+            def raised(dy, leg=leg):
+                return replace(leg, target=(leg.target[0], leg.target[1] + dy, leg.target[2]))
+
+            def lows(dy, name=name, knee=knee, hem=hem, foot=foot, raised=raised):  # knee, hem, pointed foot
+                verts = skin(body, solve(body, replace(pose, **{name: _pointed(raised(dy), POINT)}))[1])
+                return float(verts[knee, 1].min()), float(verts[hem, 1].min()), float(verts[foot, 1].min())
+
+            def balance(dy, lows=lows):  # the knee over the hem, against (some of) the foot's gap
+                k, h, f = lows(dy)
+                return (k - h) - 0.6 * max(f - min(k, h), 0.0)
+
+            level = _bisect(balance, -0.03, top, 10)
+            legs[side] = (name, raised, lows, level, min(lows(level)[:2]))
+        floor = min(leg[4] for leg in legs.values())
+        for side, (name, raised, lows, level, height) in legs.items():
+            if height > floor + 0.001:  # the higher shin comes down to the other's level
+                level = _bisect(lambda dy, lows=lows: min(lows(dy)[:2]) - floor, -0.04, level, 10)
+            changes[name] = raised(level)
+    pose = _lower(body, replace(pose, **changes), [body.shin_group(side) for side in body.sides])
+    pose = replace(pose, **{f"{side}_leg": _point_foot(body, pose, f"{side}_leg") for side in body.sides})
+    resting = [np.concatenate([body.shin_group(side), body.foot_group(side)]) for side in body.sides]
+    return _lower(body, pose, resting)
+
+
+def _head_down(body: Body, pose: BodyPose, low: float = 30.0, high: float = 150.0, steps: int = 16) -> BodyPose:
+    """``pose`` with the pelvis pitched forward (``low`` to ``high`` degrees) until the lowest point of the head just
+    touches the floor."""
+    head = body.group(body.head)
+    pitch = _bisect(lambda p: _lowest_of(body, replace(pose, pelvis=(p, *pose.pelvis[1:])), head), low, high, steps)
+    return replace(pose, pelvis=(pitch, *pose.pelvis[1:]))
+
+
+def child(body: Body, rise: float = 0.42, spine: float = 10.0, head: float = 30.0, reach: float = 0.985) -> BodyPose:
+    """Balasana: kneeling with the knees hip-width apart, the shins and the tops of the feet on the floor, the hips
+    sitting back on the heels (the thighs ``rise`` of their length up from the knees, or as much more as a thigh
+    longer than the shin needs, see :func:`_twist_free`), the torso folded forward over the thighs with the back
+    gently rounded (``spine``), the head bent ``head`` degrees and the forehead on the floor, the arms stretched
+    forward on the floor shoulder-width apart (``reach`` of their length), palms down."""
+    stand = mountain(body)
+    knee_z = table_knees(body)
+    thigh = body.sides["left"]["thigh_length"]
+    legs = {f"{side}_leg": replace(_shin_down(body, side, knee_z), pole=(0.0, -0.2, 1.0))  # the knees point ahead
+            for side in body.sides}  # (pointing down, they would be about in line with the hips and the heels)
+    shin, clear = body.sides["left"]["shin_length"], _twist_free(body.sides["left"], 0.03)
+    while rise < 0.7 and math.hypot(rise * thigh - 0.06, math.sqrt(shin ** 2 - 0.06 ** 2) - thigh * math.sqrt(
+            1 - rise ** 2)) < clear:  # higher, so that the ankles can rise 6 cm and the hips stay clear of them
+        rise += 0.01
+    up = rise * thigh
+    probe = BodyPose((0.0, 0.06 + up + body.hip_drop, knee_z - math.sqrt(thigh ** 2 - up ** 2)), stand.left_arm,
+                     stand.right_arm, pelvis=(95.0, 0.0, 0.0), spine=(spine, 0.0, 0.0), head=(head, 0.0, 0.0),
+                     knees_down=True, flat_hands=True, **legs)
+    pose = _kneel_flat(body, _head_down(body, _kneel_flat(body, probe)), tilt=False)  # the knees down, the forehead
+    pitch = pose.pelvis[0]  # (the pelvis turning moves the hips a little: once more, closely)
+    pose = _kneel_flat(body, _head_down(body, pose, pitch - 3.0, pitch + 3.0, 8), tilt=False)
+    shrug = 14.0  # the arms overhead (along the floor)
+    pose = replace(pose, left_arm=replace(pose.left_arm, shrug=shrug), right_arm=replace(pose.right_arm, shrug=shrug))
+    _, glob = solve(body, pose)
+    arms = {}
+    for side, s in body.sides.items():
+        shoulder = glob[s["upper"], :3, 3]
+        x = s["sign"] * 0.5 * body.shoulder_width
+        length = reach * (s["upper_length"] + s["fore_length"])
+        ahead = math.sqrt(max(length ** 2 - (shoulder[1] - 0.05) ** 2 - (x - shoulder[0]) ** 2, 0.0))
+        arms[f"{side}_arm"] = Limb((x, 0.05, float(shoulder[2] + ahead)), (s["sign"] * 1.0, 0.6, 0.0), (0.0, 0.0, 1.0),
+                                   (0.0, 1.0, 0.0), contact=True, shrug=shrug)
+    return replace(pose, **arms)
+
+
+def _child_steps(body: Body) -> list[Step]:
+    """From standing down to hands and knees, then the hips sink back onto the heels while the hands slide a little
+    further forward, the torso folds over the thighs and the forehead comes to the floor; back the same way."""
+    down = _down_to_table(body)
+    table, pose = down[-1].pose, child(body)
+    _, glob = solve(body, table)
+    knees = 0.5 * (glob[body.sides["left"]["calf"], :3, 3] + glob[body.sides["right"]["calf"], :3, 3])
+    lift = {"left_arm": 0.03, "right_arm": 0.03, "pivot": tuple(knees)}  # the thighs swing round the knees
+    return down + [Step(pose, seconds=3.0, hold=9.0, lift=lift),
+                   Step(table, seconds=3.0, hold=1.0, breathe=False, lift=lift)] + _up_from(down)
+
+
 POSES: dict[str, PoseSpec] = {
     "yogi_squat": PoseSpec("Yogi Squat (Malasana)", _yogi_squat_steps, main=1, view=0.0),
     "cow": PoseSpec("Cow Pose (Bitilasana)", _cow_steps, main=5, view=90.0),
@@ -1705,4 +1886,5 @@ POSES: dict[str, PoseSpec] = {
     "forward_bend": PoseSpec("Standing Forward Bend (Uttanasana)", _forward_bend_steps, main=3, view=90.0),
     "plank": PoseSpec("Plank Pose (Phalakasana)", _plank_steps, main=8, view=90.0),
     "cat": PoseSpec("Cat Pose (Marjaryasana)", _cat_steps, main=5, view=90.0),
+    "child": PoseSpec("Child's Pose (Balasana)", _child_steps, main=5, view=90.0),
 }
