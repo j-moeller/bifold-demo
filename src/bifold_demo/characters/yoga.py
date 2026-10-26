@@ -1110,6 +1110,172 @@ def _goddess_steps(body: Body) -> list[Step]:
             Step(stand, seconds=1.3, lift={"left_leg": 0.08})]
 
 
+# -- standing on one leg -------------------------------------------------------------------------------
+
+# shares of the body's mass (after Dempster): trunk, head; per side upper arm, forearm and hand, thigh, shank and foot
+_MASS = {"trunk": 0.497, "head": 0.081, "upper": 0.028, "fore": 0.022, "thigh": 0.100, "shank": 0.061}
+
+
+def _centre_of_mass(body: Body, glob: np.ndarray) -> np.ndarray:
+    """About where the centre of mass of ``body`` posed by the global transforms ``glob`` is (body segments)."""
+    p = glob[:, :3, 3]
+    head_up = glob[body.head, :3, :3] @ body.rest_rot[body.head].T @ (0.0, 1.0, 0.0)
+    total = _MASS["trunk"] * 0.5 * (p[body.root] + p[body.neck]) + _MASS["head"] * (p[body.head] + 0.07 * head_up)
+    for s in body.sides.values():
+        total = total + _MASS["upper"] * 0.5 * (p[s["upper"]] + p[s["fore"]]) \
+            + _MASS["fore"] * (0.4 * p[s["fore"]] + 0.6 * p[s["hand"]]) \
+            + _MASS["thigh"] * (0.57 * p[s["thigh"]] + 0.43 * p[s["calf"]]) \
+            + _MASS["shank"] * (0.4 * p[s["calf"]] + 0.6 * p[s["foot"]])
+    return total / (_MASS["trunk"] + _MASS["head"] + 2 * sum(_MASS[k] for k in ("upper", "fore", "thigh", "shank")))
+
+
+def _sole_point(body: Body, side: str, along: float = 0.5) -> np.ndarray:
+    """A point ``(x, z)`` of the ``side`` foot standing where it stands at rest (and in :func:`mountain`): across the
+    middle, ``along`` of the way from the heel to the toes."""
+    foot = body.vertices[body.foot_group(side)][:, [0, 2]]
+    low, high = foot.min(axis=0), foot.max(axis=0)
+    return np.array([0.5 * (low[0] + high[0]), low[1] + along * (high[1] - low[1])])
+
+
+def _stand_on(body: Body, pose: BodyPose, reach: dict) -> BodyPose:
+    """``pose`` with the hips as high as the legs in ``reach`` (side -> ``(ankle, share)``) reach those ankle
+    points with that share of their length (the hips at the height the shortest of them allows)."""
+    _, glob = solve(body, pose)
+    rises = []
+    for side, (ankle, share) in reach.items():
+        s = body.sides[side]
+        hip = glob[s["thigh"], :3, 3]
+        ankle = np.asarray(ankle, float)
+        flat = (hip - ankle)[[0, 2]]
+        length = share * (s["thigh_length"] + s["shin_length"])
+        rises.append(ankle[1] + math.sqrt(max(length ** 2 - float(flat @ flat), 0.0)) - hip[1])
+    return replace(pose, root=(pose.root[0], pose.root[1] + min(rises), pose.root[2]))
+
+
+def _balanced(body: Body, build, side: str, along: float = 0.5, rounds: int = 3) -> BodyPose:
+    """The pose ``build(x, z)`` (the hips above ``(x, z)``) with ``x, z`` found so that the centre of mass is above
+    the ``side`` foot (``along`` of the way from the heel to the toes): standing on that foot."""
+    centre = _sole_point(body, side, along)
+    x, z = float(centre[0]), float(centre[1])
+    for _ in range(rounds):
+        com = _centre_of_mass(body, solve(body, build(x, z))[1])
+        x, z = x + float(centre[0] - com[0]), z + float(centre[1] - com[2])
+    return build(x, z)
+
+
+def _chest_frame(body: Body, pose: BodyPose) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(global transforms, the chest's turn from standing, the point between the shoulders)`` of ``pose``."""
+    _, glob = solve(body, pose)
+    chest = glob[body.spine[2], :3, :3] @ body.rest_rot[body.spine[2]].T
+    return glob, chest, 0.5 * (glob[body.sides["left"]["upper"], :3, 3] + glob[body.sides["right"]["upper"], :3, 3])
+
+
+def _palms_together(body: Body, pose: BodyPose, at, fingers=(0.0, 1.0, 0.2), elbows=(1.0, -0.6, -0.3),
+                    apart: float = 0.03) -> dict:
+    """Both hands palm to palm (the wrists ``apart`` metres either side) at ``at``, the fingers pointing towards
+    ``fingers`` and the left elbow out towards ``elbows`` (the right one mirrored); all in the chest's frame (right,
+    up, forward), ``at`` from the point between the shoulders."""
+    _, chest, shoulders = _chest_frame(body, pose)
+    arms = {}
+    for side, s in body.sides.items():
+        sign = s["sign"]
+        wrist = shoulders + chest @ (at[0] + sign * apart, at[1], at[2])
+        arms[f"{side}_arm"] = Limb(tuple(wrist), tuple(chest @ (sign * elbows[0], elbows[1], elbows[2])),
+                                   tuple(chest @ fingers), tuple(chest @ (sign * 1.0, 0.0, 0.0)))
+    return arms
+
+
+def _prayer(body: Body, pose: BodyPose) -> dict:
+    """Anjali mudra: the palms together in front of the breastbone, fingers up, elbows out to the sides."""
+    return _palms_together(body, pose, (0.0, -0.30 * body.torso, 0.24 * body.torso))
+
+
+def _palms_overhead(body: Body, pose: BodyPose, shrug: float = 14.0, reach: float = 0.99) -> dict:
+    """The arms overhead (``reach`` of their length), the palms together above the head, fingers up."""
+    pose = replace(pose, left_arm=replace(pose.left_arm, shrug=shrug), right_arm=replace(pose.right_arm, shrug=shrug))
+    glob, chest, shoulders = _chest_frame(body, pose)
+    left = body.sides["left"]
+    offset = chest.T @ (glob[left["upper"], :3, 3] - shoulders)  # the left shoulder, chest frame
+    apart, ahead = 0.03, 0.04
+    length = reach * (left["upper_length"] + left["fore_length"])
+    up = offset[1] + math.sqrt(max(length ** 2 - (offset[0] - apart) ** 2 - (offset[2] - ahead) ** 2, 0.0))
+    arms = _palms_together(body, pose, (0.0, up, ahead), fingers=(0.0, 1.0, 0.05), elbows=(1.0, 0.0, -0.5), apart=apart)
+    return {name: replace(limb, shrug=shrug) for name, limb in arms.items()}
+
+
+def _foot_on_leg(body: Body, pose: BodyPose, side: str, part: str, at: float, pole, gap: float = 0.004,
+                 toes_above: float | None = None, heel_below: float = 0.0, ahead: float = 0.15) -> Limb:
+    """The ``side`` leg bent, the sole of its foot against the inside of the other leg's ``part`` ("thigh" or
+    "calf"), the toes pointing down (and ``ahead`` forward): the ankle ``at`` of the way up that part (from its
+    lower end), the knee towards ``pole``; the foot as close as leaves ``gap`` metres between the sole and the other
+    leg's skin. ``toes_above``: instead of ``at``, the ankle as high as puts the tips of the toes that far above the
+    part's lower joint, but the top of the foot (the heel) at least ``heel_below`` metres below its upper joint."""
+    s = body.sides[side]
+    other = body.sides["right" if side == "left" else "left"]
+    lower, upper = (other["calf"], other["thigh"]) if part == "thigh" else (other["foot"], other["calf"])
+    _, glob = solve(body, pose)
+    a, b = glob[lower, :3, 3], glob[upper, :3, 3]
+    axis = _unit(b - a)
+    inward = _across((s["sign"], 0.0, 0.0), axis)  # from the other leg towards this one's side
+    third = _cross(axis, inward)  # forward for the right foot, back for the left
+    forward = _unit(-axis - ahead * s["sign"] * third)  # the toes down along the leg, a little ahead
+    foot_ids, leg_ids = body.foot_group(side), body.group(upper)  # (the thigh or calf bone moves that part)
+    distance = 0.2
+    limb = None
+    for _ in range(3 if toes_above is not None else 1):
+        centre = a + at * (b - a)
+        for _ in range(4):  # the foot translates with its ankle: a few steps close the gap
+            limb = Limb(tuple(centre + distance * inward), tuple(pole), tuple(forward), tuple(inward))
+            g = solve(body, replace(pose, **{f"{side}_leg": limb}))[1]
+            foot, leg = skin(body, g, foot_ids) - centre, skin(body, g, leg_ids) - centre
+            fa, ft, la, lt = foot @ axis, foot @ third, leg @ axis, leg @ third
+            behind = (la > fa.min()) & (la < fa.max()) & (lt > ft.min()) & (lt < ft.max())  # the leg under the sole
+            if not behind.any():  # a coarse mesh: the whole part
+                behind = np.ones(len(leg), bool)
+            distance -= float((foot @ inward).min() - (leg[behind] @ inward).max()) - gap
+        if toes_above is not None:  # the foot moves (about) with its ankle along the leg
+            low, high = centre[1] + foot[:, 1].min(), centre[1] + foot[:, 1].max()
+            at += min(float(a[1] + toes_above - low), float(b[1] - heel_below - high)) / float(b[1] - a[1])
+    return limb
+
+
+def _tree_steps(body: Body) -> list[Step]:
+    """Vrksasana: standing on the straight left leg, the sole of the right foot against the inner left thigh above
+    the knee (toes down), the right knee open to the side, the hips level; the palms together at the chest, then
+    overhead; the gaze forward. From standing: the weight shifts onto the left foot, the right foot comes to the
+    inner calf, slides up to the thigh, then the hands rise from the chest through in front of the face."""
+    stand = mountain(body)
+    standing = replace(stand.left_leg, pole=(0.0, 0.0, 1.0))
+
+    def on_left(arms, foot=None):
+        def build(x, z):
+            pose = replace(stand, root=(x, stand.root[1], z), left_leg=standing)
+            reach = {"left": (standing.target, ARM_STRAIGHT)}
+            if foot is None:  # both feet on the floor, the weight over the left one
+                reach["right"] = (stand.right_leg.target, ARM_STRAIGHT)
+            pose = _stand_on(body, pose, reach)
+            if foot is not None:
+                pose = replace(pose, right_leg=foot(pose))
+            return replace(pose, **arms(pose))
+        return _balanced(body, build, "left")
+
+    in_front = partial(_palms_together, body, at=(0.0, -0.55 * body.torso, 0.65 * body.torso), fingers=(0.0, 0.5, 1.0),
+                       elbows=(1.0, -0.8, -0.4), apart=0.05)  # on the way up from the sides, in front of the belly
+    face = partial(_palms_together, body, at=(0.0, 0.30 * body.torso, 0.62 * body.torso), fingers=(0.0, 1.0, 0.1),
+                   elbows=(1.0, -0.5, -0.2))  # on the way overhead, clear of the face
+    calf = partial(_foot_on_leg, body, side="right", part="calf", at=0.6, pole=(-1.0, -0.5, 0.8), gap=0.015)
+    thigh = partial(_foot_on_leg, body, side="right", part="thigh", at=0.5, pole=(-1.0, -0.4, 0.4), ahead=0.4,
+                    toes_above=0.06 * body.leg, heel_below=0.12 * body.leg)  # the toes above the knee
+    prayer, overhead = partial(_prayer, body), partial(_palms_overhead, body)
+    shift = on_left(in_front)
+    on_calf, on_thigh = on_left(prayer, calf), on_left(prayer, thigh)
+    rising, tree = on_left(face, thigh), on_left(overhead, thigh)
+    into = [Step(stand, hold=1.5, breathe=False), Step(shift, seconds=1.5),
+            Step(on_calf, seconds=1.5, lift={"right_leg": 0.04}), Step(on_thigh, seconds=1.2, hold=1.0, breathe=False),
+            Step(rising, seconds=0.8)]
+    return into + [Step(tree, seconds=1.0, hold=9.0), Step(rising, seconds=1.0)] + _up_from(into)
+
+
 POSES: dict[str, PoseSpec] = {
     "yogi_squat": PoseSpec("Yogi Squat (Malasana)", _yogi_squat_steps, main=1, view=0.0),
     "cow": PoseSpec("Cow Pose (Bitilasana)", _cow_steps, main=5, view=90.0),
@@ -1119,4 +1285,5 @@ POSES: dict[str, PoseSpec] = {
     "upward_dog": PoseSpec("Upward Facing Dog (Urdhva Mukha Svanasana)", _upward_dog_steps, main=6, view=90.0),
     "chair": PoseSpec("Chair Pose (Utkatasana)", _chair_steps, main=3, view=90.0),
     "goddess": PoseSpec("Goddess Pose (Utkata Konasana)", _goddess_steps, main=3, view=0.0),
+    "tree": PoseSpec("Tree Pose (Vrksasana)", _tree_steps, main=5, view=0.0),
 }

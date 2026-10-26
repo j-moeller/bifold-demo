@@ -54,6 +54,10 @@ work goes on. The people are avatars from the
   out wide and turn out, the arms open to the sides, then the knees bend out
   over the toes with the thighs close to level and the arms bend into cactus,
   palms forward.
+- `yoga_tree.jpg`: the Tree Pose (Vrksasana) clip: the weight shifts onto the
+  left foot, the right foot comes to the inner left calf and slides up to the
+  thigh (the sole against it, toes down, knee open to the side), and the palms
+  rise from prayer at the chest to together overhead.
 - `selection.jpg`: selection mode in the fair: three of the audience doing Cow
   Pose, Downward Facing Dog and Upward Facing Dog (keys 2, 4 and 6), each at a
   spot they walked to where the camera sees the whole pose; the selected one is

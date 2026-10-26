@@ -270,6 +270,38 @@ def test_upward_dog_lifts_the_chest_on_straight_arms(body):
     assert all(getattr(pose, limb).contact for limb in yoga.LIMBS)  # both hands and both feet on the floor
 
 
+def test_tree_stands_on_one_leg_with_the_foot_on_the_inner_thigh(body):
+    spec = yoga.POSES["tree"]
+    pose = yoga.settle(body, spec.steps(body)[spec.main].pose)
+    _, glob = yoga.solve(body, pose)
+    left, right = body.sides["left"], body.sides["right"]
+    assert _bend(glob, left["thigh"], left["calf"], left["foot"]) < 15.0  # the standing leg straight
+    assert _bend(glob, right["thigh"], right["calf"], right["foot"]) > 120.0  # the other one folded ...
+    hip, knee = glob[right["thigh"], :3, 3], glob[right["calf"], :3, 3]
+    assert hip[0] - knee[0] > 0.6 * right["thigh_length"]  # ... the knee open to the side
+    assert hip[1] - knee[1] > -0.02  # (not above the hip)
+    verts = yoga.skin(body, glob)
+    assert verts[body.foot_group("right"), 1].min() > glob[left["calf"], 1, 3]  # the whole foot above the knee
+    top, bottom = glob[left["thigh"], :3, 3], glob[left["calf"], :3, 3]  # the standing thigh
+    axis = (top - bottom) / np.linalg.norm(top - bottom)
+    ankle = glob[right["foot"], :3, 3] - bottom
+    assert 0.0 < ankle @ axis < np.linalg.norm(top - bottom)  # the foot beside the thigh ...
+    assert np.linalg.norm(ankle - (ankle @ axis) * axis) < 0.2  # ... against it
+    foot = glob[right["foot"], :3, :3] @ body.rest_rot[right["foot"]].T
+    assert (foot @ right["foot_forward"])[1] < -0.8  # the toes down
+    assert (foot @ (0.0, 1.0, 0.0))[0] < -0.8  # the sole facing the thigh (the top of the foot away from it)
+    assert abs(glob[left["thigh"], 1, 3] - glob[right["thigh"], 1, 3]) < 0.005  # the hips level
+    hands = [glob[s["hand"], :3, 3] for s in (left, right)]
+    assert np.linalg.norm(hands[0] - hands[1]) < 0.1  # palms together ...
+    assert min(h[1] for h in hands) > glob[body.head, 1, 3] + 0.2  # ... overhead
+    sole = yoga._sole_point(body, "left")
+    com = yoga._centre_of_mass(body, glob)
+    assert abs(com[0] - sole[0]) < 0.01 and abs(com[2] - sole[1]) < 0.01  # balanced over the standing foot
+    gaze = glob[body.head, :3, :3] @ body.rest_rot[body.head].T @ (0.0, 0.0, 1.0)
+    assert gaze[2] > 0.9  # looking forward
+    assert pose.left_leg.contact and not (pose.right_leg.contact or pose.left_arm.contact or pose.right_arm.contact)
+
+
 def test_yogi_squat_is_deep_with_wide_knees_and_palms_together(body):
     pose = yoga.settle(body, yoga.POSES["yogi_squat"].steps(body)[1].pose)
     _, glob = yoga.solve(body, pose)

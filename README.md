@@ -311,6 +311,8 @@ For a later demo that recognises yoga poses, [`characters/yoga.py`](src/bifold_d
 animates the 3D people through yoga poses. Each pose is a looping clip: from a
 starting pose into the pose, holding it for two breaths, and back. In the demo,
 select a person with `Y` and press the pose's key (see [Controls](#controls)).
+The yoga menus hold eight poses each: `↓ 1` means `↓` once (to the second yoga
+menu), then `1`.
 
 | Key | Pose | `yoga_clip(model, ...)` | Starts from |
 |-----|------|-------------------------|-------------|
@@ -322,6 +324,7 @@ select a person with `Y` and press the pose's key (see [Controls](#controls)).
 | `6` | Upward Facing Dog (Urdhva Mukha Svanasana) | `"upward_dog"` | standing, down to hands and knees, a step back to plank, the hips lower |
 | `7` | Chair Pose (Utkatasana) | `"chair"` | standing, the arms sweep out and up overhead, the knees bend and the hips sit back |
 | `8` | Goddess Pose (Utkata Konasana) | `"goddess"` | standing, the feet step out wide one at a time, the arms open, the knees bend into cactus arms |
+| `↓ 1` | Tree Pose (Vrksasana) | `"tree"` | standing, the weight shifts onto the left foot, the right foot comes to the inner calf and slides up to the thigh, the hands rise from prayer at the chest to overhead |
 
 ```python
 from bifold_demo.characters.character import Character
