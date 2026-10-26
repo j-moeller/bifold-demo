@@ -3,9 +3,11 @@
 The demo screen shows what the camera sees, so the audience of our exhibit (``scenes.fair``) sees itself like in a
 mirror, and now and then someone plays with it, the way people do: they wave at the camera, make faces at it, step to
 one side and the other to watch their picture follow, lean from side to side, lean in to peer at it, or walk up closer
-and back again. :data:`MOVES` names the six moves; :func:`play_along` gives them to people who watch the camera::
+and back again. :data:`MOVES` names the six moves; :func:`play_along` gives them to people who watch the camera, and
+:func:`join` to one more person among people who play already (someone taking over a place in the audience)::
 
     plays = play_along(audience, camera=(0, 1.6, 6), others=everyone_else, period=360.0, rng=5)
+    join(newcomer, camera=(0, 1.6, 6), players=audience, others=everyone_else, period=360.0, rng=6)
 
 Plan. :func:`plan_camera_play` decides for everyone together, once, who does which move when: a pure function of the
 scene time that repeats every ``period`` (the fair's ``LOOP_PERIOD``, so the hall still repeats), from a seeded random
@@ -998,27 +1000,33 @@ class _Room:
     camera: tuple = (0.0, 0.0)  # (x, z)
 
 
-def plan_camera_play(players, camera, *, others=(), period: float = 360.0, rng=0, moves=MOVES,
+def plan_camera_play(players, camera, *, others=(), planned=(), period: float = 360.0, rng=0, moves=MOVES,
                      share: float = PLAY_SHARE, step: float = 0.1, place=None) -> list[list[Move]]:
     """The moves of each of ``players`` (:class:`Player`) over one ``period`` of scene time (see the module docs).
 
     ``others``: behaviours of everyone else, whose positions the moves keep clear of (``CLEARANCE``, ``REACH``);
-    ``moves``: the kinds to choose from (names of :data:`MOVES`); ``share``: the share of the watching time an
-    ordinary person plays; ``place``: where the moves may take people, ``(x, z) -> bool`` (where their feet stay in
-    the picture, say: a move never takes someone out of it, nor nearer the camera when they are). Deterministic for a
-    seed.
+    ``planned``: ``(player, moves)`` of people whose moves are planned already (by an earlier plan, with the
+    player's behaviour without them): the new moves keep clear of theirs as of each other's; ``moves``: the kinds to
+    choose from (names of :data:`MOVES`); ``share``: the share of the watching time an ordinary person plays;
+    ``place``: where the moves may take people, ``(x, z) -> bool`` (where their feet stay in the picture, say: a move
+    never takes someone out of it, nor nearer the camera when they are). Deterministic for a seed.
     """
     unknown = [m for m in moves if m not in _MAKERS]
     if unknown:
         raise ValueError(f"unknown camera play moves {unknown} (the moves are {', '.join(MOVES)})")
     rng, moves = _as_random(rng), list(moves)
+    fixed = list(planned)
     times = np.arange(0.0, period, step)
-    tracks = np.stack([_track(p.behaviour, times) for p in players] + [_track(b, times) for b in others]) \
-        if players else np.zeros((0, len(times), 2))
+    behaviours = [p.behaviour for p, _ in fixed] + [p.behaviour for p in players] + list(others)
+    tracks = np.stack([_track(b, times) for b in behaviours]) if players else np.zeros((0, len(times), 2))
     cam = np.asarray(camera, float).ravel()
-    room = _Room(times, step, tracks, np.full((len(players), len(times), 5, 2), np.nan), place, (cam[0], cam[2]))
+    room = _Room(times, step, tracks, np.full((len(fixed) + len(players), len(times), 5, 2), np.nan), place,
+                 (cam[0], cam[2]))
+    if players:
+        for i, (player, plan) in enumerate(fixed):
+            _occupy(room, i, plan, player.figure)
     plans = []
-    for i, player in enumerate(players):
+    for i, player in enumerate(players, start=len(fixed)):
         prng = random.Random(rng.random())
         playful = _playfulness(player.age, prng)
         person = _person_for(player.figure, prng, playful, player.library, player.sex)
@@ -1043,14 +1051,20 @@ def plan_camera_play(players, camera, *, others=(), period: float = 360.0, rng=0
                 last, budget, played = move.kind, budget - 1, played + move.duration
                 gap = 5.5 * (1.0 - mine) / mine
                 t = move.end + (prng.uniform(4.0, 9.0) if visit else max(2.5, gap * prng.uniform(0.4, 1.6)))
-        for move in plan:  # now the others keep clear of these moves
-            k0, k1 = _span(move, times, step)
-            u = times[k0:k1] - move.start
-            room.reach[i, k0:k1] = tracks[i, k0:k1, None] + _turned(move, _sampled(reach_points(move, person.fig), u))
-            if move.travels:
-                tracks[i, k0:k1] += _world(move, u)
+        _occupy(room, i, plan, person.fig)  # now the others keep clear of these moves
         plans.append(plan)
     return plans
+
+
+def _occupy(room: _Room, i: int, plan, fig: Figure) -> None:
+    """Put person ``i``'s moves into ``room``: where their elbows, hands and head go, and where they travel to."""
+    times, step, tracks = room.times, room.step, room.tracks
+    for move in plan:
+        k0, k1 = _span(move, times, step)
+        u = times[k0:k1] - move.start
+        room.reach[i, k0:k1] = tracks[i, k0:k1, None] + _turned(move, _sampled(reach_points(move, fig), u))
+        if move.travels:
+            tracks[i, k0:k1] += _world(move, u)
 
 
 def _sampled(rows: np.ndarray, u: np.ndarray) -> np.ndarray:
@@ -1627,6 +1641,37 @@ def play_along(people, camera, *, others=(), period: float = 360.0, rng=0, moves
         person.pose_adjusters.append(PlayPose(play, person.skinned_model))
         plays.append(play)
     return plays
+
+
+def join(person, camera, *, players=(), others=(), period: float = 360.0, rng=0, moves=MOVES,
+         share: float = PLAY_SHARE, place=None) -> CameraPlay | None:
+    """Let ``person`` (a :class:`~.character.Character`) play with the camera among ``players`` who play already
+    (characters whose behaviour is, or wraps, a :class:`CameraPlay`; theirs stays as it is): plan its moves clear of
+    theirs and of ``others`` (characters or behaviours), wrap its behaviour and give it a :class:`PlayPose`, like
+    :func:`play_along` does for everyone at once (and with the same exceptions: ``None`` when it cannot play)."""
+    from .character import Character
+
+    behaviour = getattr(person, "behaviour", None)
+    if not (isinstance(person, Character) and behaviour is not None and hasattr(behaviour, "watching")
+            and supports(person.skinned_model) and _repeats(behaviour, period)):
+        return None
+    planned, rest = [], []
+    for other in players:
+        play = find_play(getattr(other, "behaviour", None))
+        if play is None:
+            rest.append(other)
+            continue
+        style = getattr(play.inner, "style", None)
+        player = Player(play.inner, figure(other.skinned_model), getattr(play.inner, "library", None),
+                        getattr(style, "sex", "male"), getattr(style, "age", "adult"))
+        planned.append((player, play.moves))
+    rest = [getattr(o, "behaviour", o) for o in [*rest, *others]]
+    plan = plan_camera_play([Player.of(person)], camera, others=[b for b in rest if b is not None], planned=planned,
+                            period=period, rng=rng, moves=moves, share=share, place=place)[0]
+    play = CameraPlay(behaviour, plan, camera, period)
+    person.behaviour = play
+    person.pose_adjusters.append(PlayPose(play, person.skinned_model))
+    return play
 
 
 def _repeats(behaviour, period: float, step: float = 0.5) -> bool:

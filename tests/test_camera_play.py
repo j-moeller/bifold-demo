@@ -424,6 +424,33 @@ def test_moves_keep_the_arms_off_the_others(biped, planned):
     assert len(near) and np.all((near[:, 0] >= 0.3) | (near[:, 0] >= near[:, 1] - 0.02)), near[:, 0].min()
 
 
+def test_join_plans_one_more_player_around_those_who_play(biped, planned):
+    """Someone taking over a place in the audience (a created character) joins in: their moves are planned around
+    everyone's, the others' plays stay as they are."""
+    players, others, plans = planned
+    people = []
+    for player, plan in zip(players[:4], plans[:4]):
+        play = cp.CameraPlay(player.behaviour, plan, CAMERA, 360.0)
+        people.append(Character(biped, behaviour=play, name=f"p{len(people)}"))
+        people[-1].pose_adjusters.append(cp.PlayPose(play, biped))
+    newcomer = Character(biped, behaviour=players[4].behaviour, name="newcomer")
+    play = cp.join(newcomer, CAMERA, players=people, others=others, period=360.0, rng=3)
+    assert play is newcomer.behaviour and play.inner is players[4].behaviour and play.moves
+    assert [a.play for a in newcomer.pose_adjusters if isinstance(a, cp.PlayPose)] == [play]
+    assert [p.behaviour.moves for p in people] == plans[:4]  # theirs stay
+    times = np.arange(0.0, 360.0, 0.1)
+    mine, still = play.positions(times), play.inner.positions(times)
+    for other in [p.behaviour for p in people] + list(others):
+        theirs = other.positions(times)
+        d, d0 = np.hypot(*(mine - theirs).T), np.hypot(*(still - theirs).T)
+        d, d0 = np.where(np.isnan(d), np.inf, d), np.where(np.isnan(d0), np.inf, d0)
+        assert np.all((d >= cp.CLEARANCE) | (d >= d0 - 1e-3)), d.min()
+    near = _reaching(biped, [play], [newcomer], [p.behaviour for p in people] + list(others))
+    assert len(near) and np.all((near[:, 0] >= 0.3) | (near[:, 0] >= near[:, 1] - 0.02)), near[:, 0].min()
+    cutout = Character(biped, behaviour=None, name="still")
+    assert cp.join(cutout, CAMERA, players=people) is None  # nothing to play with
+
+
 def test_play_along_skips_who_cannot_play(biped):
     from test_behaviour import synthetic_model
 
