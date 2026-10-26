@@ -9,6 +9,11 @@
 It is reviewed. The fix was interrupted while partly done: uncommitted edits in 9 files plus a new module (see the end
 of this page). The fix starts again from those edits. The commits are not on the branch yet.
 
+**Update, after the pause.** The resumed fix finished from those edits in one commit, `f88536b` "Created characters
+in the fair: unseen swaps, a paced worker, bad looks reported". It reports every review finding as fixed (see [the fix,
+finished](#the-fix-finished)). Before it reaches the branch, four independent checkers test the fixed step: what a
+viewer sees, robustness, frame timing, and regressions. A further fix and a recheck follow if they find anything.
+
 ## What it builds
 
 Characters saved in `created/` (by `characters/created.py`, already on the branch) now appear in the fair. Each one
@@ -205,6 +210,39 @@ fair.py and both test files):
 - **`fit_in`'s result** is reported, and `planned_behaviour` moves to `fair`, so `join` no longer reads the live
   Performer.
 - The docstrings now say honestly how closely rebuilt places follow the old timing.
+
+## The fix, finished
+
+Commit `f88536b` keeps the partial edits above and adds:
+
+- **Pacing:**
+  - pause points in the behaviour's entry loops and in `_plan`. The longest stretch of work without a pause drops from
+    about 23 ms to 10-16 ms; the numpy-only stretches that remain release the GIL;
+  - `Behaviour.positions` is vectorised per piece.
+- **Bad looks:**
+  - `save()` refuses item looks of the wrong kind before writing anything, as `load()` does;
+  - a changed character's textures are made on the worker;
+  - a failure on the main thread leaves the person as they were and is reported once.
+- **The staged swap rule, simulated:** over 36 ready times for every place, with a grown-up of the other sex and a
+  child:
+  - places whose loop length matches always swapped unseen;
+  - the largest jump taken was 2.0 m (the review had measured a median of 15.7 m in walker6);
+  - in visitors' places an unseen moment came within 13-26 s.
+- **Tests:**
+  - a real-avatar test rebuilds every visitor's place;
+  - tests for the swap cost, a loop of another length, a freed place, joined notices and the pacing.
+
+Checks reported:
+
+- 439 passed, 44 skipped without the real avatars;
+- 220 passed, 1 skipped for the related modules with them;
+- no new ruff findings.
+
+What the fixer leaves as designed:
+
+- a character whose `character.json` becomes unreadable leaves the fair instead of keeping its last good version;
+- in places with a loop of another length (a child's avatar, walker6, wanderer2), 7-31 % of ready times still end in
+  a jump of up to 2 m, or a pop, in view after 60 s.
 
 ## Open issues the builder admits
 

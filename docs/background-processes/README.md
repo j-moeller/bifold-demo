@@ -22,7 +22,7 @@ describe the code itself.
 | B: character creator | B0 literature review | on the branch (`e494da2`) | [docs/research/outfit_textures.md](../research/outfit_textures.md) |
 | B | **B1 garment regions, fills, patterns, presets** (stages 0-1) | implemented (`3b1be67`, `17a2137`) and reviewed; the fix was interrupted, partly done | [B1-outfit-regions-and-fills.md](B1-outfit-regions-and-fills.md) |
 | C: saved characters in the scene | C1 the saved format and the book | on the branch (`5054840`) | `src/bifold_demo/characters/created.py` |
-| C | **C2 created characters take over places in the fair** | implemented (`a9ea9c2`, `58749f6`, `ba58d8c`) and reviewed; the fix was interrupted, partly done | [C2-created-characters-in-the-fair.md](C2-created-characters-in-the-fair.md) |
+| C | **C2 created characters take over places in the fair** | implemented (`a9ea9c2`, `58749f6`, `ba58d8c`) and reviewed; the fix was interrupted, partly done. Since then the fix is finished (`f88536b`) and four independent checkers are testing it | [C2-created-characters-in-the-fair.md](C2-created-characters-in-the-fair.md) |
 
 [environment-and-findings.md](environment-and-findings.md) covers what all steps share: the machine, what can and
 cannot be downloaded here, the safety and privacy rules, and findings that matter across components.
