@@ -325,6 +325,7 @@ menu), then `1`.
 | `7` | Chair Pose (Utkatasana) | `"chair"` | standing, the arms sweep out and up overhead, the knees bend and the hips sit back |
 | `8` | Goddess Pose (Utkata Konasana) | `"goddess"` | standing, the feet step out wide one at a time, the arms open, the knees bend into cactus arms |
 | `↓ 1` | Tree Pose (Vrksasana) | `"tree"` | standing, the weight shifts onto the left foot, the right foot comes to the inner calf and slides up to the thigh, the hands rise from prayer at the chest to overhead |
+| `↓ 2` | Warrior 3 (Virabhadrasana III) | `"warrior_3"` | standing, the weight shifts onto the left foot, the body tips forward as the right leg lifts back and the arms swing forward |
 
 ```python
 from bifold_demo.characters.character import Character

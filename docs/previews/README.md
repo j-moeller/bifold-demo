@@ -58,6 +58,10 @@ work goes on. The people are avatars from the
   left foot, the right foot comes to the inner left calf and slides up to the
   thigh (the sole against it, toes down, knee open to the side), and the palms
   rise from prayer at the chest to together overhead.
+- `yoga_warrior_3.jpg`: the Warrior 3 (Virabhadrasana III) clip: balancing on
+  the straight left leg, the body tips forward like a seesaw as the right leg
+  lifts straight back (the heel peeling off first) and the arms swing forward,
+  into one level line from the hands to the heel.
 - `selection.jpg`: selection mode in the fair: three of the audience doing Cow
   Pose, Downward Facing Dog and Upward Facing Dog (keys 2, 4 and 6), each at a
   spot they walked to where the camera sees the whole pose; the selected one is

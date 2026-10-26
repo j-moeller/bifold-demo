@@ -1112,6 +1112,10 @@ def _goddess_steps(body: Body) -> list[Step]:
 
 # -- standing on one leg -------------------------------------------------------------------------------
 
+FAR = 3.0  # a limb held straight reaches for a point this many limb lengths away (out of reach, the solver keeps it
+# straight), so that it stays straight while it swings from one such point to another: the straight line between
+# them never comes within its reach
+
 # shares of the body's mass (after Dempster): trunk, head; per side upper arm, forearm and hand, thigh, shank and foot
 _MASS = {"trunk": 0.497, "head": 0.081, "upper": 0.028, "fore": 0.022, "thigh": 0.100, "shank": 0.061}
 
@@ -1150,6 +1154,11 @@ def _stand_on(body: Body, pose: BodyPose, reach: dict) -> BodyPose:
         length = share * (s["thigh_length"] + s["shin_length"])
         rises.append(ankle[1] + math.sqrt(max(length ** 2 - float(flat @ flat), 0.0)) - hip[1])
     return replace(pose, root=(pose.root[0], pose.root[1] + min(rises), pose.root[2]))
+
+
+def _reach_far(start, direction, length: float) -> tuple:
+    """The target of a limb from ``start`` held straight along ``direction`` (:data:`FAR`)."""
+    return tuple(np.asarray(start, float) + FAR * length * _unit(direction))
 
 
 def _balanced(body: Body, build, side: str, along: float = 0.5, rounds: int = 3) -> BodyPose:
@@ -1276,6 +1285,50 @@ def _tree_steps(body: Body) -> list[Step]:
     return into + [Step(tree, seconds=1.0, hold=9.0), Step(rising, seconds=1.0)] + _up_from(into)
 
 
+def _warrior3_steps(body: Body) -> list[Step]:
+    """Virabhadrasana III: balancing on the straight left leg, the torso hinged forward to level, the right leg
+    lifted straight back in line with it (hips square, toes down), the arms reaching forward alongside the ears:
+    one horizontal line from the hands to the heel, the gaze down and a little ahead. From standing: the weight
+    shifts onto the left foot, then the body tips forward like a seesaw as the right leg rises."""
+    stand = mountain(body)
+    standing = replace(stand.left_leg, pole=(0.0, 0.0, 1.0))
+    right = body.sides["right"]
+    leg_length = right["thigh_length"] + right["shin_length"]
+    arm_length = right["upper_length"] + right["fore_length"]
+
+    def build(hinge, x, z):
+        base = replace(stand, root=(x, stand.root[1], z), left_leg=standing, pelvis=(hinge, 0.0, 0.0),
+                       spine=(-3.0 * hinge / 90.0, 0.0, 0.0), head=(-22.0 * hinge / 90.0, 0.0, 0.0))
+        pelvis = turn(*base.pelvis)
+        reach = {"left": (standing.target, ARM_STRAIGHT)}
+        if hinge == 0.0:  # the right foot still on the floor where it stands
+            reach["right"] = (stand.right_leg.target, ARM_STRAIGHT)
+        pose = _stand_on(body, base, reach)
+        glob, chest, _ = _chest_frame(body, pose)
+        hip = glob[right["thigh"], :3, 3]
+        # the right leg straight back in line with the pelvis (from the foot on the floor, the knee bends a little
+        # while the heel peels off and straightens as the target moves out of reach)
+        back = stand.right_leg if hinge == 0.0 else \
+            Limb(_reach_far(hip, pelvis @ (0.0, -1.0, 0.0), leg_length), tuple(pelvis @ (0.0, 0.0, 1.0)),
+                 tuple(pelvis @ right["foot_forward"]), tuple(pelvis @ (0.0, 1.0, 0.0)))
+        shrug = 10.0 * hinge / 90.0
+        arms = {}
+        for side, s in body.sides.items():
+            sign = s["sign"]
+            if hinge == 0.0:  # hanging straight down by the sides, the palms facing the thighs
+                direction, pole, back_of_hand = (sign * 0.18, -1.0, 0.02), (sign * 0.3, 0.0, -1.0), (sign, 0.0, -0.1)
+            else:  # reaching forward in line with the chest, the palms facing each other
+                direction, pole, back_of_hand = chest @ (0, 1, 0), chest @ (sign, 0.0, -0.5), chest @ (sign, 0, 0)
+            arms[f"{side}_arm"] = Limb(_reach_far(glob[s["upper"], :3, 3], direction, arm_length), tuple(pole),
+                                       tuple(_unit(direction)), tuple(back_of_hand), shrug=shrug)
+        return replace(pose, right_leg=back, **arms)
+
+    shift = _balanced(body, partial(build, 0.0), "left")
+    warrior = _balanced(body, partial(build, 90.0), "left", along=0.72)  # the weight on the ball of the foot
+    return [Step(stand, hold=1.5, breathe=False), Step(shift, seconds=1.5), Step(warrior, seconds=3.0, hold=9.0),
+            Step(shift, seconds=3.0), Step(stand, seconds=1.5)]
+
+
 POSES: dict[str, PoseSpec] = {
     "yogi_squat": PoseSpec("Yogi Squat (Malasana)", _yogi_squat_steps, main=1, view=0.0),
     "cow": PoseSpec("Cow Pose (Bitilasana)", _cow_steps, main=5, view=90.0),
@@ -1286,4 +1339,5 @@ POSES: dict[str, PoseSpec] = {
     "chair": PoseSpec("Chair Pose (Utkatasana)", _chair_steps, main=3, view=90.0),
     "goddess": PoseSpec("Goddess Pose (Utkata Konasana)", _goddess_steps, main=3, view=0.0),
     "tree": PoseSpec("Tree Pose (Vrksasana)", _tree_steps, main=5, view=0.0),
+    "warrior_3": PoseSpec("Warrior 3 (Virabhadrasana III)", _warrior3_steps, main=2, view=90.0),
 }

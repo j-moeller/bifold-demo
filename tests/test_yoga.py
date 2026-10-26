@@ -302,6 +302,37 @@ def test_tree_stands_on_one_leg_with_the_foot_on_the_inner_thigh(body):
     assert pose.left_leg.contact and not (pose.right_leg.contact or pose.left_arm.contact or pose.right_arm.contact)
 
 
+def test_warrior_3_is_a_level_t_on_one_leg(body):
+    spec = yoga.POSES["warrior_3"]
+    pose = yoga.settle(body, spec.steps(body)[spec.main].pose)
+    _, glob = yoga.solve(body, pose)
+    left, right = body.sides["left"], body.sides["right"]
+    for s in (left, right):
+        assert _bend(glob, s["thigh"], s["calf"], s["foot"]) < 15.0  # straight legs
+        assert _bend(glob, s["upper"], s["fore"], s["hand"]) < 15.0  # and arms
+    foot, hip = glob[left["foot"], :3, 3], glob[left["thigh"], :3, 3]
+    assert abs(math.degrees(math.atan2(foot[2] - hip[2], hip[1] - foot[1]))) < 12.0  # the standing leg upright
+    hips = glob[body.root, :3, 3]
+    shoulders = 0.5 * (glob[left["upper"], :3, 3] + glob[right["upper"], :3, 3])
+    heel = glob[right["foot"], :3, 3]
+    assert shoulders[2] - hips[2] > 0.8 * body.torso and hips[2] - heel[2] > 0.9 * body.leg  # forward and back ...
+    wrists = [glob[s["hand"], :3, 3] for s in (left, right)]
+    assert all(w[2] - shoulders[2] > 0.9 * body.arm for w in wrists)  # ... the arms reaching ahead
+    heights = [hips[1], shoulders[1], heel[1]] + [w[1] for w in wrists]
+    assert max(heights) - min(heights) < 0.15  # one level line from the hands to the heel
+    assert abs(glob[left["thigh"], 1, 3] - glob[right["thigh"], 1, 3]) < 0.005  # the hips square to the floor
+    head = glob[body.head, :3, 3]
+    assert min(w[0] for w in wrists) < head[0] < max(w[0] for w in wrists)  # the head between the arms
+    toes = glob[right["foot"], :3, :3] @ right["foot_forward"]
+    assert toes[1] < -0.9  # the back foot's toes point down
+    gaze = glob[body.head, :3, :3] @ body.rest_rot[body.head].T @ (0.0, 0.0, 1.0)
+    assert gaze[1] < -0.5 and gaze[2] > 0.2  # looking down and a little ahead
+    com = yoga._centre_of_mass(body, glob)
+    sole = yoga._sole_point(body, "left", 0.72)
+    assert abs(com[0] - sole[0]) < 0.01 and abs(com[2] - sole[1]) < 0.01  # balanced over the standing foot
+    assert pose.left_leg.contact and not (pose.right_leg.contact or pose.left_arm.contact or pose.right_arm.contact)
+
+
 def test_yogi_squat_is_deep_with_wide_knees_and_palms_together(body):
     pose = yoga.settle(body, yoga.POSES["yogi_squat"].steps(body)[1].pose)
     _, glob = yoga.solve(body, pose)
