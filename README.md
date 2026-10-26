@@ -203,6 +203,34 @@ only partly. Change the targets with `sample_crowd(..., weights={...},
 older_from_age=...)`. Children are rated unusual at a trade fair in the
 catalog, but the conference set includes them anyway.
 
+## Yoga poses
+
+For a later demo that recognises yoga poses, [`characters/yoga.py`](src/bifold_demo/characters/yoga.py)
+animates the 3D people through yoga poses. Each pose is a looping clip: from a
+starting pose into the pose, holding it for two breaths, and back.
+
+| Pose | `yoga_clip(model, ...)` | Starts from |
+|------|-------------------------|-------------|
+| Yogi Squat (Malasana) | `"yogi_squat"` | standing |
+
+```python
+from bifold_demo.characters.character import Character
+from bifold_demo.characters.library import CharacterLibrary
+from bifold_demo.characters.model import CharacterState, Layer
+from bifold_demo.characters.yoga import yoga_clip
+
+model = CharacterLibrary.shared().load("Female_Adult_01")
+clip = yoga_clip(model, "yogi_squat")      # ~15 s; clip.metadata["hold"] = when the pose is held
+person = Character(model, behaviour=lambda t: CharacterState((0, 0, 0), 0.0, [Layer(clip, t)]))
+```
+
+The poses are not motion capture. They are described in body terms: where the
+hips are, how the pelvis, spine and head turn, where each hand and foot goes and
+which way the elbows and knees point. A solver turns that into bone rotations
+for each avatar's own skeleton, so the same pose fits a child and a tall man,
+and the hands, feet and knees that rest on the floor touch it exactly (checked
+on the skinned mesh).
+
 ## Generating 2D people
 
 The 2D alternative, used when no 3D people are prepared: `bifold-people`
@@ -445,6 +473,7 @@ src/bifold_demo/
   display/     overlay.py (boxes, HUD), window.py                      ← module 3: on screen
   characters/  model.py (skeleton, clips, posing), fbx.py + fbx_convert.py (FBX reader),
                character.py (skinned scene object), behaviour.py, crowd.py,
+               yoga.py (yoga pose clips),
                rocketbox.py + library.py + cli.py (bifold-characters),
                rocketbox_catalog.json (avatar labels)                   ← 3D people
   people/      prompts.py, generator.py (text-to-image), cutout.py,

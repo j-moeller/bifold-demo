@@ -31,3 +31,6 @@ work goes on. The people are avatars from the
 - `fair_audience.jpg`: the audience of our exhibit (at 0, 20, 40 and 60 s):
   people standing in a half circle in front of the camera, facing it and
   looking at it, always at least three, with visitors joining and leaving.
+- `yoga_yogi_squat.jpg`: the Yogi Squat (Malasana) clip on two avatars: the
+  held pose from five sides, and the sequence from standing into the squat and
+  back.

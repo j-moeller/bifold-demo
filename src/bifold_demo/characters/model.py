@@ -57,21 +57,28 @@ def quat_from_matrix(m: np.ndarray) -> np.ndarray:
     m = m / np.linalg.norm(m, axis=-2, keepdims=True)  # normalise columns (drops scale)
     shape = m.shape[:-2]
     m = m.reshape(-1, 3, 3)
+    m00, m11, m22 = m[:, 0, 0], m[:, 1, 1], m[:, 2, 2]
+    trace = m00 + m11 + m22
+    # Shepperd's method: the branch with the largest diagonal term is numerically safest
+    cases = [
+        (trace, lambda s: [(m[:, 2, 1] - m[:, 1, 2]) / s, (m[:, 0, 2] - m[:, 2, 0]) / s, (m[:, 1, 0] - m[:, 0, 1]) / s,
+                           s / 4]),
+        (1 + m00 - m11 - m22, lambda s: [s / 4, (m[:, 0, 1] + m[:, 1, 0]) / s, (m[:, 0, 2] + m[:, 2, 0]) / s,
+                                         (m[:, 2, 1] - m[:, 1, 2]) / s]),
+        (1 + m11 - m00 - m22, lambda s: [(m[:, 0, 1] + m[:, 1, 0]) / s, s / 4, (m[:, 1, 2] + m[:, 2, 1]) / s,
+                                         (m[:, 0, 2] - m[:, 2, 0]) / s]),
+        (1 + m22 - m00 - m11, lambda s: [(m[:, 0, 2] + m[:, 2, 0]) / s, (m[:, 1, 2] + m[:, 2, 1]) / s, s / 4,
+                                         (m[:, 1, 0] - m[:, 0, 1]) / s]),
+    ]
+    trace_first = trace > 0
+    x_first = ~trace_first & (m00 > m11) & (m00 > m22)
+    y_first = ~trace_first & ~x_first & (m11 > m22)
+    z_first = ~(trace_first | x_first | y_first)
     q = np.empty((len(m), 4))
-    trace = m[:, 0, 0] + m[:, 1, 1] + m[:, 2, 2]
-    for i, r in enumerate(m):
-        if trace[i] > 0:
-            s = 2 * np.sqrt(trace[i] + 1)
-            q[i] = [(r[2, 1] - r[1, 2]) / s, (r[0, 2] - r[2, 0]) / s, (r[1, 0] - r[0, 1]) / s, s / 4]
-        elif r[0, 0] > r[1, 1] and r[0, 0] > r[2, 2]:
-            s = 2 * np.sqrt(1 + r[0, 0] - r[1, 1] - r[2, 2])
-            q[i] = [s / 4, (r[0, 1] + r[1, 0]) / s, (r[0, 2] + r[2, 0]) / s, (r[2, 1] - r[1, 2]) / s]
-        elif r[1, 1] > r[2, 2]:
-            s = 2 * np.sqrt(1 + r[1, 1] - r[0, 0] - r[2, 2])
-            q[i] = [(r[0, 1] + r[1, 0]) / s, s / 4, (r[1, 2] + r[2, 1]) / s, (r[0, 2] - r[2, 0]) / s]
-        else:
-            s = 2 * np.sqrt(1 + r[2, 2] - r[0, 0] - r[1, 1])
-            q[i] = [(r[0, 2] + r[2, 0]) / s, (r[1, 2] + r[2, 1]) / s, s / 4, (r[1, 0] - r[0, 1]) / s]
+    for mask, (term, build) in zip((trace_first, x_first, y_first, z_first), cases):
+        if mask.any():
+            s = 2 * np.sqrt(np.maximum(term + (1.0 if term is trace else 0.0), 1e-300))
+            q[mask] = np.stack(build(s), axis=-1)[mask]
     q *= np.where(q[:, 3:] < 0, -1.0, 1.0)
     q /= np.linalg.norm(q, axis=-1, keepdims=True)
     return q.reshape(*shape, 4)
