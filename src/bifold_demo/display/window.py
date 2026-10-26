@@ -39,7 +39,8 @@ def key_code(raw: int) -> int | None:
 
 
 class Window:
-    """Shows frames at their native resolution; can switch to fullscreen."""
+    """Shows frames at their native resolution; can switch to fullscreen. Left clicks are collected for
+    :meth:`poll_clicks`, in the pixels of the shown image (HighGUI maps them, also when the window is scaled)."""
 
     def __init__(self, title: str = "bifold demo", fullscreen: bool = False):
         self.title = title
@@ -47,8 +48,22 @@ class Window:
         self.fullscreen = False
         self._size: tuple[int, int] | None = None
         self._shown = False
+        self._clicks: list[tuple[int, int]] = []
+        try:
+            cv2.setMouseCallback(title, self._on_mouse)
+        except cv2.error:  # a backend without mouse events: no clicks
+            pass
         if fullscreen:
             self.toggle_fullscreen()
+
+    def _on_mouse(self, event: int, x: int, y: int, _flags: int, _param) -> None:
+        if event == cv2.EVENT_LBUTTONDOWN:
+            self._clicks.append((int(x), int(y)))
+
+    def poll_clicks(self) -> list[tuple[int, int]]:
+        """The left clicks ``(x, y)`` since the last call (events arrive while :meth:`poll_key` runs)."""
+        clicks, self._clicks = self._clicks, []
+        return clicks
 
     def show(self, image: np.ndarray) -> None:
         h, w = image.shape[:2]

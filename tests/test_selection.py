@@ -496,3 +496,95 @@ def test_the_key_help_of_every_menu_fits_the_picture():
         lines = selection.help_lines()
         widths = [cv2.getTextSize(line, FONT, 0.55, 1)[0][0] for line in lines]
         assert max(widths) + 2 * 10 + 12 < 1280, lines  # the panel at 1280x720, padding and margin included
+
+
+def test_tab_goes_by_where_people_are_now_even_when_they_pass_each_other(biped):
+    scene = Scene(camera=Camera(position=(0.0, 1.6, 6.0), target=(0.0, 1.0, 0.0)))
+    scene.add(Character(biped, _standing(-1.5, 0.0), name="left"))
+    scene.add(Character(biped, lambda t: CharacterState((-1.0 + 2.0 * min(t, 1.0), 0.0, 0.5), 0.0, []), name="walker"))
+    scene.add(Character(biped, _standing(0.5, 0.0), name="right"))
+    scene.update(0.0, 0.0)
+    selection = Selection(_clips())
+    try:
+        selection.enter(scene, SIZE)
+        selection.selected = scene["left"]
+        selection.handle_key(TAB, 0.0)
+        assert selection.selected.name == "walker"  # at x = -1: next to the right of "left"
+        scene.update(1.0, 1.0)  # the walker passes "right" (now at x = 1)
+        selection.update(scene, SIZE)
+        selection.handle_key(TAB, 1.0)
+        assert selection.selected.name == "left"  # nobody right of the walker any more: round to the leftmost
+        selection.handle_key(TAB, 1.0)
+        assert selection.selected.name == "right"
+        selection.handle_key(BACKTAB, 1.0)
+        assert selection.selected.name == "left"
+        selection.handle_key(BACKTAB, 1.0)
+        assert selection.selected.name == "walker"  # round to the rightmost
+    finally:
+        selection.close()
+
+
+def test_a_click_selects_the_person_under_the_cursor_the_nearest_one_when_they_overlap(biped):
+    scene = Scene(camera=Camera(position=(0.0, 1.6, 6.0), target=(0.0, 1.0, 0.0)))
+    scene.add(Character(biped, _standing(-1.5, 0.0), name="left"))
+    scene.add(Character(biped, _standing(0.0, 1.0), name="front"))
+    scene.add(Character(biped, _standing(0.5, -2.0), name="behind"))  # partly hidden by "front"
+    scene.update(0.0, 0.0)
+    selection = Selection(_clips())
+    try:
+        selection.enter(scene, SIZE)
+        boxes = {p.character.name: p.box for p in selection.people}
+
+        def centre(name):
+            x0, y0, x1, y1 = boxes[name]
+            return (x0 + x1) / 2, (y0 + y1) / 2
+
+        assert selection.select_at(centre("left")).startswith("selected left")
+        assert selection.select_at(centre("behind")).startswith("selected front")  # both boxes there: the nearer
+        x0, y0, x1, y1 = boxes["behind"]
+        beside = (x1 - 1.0, (y0 + y1) / 2)  # right of the front person, inside the box of the one behind
+        assert boxes["front"][0] < x0 < boxes["front"][2] < beside[0]
+        assert selection.select_at(beside).startswith("selected behind")
+        x0, y0, x1, y1 = boxes["left"]
+        assert selection.select_at((x0 - 5.0, (y0 + y1) / 2)).startswith("selected left")  # just beside counts
+        assert selection.select_at((5.0, 5.0)) == "nobody there to select" and selection.selected.name == "left"
+    finally:
+        selection.close()
+
+
+def test_clicks_in_the_demo_app_select_people(gl, biped, tmp_path, monkeypatch):
+    from bifold_demo.app import DemoApp, DemoConfig
+    from bifold_demo.sources import SourceSwitcher
+
+    monkeypatch.chdir(tmp_path)
+    scene = _scene(biped)
+    app = DemoApp(DemoConfig(headless=True, frames=1, width=320, height=180, detect=False, uploads=None), scene=scene)
+    app.run()
+    app.selection.clips = _clips()
+    app.switcher = SourceSwitcher({"scene": lambda: app.scene_source}, "scene")
+    messages = []
+    app.notify = lambda message, *args, **kwargs: messages.append(message)
+    try:
+        frame = app.scene_source.read()
+        app.selection.enter(app.scene_source.scene, frame.size)
+        boxes = {p.character.name: p.box for p in app.selection.people}
+        app.selection.leave()
+        x0, y0, x1, y1 = boxes["right"]
+        app._handle_click(((x0 + x1) / 2, (y0 + y1) / 2))  # a click starts selection mode on that person
+        assert app.selection.active and app.selection.selected.name == "right"
+        assert messages[-1].startswith("selected right")
+    finally:
+        app.selection.close()
+
+
+def test_the_window_hands_over_left_clicks():
+    import cv2
+
+    from bifold_demo.display.window import Window
+
+    window = Window.__new__(Window)
+    window._clicks = []
+    window._on_mouse(cv2.EVENT_MOUSEMOVE, 1, 2, 0, None)
+    window._on_mouse(cv2.EVENT_LBUTTONDOWN, 10, 20, 0, None)
+    window._on_mouse(cv2.EVENT_LBUTTONUP, 10, 20, 0, None)
+    assert window.poll_clicks() == [(10, 20)] and window.poll_clicks() == []

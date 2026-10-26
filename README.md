@@ -58,6 +58,7 @@ for your terminal app. Allow it, then run the command again.
 | `R`       | restart the scene (time 0, physics reset)                 |
 | `[` / `]` | lower / raise the confidence threshold                    |
 | `Y`/`Tab` | select a person in the 3D scene: yoga poses, accessories (see below) |
+| click     | select the person you click on in the 3D scene (the nearest one where people overlap) |
 | `F`       | toggle fullscreen                                         |
 | `P`       | save a screenshot to `screenshots/`                       |
 | `M`       | mirror the webcam on or off                               |
@@ -65,12 +66,14 @@ for your terminal app. Allow it, then run the command again.
 | `Q`/`Esc` | quit (in selection mode `Esc` ends that first)            |
 
 **Selecting people for yoga and accessories.** `Y` (or `Tab`) selects the most
-prominent of the 3D people in the picture and marks them with a tag. In this
+prominent of the 3D people in the picture and marks them with a tag; clicking on
+someone selects them instead. In this
 selection mode the keys are:
 
 | Key                     | Action                                                  |
 |-------------------------|---------------------------------------------------------|
-| `Tab` / `Shift`+`Tab`   | next person to the right / left (also `→` / `←`)        |
+| click a person          | select them                                             |
+| `Tab` / `Shift`+`Tab`   | the next person to the right / left of the selected one, by where they are now; after the rightmost the leftmost (also `→` / `←`) |
 | `↑` / `↓` (or `I`)      | the next menu: the yoga poses (eight to a menu), then the items; `I` goes to the items and back |
 | `Esc` / `Y`             | end selection mode (poses already started go on)        |
 

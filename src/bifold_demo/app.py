@@ -18,8 +18,8 @@ from .scene import Scene
 from .selection import Selection, person_name
 from .sources import FixedStepClock, Frame, SceneSource, SimulationClock, SourceSwitcher, WebcamSource
 
-HELP = ("S source | D detect | Space pause | R reset | [ ] confidence | Y people | F fullscreen | P screenshot | "
-        "H hide | Q quit")
+HELP = ("S source | D detect | Space pause | R reset | [ ] confidence | Y / click people | F fullscreen | "
+        "P screenshot | H hide | Q quit")
 STALE_AFTER = 1.0  # seconds after which old detections are no longer drawn
 
 
@@ -165,6 +165,8 @@ class DemoApp:
                     key = window.poll_key(1)
                     if key is not None:
                         self._handle_key(key, window)
+                    for click in window.poll_clicks():
+                        self._handle_click(click)
                     if not window.is_open():
                         break
                 if cfg.frames and count >= cfg.frames:
@@ -292,6 +294,18 @@ class DemoApp:
             cam.mirror = not cam.mirror
         elif key == ord("p"):
             self._screenshot()
+
+    def _handle_click(self, point) -> None:
+        """A left click at ``point`` (pixels of the picture): select the 3D person there (entering selection mode)."""
+        if self.switcher.active_name != "scene":
+            return
+        source = self.scene_source
+        if not self.selection.active:
+            message = self.selection.enter(source.scene, (source.width, source.height))
+            if not self.selection.active:
+                self.notify(message, 3.0, error=True)
+                return
+        self.notify(self.selection.select_at(point), 3.0)
 
     def _screenshot(self) -> None:
         if self._last_canvas is None:

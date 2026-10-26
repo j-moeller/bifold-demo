@@ -29,6 +29,7 @@ STOP_KEYS = (ord("0"), BACKSPACE)
 MIN_HEIGHT = 0.08  # share of the picture height: people drawn smaller standing (far away) cannot be selected
 MIN_INSIDE = 0.6  # share of a person's box that must be in the picture
 KEEP = 0.25, 0.8  # the selected person stays selected down to these shares of MIN_INSIDE and MIN_HEIGHT
+CLICK_SLACK = 0.03  # share of the picture height: a click this close to a person's box still selects them
 WALK_REACH = 4.0  # metres a person walks at most to find room for a pose (people without walk clips: STEP_REACH)
 STEP_REACH = 0.6
 PERSON = 0.6, 1.8  # width and height of the box that stands for another person hiding the pose
@@ -76,8 +77,8 @@ def person_name(character) -> str:
 class OnScreen:
     """A selectable person in the current frame and their box ``(x0, y0, x1, y1)`` in pixels."""
 
-    def __init__(self, character, box):
-        self.character, self.box = character, box
+    def __init__(self, character, box, depth: float = 0.0):
+        self.character, self.box, self.depth = character, box, depth  # depth: metres from the camera
 
     @property
     def centre(self) -> tuple[float, float]:
@@ -148,6 +149,7 @@ class Selection:
     def _on_screen(self) -> list[OnScreen]:
         scene, size = self._scene, self._size
         clip_from_world = scene.camera.projection_matrix(size[0] / size[1]) @ scene.camera.view_matrix()
+        eye = np.asarray(scene.camera.position, float)
         found = []
         for obj in scene:
             if not self._can_do_yoga(obj) or not obj.current_visible:
@@ -161,7 +163,7 @@ class Selection:
             share, height = KEEP if obj is self.selected else (1.0, 1.0)
             if (area > 0 and inside >= share * MIN_INSIDE * area
                     and self._standing_height(obj, clip_from_world, size) >= height * MIN_HEIGHT * size[1]):
-                found.append(OnScreen(obj, box))
+                found.append(OnScreen(obj, box, float(np.linalg.norm(obj.current_position - eye))))
         found.sort(key=lambda p: p.centre[0])
         return found
 
@@ -275,16 +277,42 @@ class Selection:
         return False, None
 
     def step(self, direction: int) -> str:
-        """Select the next person to the right (``1``) or left (``-1``), wrapping around."""
+        """Select the next person to the right (``1``) or left (``-1``) of the selected one in the picture, wrapping
+        around: the leftmost after the rightmost (and the other way round)."""
         if not self.people:
             return "nobody in the picture to select"
-        index = next((k for k, p in enumerate(self.people) if p.character is self.selected), None)
-        if index is None:
-            index = 0 if direction > 0 else len(self.people) - 1
+        here = next((p for p in self.people if p.character is self.selected), None)
+        x = here.centre[0] if here is not None else self._last_centre[0] if self._last_centre is not None else None
+        order = self.people if direction > 0 else self.people[::-1]  # people are sorted left to right
+        if x is None:
+            choice = order[0]
         else:
-            index = (index + direction) % len(self.people)
-        self._select(self.people[index])
-        return f"selected {person_name(self.selected)} ({index + 1} of {len(self.people)})"
+            ahead = [p for p in order if p is not here and (p.centre[0] - x) * direction > 0]
+            choice = ahead[0] if ahead else order[0]
+        self._select(choice)
+        return f"selected {person_name(self.selected)} ({self.people.index(choice) + 1} of {len(self.people)})"
+
+    def select_at(self, point) -> str:
+        """Select the person drawn at ``point`` (``(x, y)`` in pixels of the picture): of the people whose box holds
+        it the one nearest the camera, else the box nearest the point if it is at most ``CLICK_SLACK`` of the picture
+        height away."""
+        if not self.people:
+            return "nobody in the picture to select"
+        x, y = point
+
+        def gap(p):
+            x0, y0, x1, y1 = p.box
+            return math.hypot(max(x0 - x, 0.0, x - x1), max(y0 - y, 0.0, y - y1))
+
+        hits = [p for p in self.people if gap(p) == 0.0]
+        if hits:
+            choice = min(hits, key=lambda p: p.depth)
+        else:
+            choice = min(self.people, key=gap)
+            if gap(choice) > CLICK_SLACK * self._size[1]:
+                return "nobody there to select"
+        self._select(choice)
+        return f"selected {person_name(self.selected)} ({self.people.index(choice) + 1} of {len(self.people)})"
 
     def do(self, pose: str, t: float) -> str | None:
         """Have the selected person do ``pose`` (from scene time ``t``, as soon as its clip is ready and a spot for it
@@ -606,12 +634,14 @@ class Selection:
         """The key help of the current menu."""
         all_menus = menus()
         title, kind, entries = all_menus[min(self.menu, len(all_menus) - 1)]
-        keys = [f"{k + 1} {short_title(e) if kind == 'yoga' else accessories.TITLES[e]}" for k, e in enumerate(entries)]
+        keys = [f"{k + 1} {short_title(e) if kind == 'yoga' else accessories.TITLES[e]}"
+                for k, e in enumerate(entries)]
+        people = "Click a person, or Tab / Shift+Tab: next to the right / left | Up / Down: menu | Esc: done"
         if kind == "yoga":  # eight pose names do not fit one line: four to a line
-            return ["Tab / Shift+Tab: next / previous person | Up / Down: menu | Esc: done | 0 stop",
+            return [people + " | 0 stop",
                     f"[{title}] " + "  ".join(keys[:4]),
                     "  ".join(keys[4:]) + " | same number again: keep holding"]
-        return ["Tab / Shift+Tab: next / previous person | Up / Down: menu | Esc: done",
+        return [people,
                 f"[{title}] {'  '.join(keys)} | again: next look, after the last: off | 0 all off"]
 
     _yoga_menu = 0  # the yoga menu ``I`` goes back to
