@@ -34,6 +34,8 @@ class SceneSource(FrameSource):
     def set_scene(self, scene: Scene) -> None:
         """Swap in a different scene (e.g. after editing the scene file); time restarts at 0."""
         self.scene = scene
+        if self.renderer is not None:  # free the old scene's meshes, textures and joint palettes right away
+            self.renderer._collect_garbage()
         self.reset()
 
     def reset(self) -> None:

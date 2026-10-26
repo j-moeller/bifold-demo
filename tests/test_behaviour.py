@@ -519,6 +519,7 @@ def test_loop_length_fits_the_period():
     assert B.loop_length(41.0, 360.0) == pytest.approx(45.0) and B.loop_length(45.0, 360.0) == pytest.approx(45.0)
     assert B.loop_length(200.0, 360.0) == pytest.approx(360.0) and B.loop_length(400.0, 360.0) == pytest.approx(720.0)
     assert B.fits_period(360.0 / 7, 360.0) and not B.fits_period(50.0, 360.0)
+    assert not B.fits_period(720.0, 360.0)  # longer loops do not repeat within the period
 
 
 @pytest.mark.parametrize("lib_name", ["sparse", "full", None])
@@ -542,6 +543,11 @@ def test_period_stretches_the_pauses_to_fit(sparse, full, lib_name):
             assert fitted.look_feasible or not plain.look_feasible, name
             walks = [round(p.t1 - p.t0, 6) for p in fitted._pieces if p.kind == "walk"]
             assert walks == [round(p.t1 - p.t0, 6) for p in plain._pieces if p.kind == "walk"], name  # same walks
+            pauses = [p.t1 - p.t0 for p in fitted._pieces if p.kind == "idle"]
+            assert all(d >= 2 * B.FADE - 1e-9 for d in pauses), name  # long enough for the crossfades
+    for seed in range(40):  # a longer pause must not change later choices so much that the loop stops fitting
+        for make in (made["turn"], made["approach"], made["wander"]):
+            assert B.fits_period(make(camera=CAMERA, library=lib, rng=seed, period=period).duration, period)
     stand = B.stand((0, 0, 2), camera=CAMERA, library=lib, rng=1)
     assert stand.period is None  # standing people keep their loops
 

@@ -340,7 +340,13 @@ class Renderer:
             entry = [weakref.ref(primitive), vao, vbo, ibo, _UNSET, None]
             self._primitives[key] = entry
         if entry[4] is not primitive.texture:
-            entry[4], entry[5] = primitive.texture, _character_texture(primitive.texture) or self._white
+            try:
+                texture = _character_texture(primitive.texture)
+            except (OSError, ValueError) as exc:  # e.g. a damaged file in the character cache: draw it plain
+                print(f"[renderer] cannot use a character texture, drawing it untextured: {exc} "
+                      "(bifold-characters fetch repairs damaged files)")
+                texture = None
+            entry[4], entry[5] = primitive.texture, texture or self._white
         return entry[1], entry[5]
 
     def _joint_texture(self, obj):

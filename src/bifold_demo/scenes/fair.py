@@ -162,7 +162,8 @@ def add_visitors(scene: Scene, people: Crowd, rng: random.Random) -> None:
 
 
 def add_walkers(scene: Scene, people: Crowd, rng: random.Random) -> None:
-    """People walking by along the cross aisles, wrapping around at the hall walls."""
+    """People walking by along the cross aisles: wrapping around at the hall walls where the camera cannot see the
+    walls, walking back and forth elsewhere."""
     span = HALL_WIDTH - 2.0
     for i in range(WALKERS):
         person, _ = people.take("walking")
@@ -173,12 +174,24 @@ def add_walkers(scene: Scene, people: Crowd, rng: random.Random) -> None:
         speed = rng.uniform(0.9, 1.5)
         start = rng.uniform(0, span)
         cadence = 1.8 * speed  # steps per second
+        wrap = not (in_view((-span / 2, z)) or in_view((span / 2, z)))
+        ahead = person.facing_texture("right" if direction > 0 else "left")
 
-        def position(t, start=start, speed=speed, direction=direction, z=z, h=person.height, cadence=cadence):
-            x = (start + direction * speed * t) % span - span / 2
+        def position(t, start=start, speed=speed, direction=direction, z=z, h=person.height, cadence=cadence,
+                     wrap=wrap):
+            if wrap:
+                x = (start + direction * speed * t) % span - span / 2
+            else:  # out and back: u runs over twice the span
+                u = (start + speed * t) % (2 * span)
+                x = direction * ((u if u < span else 2 * span - u) - span / 2)
             return (x, h / 2 + 0.025 * abs(math.sin(math.pi * cadence * t)), z)
 
-        texture = person.facing_texture("right" if direction > 0 else "left")
+        if wrap:
+            texture = ahead
+        else:  # facing the other way while walking back
+            back = person.facing_texture("left" if direction > 0 else "right")
+            turn, again, period = (span - start) / speed, (2 * span - start) / speed, 2 * span / speed
+            texture = Keyframes({0.0: ahead, turn: back, again: ahead, period: ahead}, loop=True)
         scene.add(Quad(height=person.height, texture=texture, position=position, face_camera=True, lit=False),
                   name=f"walker{i + 1}")
 
@@ -288,9 +301,9 @@ def people_slots():
     booth_points = [(o[0], 1.5, o[2]) for _, o, _ in booths]
     slots = []
     moving = {"camera": cam, "look_at": booth_points, "period": LOOP_PERIOD}  # all loops fit LOOP_PERIOD
-    for (x0, z0), (x1, z1) in APPROACHES:
-        slots.append(("approach", partial(approach, (x0, 0.0, z0), (x1, 0.0, z1), stop_distance=(3.5, 5.0), **moving),
-                      False, False))
+    for (x0, z0), (x1, z1) in APPROACHES:  # straight, in separate lanes (their timings cannot keep them apart)
+        slots.append(("approach", partial(approach, (x0, 0.0, z0), (x1, 0.0, z1), stop_distance=(3.5, 5.0), bow=0.0,
+                                          **moving), False, False))
     half = HALL_WIDTH / 2 - 1.0
     for z, direction in CROSSINGS:
         if in_view((-half, z)) or in_view((half, z)):  # they would be seen vanishing: turn round earlier instead
@@ -444,9 +457,9 @@ def keep_apart(behaviours, kinds, rng: random.Random, period: float = LOOP_PERIO
     ``period`` seconds everyone is back where they started and checking one period covers all time; a loop that
     does not fit is only checked for one period. Two people whose paths cross, looping in ``period / k1`` and
     ``period / k2`` seconds, meet at the crossing every ``period / lcm(k1, k2)`` seconds of timing difference: they
-    can be kept apart when that is longer than the time they take to pass it (true for the hall's 20-90 s loops).
-    Standing people never move out of the way. Returns the number of pairs of people who still come too close
-    (0 = none).
+    can be kept apart when that is longer than the time they take to pass it (true for the hall's 20-90 s loops on
+    crossing paths). People walking along nearly the same line for a while need separate lanes instead. Standing
+    people never move out of the way. Returns the number of pairs of people who still come too close (0 = none).
     """
     apart = MIN_DISTANCE + 0.05  # aim a little further apart, for passes between the samples
     samples = round(period / step)
@@ -532,8 +545,11 @@ def add_booth(scene: Scene, index: int, origin, yaw: float, company, people: Cro
               name=f"{prefix}_floor")
     scene.add(Box(size=(w, h, 0.15), texture=booth_wall_texture(name, tagline, main, accent),
                   position=at((0, h / 2, -d / 2)), rotation=turn), name=f"{prefix}_wall")
-    far_side = w / 2 if yaw > 0 else -w / 2  # side wall on the far side, so the booth opens towards the camera
-    scene.add(Box(size=(0.15, h, d), texture=main, position=at((far_side, h / 2, 0)), rotation=turn), name=f"{prefix}_side")
+    # a side wall on the far side, so the booth opens towards the camera; it covers the back half only, so it does
+    # not hide the exhibitor of the booth behind
+    far_side = w / 2 if yaw > 0 else -w / 2
+    scene.add(Box(size=(0.15, h, d / 2), texture=main, position=at((far_side, h / 2, -d / 4)), rotation=turn),
+              name=f"{prefix}_side")
     scene.add(Box(size=(1.8, 1.05, 0.6), texture=logo_texture(name, main, accent), position=at((0.9, 0.525, d / 2 - 0.9)),
                   rotation=turn), name=f"{prefix}_counter")
     scene.add(Box(size=(1.75, 1.05, 0.08), texture="#202024", position=at((-0.8, 1.9, -d / 2 + 0.13)), rotation=turn),

@@ -15,11 +15,12 @@ whatever the speed (``stride_scale`` is the size ratio the :class:`~bifold_demo.
 the clip; see :func:`stride_scale`). The phase, and a stretch of the clip by at most ``STRIDE_STRETCH`` (5 %), make
 each walk start and stop in the walk pose closest to the clip before and after it (compared by the toes of the
 clips' own skeletons, :meth:`MotionLibrary.feet`), so the crossfades between standing and walking move the feet on
-the floor as little as the clips allow; a walk right after another one carries on with its stride. Turns of 45
-degrees or more play the turn clip closest in angle (same direction, at most
-``max(45, angle / 2)`` off) and add its ``metadata["turn"]`` to the heading when it ends (the contract of the clip
-loader), with the rest of the angle turned procedurally during the clip; smaller turns, or turns without a fitting
-clip, rotate the heading procedurally while an idle clip plays. Position is continuous everywhere except inside
+the floor little (there is no foot locking: with the Rocketbox clips, whose standing stance is wider than the walking
+track, a toe still moves about 6-16 cm per crossfade); a walk right after another one carries on with its stride.
+Turns of 45 degrees or more play the turn clip closest in angle (same direction, at most ``max(45, angle / 2)``
+off) and add its ``metadata["turn"]`` to the heading when it ends (the contract of the clip loader), with the rest
+of the angle turned procedurally during the clip; smaller turns, or turns without a fitting clip, rotate the heading
+procedurally while an idle clip plays. Position is continuous everywhere except inside
 :class:`Hide` (an intentional teleport while invisible), and the body's facing ``heading + clip yaw`` is continuous
 (``heading`` itself jumps by the clip's turn exactly when a turn clip ends, as the contract requires). Consecutive
 clips crossfade with two layers whose weights sum to 1, over ``FADE`` seconds or longer (up to a second) when the
@@ -53,8 +54,9 @@ when that costs little, but that is not guaranteed (clips that turn the head may
 
 Loop lengths. How long a loop takes depends on the avatar's walking speed. With ``period`` (in the factories that
 walk), pauses marked ``stretch`` are lengthened so that the loop lasts :func:`loop_length` seconds, a whole fraction
-(or multiple) of ``period``: people built with the same ``period`` are all back where they started every ``period``
-seconds, so their encounters can be checked over one period (see ``scenes.fair.keep_apart``).
+of ``period`` (or a multiple, when the loop is longer): people whose loops fit the same ``period``
+(:func:`fits_period`) are all back where they started every ``period`` seconds, so their encounters can be checked
+over one period (see ``scenes.fair.keep_apart``).
 """
 
 from __future__ import annotations
@@ -559,8 +561,8 @@ def loop_length(duration: float, period: float) -> float:
 
 
 def fits_period(duration: float, period: float) -> bool:
-    """Whether a loop of ``duration`` seconds repeats a whole number of times in ``period`` (or the reverse)."""
-    return abs(loop_length(duration, period) - duration) < 1e-6
+    """Whether a loop of ``duration`` seconds repeats a whole number of times in ``period``."""
+    return duration <= period + 1e-6 and abs(loop_length(duration, period) - duration) < 1e-6
 
 
 # -- timeline pieces --------------------------------------------------------------------------------
@@ -1179,6 +1181,14 @@ class Behaviour:
         return out
 
     def _add_idle(self, idle: Idle, following) -> None:
+        # the idle draws from its own generator, so its length (see _fit) does not change later random choices
+        outer, self.rng = self.rng, random.Random(self.rng.random())
+        try:
+            self._add_idle_clips(idle, following)
+        finally:
+            self.rng = outer
+
+    def _add_idle_clips(self, idle: Idle, following) -> None:
         index = len(self._idles)
         duration = float(idle.duration)
         if duration <= 0:
@@ -1609,10 +1619,13 @@ def walk_by(points, speed: float | None = None, *, library: MotionLibrary | None
     if return_mode == "turn":
         at_end, at_start = _turns_around(pts[-1], _bearing(*pts[-2], *pts[-1]), pts[0], _bearing(*pts[1], *pts[0]),
                                          camera, rng)
-        fit = period is not None
-        segments += [Idle(rng.uniform(*pause), ("look_around", "idle"), fit), Turn(at_end, True),
-                     Walk(pts[::-1][1:], speed), Idle(rng.uniform(*pause), ("look_around", "idle"), fit),
-                     Turn(at_start, True)]
+        fit = period is not None  # then keep both pauses (long enough for the crossfades), to stretch them
+
+        def pause_here():
+            length = rng.uniform(*pause)
+            return Idle(max(length, 2 * FADE) if fit else length, ("look_around", "idle"), fit)
+
+        segments += [pause_here(), Turn(at_end, True), Walk(pts[::-1][1:], speed), pause_here(), Turn(at_start, True)]
         segments = [s for s in segments if not isinstance(s, Idle) or s.duration > 0.3 or s.stretch]
     else:
         segments.append(Hide(rng.uniform(*gap), stretch=True))

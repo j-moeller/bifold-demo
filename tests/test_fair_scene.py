@@ -1,6 +1,5 @@
 import numpy as np
 import pytest
-
 from helpers import silhouette
 
 from bifold_demo.people import PeopleLibrary
@@ -54,6 +53,26 @@ def test_walkers_face_where_they_go(monkeypatch, library):
     left_facing = library.people()[-1].texture().rgba  # walk1 faces left like walk0
     textures = [w.current_texture.rgba for w in walkers]
     assert any(not np.array_equal(t, left_facing) for t in textures)  # the one going right is mirrored
+
+
+def test_walkers_only_jump_where_nobody_sees_it(monkeypatch, library):
+    """Walkers wrap from one side wall to the other where the camera cannot see the walls, else they turn round."""
+    scene = _build(monkeypatch, library.people())
+    walkers = [scene[f"walker{i}"] for i in range(1, fair.WALKERS + 1)]
+    previous, steps, turned = None, {}, set()
+    for k in range(900):  # 90 seconds
+        scene.update(k / 10, 0.1 if k else 0.0)
+        now = [(w.current_position[0], w.current_position[2]) for w in walkers]
+        if previous is not None:
+            for w, (x, z), (px, _) in zip(walkers, now, previous):
+                step = x - px
+                if abs(step) > 0.3:
+                    assert not fair.in_view((x, z)) and not fair.in_view((px, z)), f"{w.name} jumps in view"
+                elif w.name in steps and step * steps[w.name] < 0:
+                    turned.add(w.name)
+                steps[w.name] = step if abs(step) <= 0.3 else steps.get(w.name, step)
+        previous = now
+    assert turned  # the far aisles' walkers walk back
 
 
 def test_fair_scene_without_people(monkeypatch):

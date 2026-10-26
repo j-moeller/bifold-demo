@@ -259,6 +259,16 @@ def test_first_frame_decodes_no_texture_files(render, tmp_path, monkeypatch):
     assert not decoded and image[80, 80].tolist() == [0, 0, 255]  # red body, from the decoded file
 
 
+def test_a_damaged_texture_file_draws_the_character_untextured(render, tmp_path, capsys):
+    model = _path_textures(tmp_path)
+    good = (tmp_path / "part0.png").read_bytes()
+    (tmp_path / "part0.png").write_bytes(good[:20] + bytes(len(good) - 20))  # the PNG header survives, the data not
+    model.primitives[0].texture = str(tmp_path / "part0.png")
+    image = render(_scene(Character(model)))  # does not raise
+    assert image[80, 80].tolist() == [255, 255, 255]  # the body is drawn plain white
+    assert "part0.png" in capsys.readouterr().out
+
+
 def test_model_matrix_follows_the_contract():
     character = Character(_model(), lambda t: CharacterState((1.0, 0.0, -2.0), 30.0, []), scale=(1.1, 0.9, 1.0))
     character.update(0.5)

@@ -4,6 +4,7 @@ import math
 import random
 from functools import partial
 
+import numpy as np
 import pytest
 from test_behaviour import synthetic_clips, synthetic_model
 
@@ -125,6 +126,28 @@ def test_walkers_vanish_only_out_of_view(hall):
     assert fair.in_view((fair.HALL_WIDTH / 2 - 1, -20.5))  # ... where the far aisles' walkers turn round instead
     assert not fair.in_view((fair.HALL_WIDTH / 2 - 1, -7.0))
     assert fair.in_view((0.0, -12.0)) and not fair.in_view((0.0, 9.0))
+
+
+def test_every_exhibitor_can_be_seen(gl, hall):
+    """Nobody is hidden for good: each exhibitor shows in the picture (no booth wall in front of them)."""
+    from bifold_demo.scene.renderer import Renderer
+
+    scene, people = hall
+    staff = [p for p in people if _kind(p.name) == "staff"]
+    renderer = Renderer(1280, 720, samples=0)
+    try:
+        scene.update(5.0, 0.0)
+        everyone = renderer.render(scene).astype(int)
+        for person in staff:
+            person.visible = False
+            try:
+                scene.update(5.0, 0.0)
+                without = renderer.render(scene).astype(int)
+            finally:
+                person.visible = True
+            assert (np.abs(everyone - without).sum(axis=2) > 30).sum() > 10, f"{person.name} cannot be seen"
+    finally:
+        renderer.release()
 
 
 def test_every_wander_area_is_in_view():
