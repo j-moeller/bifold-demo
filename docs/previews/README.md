@@ -75,6 +75,10 @@ work goes on. The people are avatars from the
   the toes tucked, the right foot and then the left one stepping back, the hips
   lowering into one straight line from the heels to the head on straight arms,
   on the balls of the feet, the gaze on the floor a little ahead of the hands.
+- `yoga_cat.jpg`: the Cat Pose (Marjaryasana) clip: down from standing to hands
+  and knees, the back rounding up towards the ceiling with the tailbone tucked
+  under, the arms straight under the shoulders, the head dropped with the gaze
+  to the navel, and back up.
 - `selection.jpg`: selection mode in the fair: three of the audience doing Cow
   Pose, Downward Facing Dog and Upward Facing Dog (keys 2, 4 and 6), each at a
   spot they walked to where the camera sees the whole pose; the selected one is

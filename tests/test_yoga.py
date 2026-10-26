@@ -475,6 +475,39 @@ def test_plank_is_one_straight_line_from_the_heels_to_the_head(body):
     assert all(getattr(pose, limb).contact for limb in yoga.LIMBS) and not pose.knees_down
 
 
+def test_cat_rounds_the_back_on_hands_and_knees(body):
+    spec = yoga.POSES["cat"]
+    steps = spec.steps(body)
+    table = yoga.settle(body, steps[spec.main - 1].pose)
+    cat = yoga.settle(body, steps[spec.main].pose)
+    left = body.sides["left"]
+    shapes = []
+    for pose in (table, cat):
+        _, glob = yoga.solve(body, pose)
+        hips, chest, middle = glob[body.root, :3, 3], glob[body.spine[2], :3, 3], glob[body.spine[1], :3, 3]
+        line = hips + (chest - hips) * np.dot(middle - hips, chest - hips) / np.dot(chest - hips, chest - hips)
+        shapes.append((line[1] - middle[1], _bend(glob, left["upper"], left["fore"], left["hand"])))
+    assert shapes[1][0] < shapes[0][0] - 0.025  # the middle of the back rises above the hips-chest line
+    assert shapes[1][1] < 25.0 and shapes[1][1] < shapes[0][1] - 10.0  # the arms straighter than in the tabletop
+    assert cat.pelvis[0] < table.pelvis[0] - 20.0  # the tailbone tucks under
+    _, glob = yoga.solve(body, cat)
+    shoulder, wrist = glob[left["upper"], :3, 3], glob[left["hand"], :3, 3]
+    knee, hip_joint = glob[left["calf"], :3, 3], glob[left["thigh"], :3, 3]
+    assert abs(wrist[2] - shoulder[2]) < 0.06 and abs(knee[2] - hip_joint[2]) < 0.03  # wrists and knees stay under
+    head = glob[body.head, :3, :3] @ body.rest_rot[body.head].T
+    assert (head @ (0.0, 1.0, 0.0))[1] < -0.7  # the head hangs, the crown towards the floor ...
+    navel = glob[body.spine[0], :3, 3] - glob[body.head, :3, 3]
+    gaze = head @ (0.0, 0.0, 1.0)
+    assert math.degrees(math.acos(gaze @ navel / np.linalg.norm(navel))) < 40.0  # ... the gaze to the navel
+    _, breathing_in = yoga.solve(body, yoga.breathe(cat, 0.5))  # the back unrounds a little: the hands stay down
+    reach = np.linalg.norm(breathing_in[left["upper"], :3, 3] - breathing_in[left["hand"], :3, 3])
+    assert reach < yoga.ARM_STRAIGHT * (left["upper_length"] + left["fore_length"]) + 1e-3
+    assert np.allclose(table.left_arm.target, cat.left_arm.target) and table.knees_down and cat.knees_down
+    assert np.allclose(np.asarray(table.left_leg.target)[[0, 2]], np.asarray(cat.left_leg.target)[[0, 2]])  # feet stay
+    verts = yoga.skin(body, glob)
+    assert all(abs(verts[body.knee_group(side), 1].min()) < 0.005 for side in body.sides)  # the knees rest on the floor
+
+
 # -- every pose on real avatars --------------------------------------------------------------------------------
 
 

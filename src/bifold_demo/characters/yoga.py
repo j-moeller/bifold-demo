@@ -1635,6 +1635,61 @@ def _plank_steps(body: Body) -> list[Step]:
                    Step(down[-1].pose, seconds=1.2, hold=1.0, breathe=False, lift=feet)] + _up_from(down)
 
 
+def cat(body: Body, table: BodyPose, spine: float = 60.0, head: float = 45.0, shares=(0.3, 0.4, 0.3)) -> BodyPose:
+    """Marjaryasana from the tabletop ``table`` (as a step has it, before :func:`settle`): the hands, knees and
+    feet stay, the hips stay over the knees (sinking until the knees rest on the floor), the back rounds up by
+    ``spine`` degrees (spread by ``shares``) as the tailbone tucks, the arms straighten (fully at the top of each
+    breath in, when the back unrounds a little), and the head drops ``head`` degrees towards the chest."""
+    left, right = body.sides["left"], body.sides["right"]
+    pose = replace(table, spine=(spine, 0.0, 0.0), head=(head, 0.0, 0.0), spine_shares=shares)
+    knees = np.concatenate([body.knee_group(side) for side in body.sides])
+
+    def hips_of(p):
+        _, g = solve(body, p)
+        return 0.5 * (g[left["thigh"], :3, 3] + g[right["thigh"], :3, 3])
+
+    # the legs hang from the hip joints, so where they settle does not depend on how the back bends: first the
+    # hips (with the limbs as before settling), sinking while the knees float above the floor (the shins slope) ...
+    hips = hips_of(table)
+    settled = settle(body, _hips_at(body, pose, hips))
+    for _ in range(6):
+        gap = float(skin(body, solve(body, settled)[1], knees)[:, 1].min())
+        if gap < 0.002:
+            break
+        hips = hips - np.array([0.0, gap, 0.0])
+        settled = settle(body, _hips_at(body, pose, hips))
+    landed = hips_of(settled)
+    _, glob = solve(body, settled)
+    wrist = glob[left["hand"], :3, 3]
+    reach = ARM_STRAIGHT * (left["upper_length"] + left["fore_length"])
+
+    def short(pitch):  # ... then the pelvis tucked by ``pitch`` (the hips where they land): how far the arms bend
+        tried = _hips_at(body, replace(settled, pelvis=(pitch, 0.0, 0.0)), landed)
+        _, g = solve(body, breathe(tried, 0.5))  # breathing in, so that the hands never lift
+        return float(np.linalg.norm(g[left["upper"], :3, 3] - wrist)) - reach
+
+    low, high = 20.0, float(table.pelvis[0])
+    at_low = short(low)
+    for _ in range(30):  # the pitch that lifts the shoulders until straight arms just reach the hands
+        middle = 0.5 * (low + high)
+        at_middle = short(middle)
+        if at_low * at_middle <= 0:
+            high = middle
+        else:
+            low, at_low = middle, at_middle
+    return _hips_at(body, replace(pose, pelvis=(0.5 * (low + high), 0.0, 0.0)), hips)  # settles as ``settled`` did
+
+
+def _cat_steps(body: Body) -> list[Step]:
+    """Marjaryasana: from standing down to hands and knees, then the back rounds up towards the ceiling, the
+    tailbone tucks under, the arms push the floor away, the head drops towards the chest and the gaze goes to the
+    navel; back to the tabletop and up."""
+    down = _down_to_table(body)
+    table = down[-1].pose
+    return down + [Step(cat(body, table), seconds=2.5, hold=9.0),
+                   Step(table, seconds=2.5, hold=1.0, breathe=False)] + _up_from(down)
+
+
 POSES: dict[str, PoseSpec] = {
     "yogi_squat": PoseSpec("Yogi Squat (Malasana)", _yogi_squat_steps, main=1, view=0.0),
     "cow": PoseSpec("Cow Pose (Bitilasana)", _cow_steps, main=5, view=90.0),
@@ -1649,4 +1704,5 @@ POSES: dict[str, PoseSpec] = {
     "triangle": PoseSpec("Triangle Pose (Utthita Trikonasana)", _triangle_steps, main=4, view=0.0),
     "forward_bend": PoseSpec("Standing Forward Bend (Uttanasana)", _forward_bend_steps, main=3, view=90.0),
     "plank": PoseSpec("Plank Pose (Phalakasana)", _plank_steps, main=8, view=90.0),
+    "cat": PoseSpec("Cat Pose (Marjaryasana)", _cat_steps, main=5, view=90.0),
 }
