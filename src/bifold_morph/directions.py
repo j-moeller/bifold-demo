@@ -28,9 +28,8 @@ import torch
 
 from .e4e import to_images
 from .mivolo import crop_box
+from .state import AGE_END, GENDER_END
 
-AGE_END = 40.0  # years: the age slider goes from -AGE_END to +AGE_END
-GENDER_END = 1.25  # the gender slider's ends move a face this many female-to-male gaps
 TRUNCATION = 0.7  # random faces are drawn this close to the average face (the usual "truncation trick")
 
 

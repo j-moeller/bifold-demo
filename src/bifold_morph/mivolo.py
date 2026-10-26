@@ -15,30 +15,17 @@ from __future__ import annotations
 import argparse
 import pickle
 import warnings
-from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
 import torch
 
+from .state import AgeGender
+
 INPUT_SIZE = 224
 MEAN = np.array([0.485, 0.456, 0.406], np.float32)  # ImageNet's, as timm uses
 STD = np.array([0.229, 0.224, 0.225], np.float32)
-
-
-@dataclass(frozen=True)
-class AgeGender:
-    age: float  # years
-    male: float  # probability the face is male, 0..1
-
-    @property
-    def gender(self) -> str:
-        return "male" if self.male >= 0.5 else "female"
-
-    @property
-    def confidence(self) -> float:
-        return max(self.male, 1 - self.male)
 
 
 def letterbox(image: np.ndarray, size: int = INPUT_SIZE) -> np.ndarray:

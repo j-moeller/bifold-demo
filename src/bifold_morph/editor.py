@@ -18,7 +18,6 @@ MiVOLO, if loaded, reads every face before and after the edit.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
 
 import numpy as np
 import torch
@@ -27,41 +26,11 @@ from . import align
 from .directions import Directions
 from .e4e import E4E, INPUT_SIZE, to_input
 from .faces import FaceDetector, FaceTracker
-from .mivolo import AgeGender, MiVOLO, crop_box
+from .mivolo import MiVOLO, crop_box
+from .state import FaceResult, FrameResult, Settings
 
 CODE_SMOOTHING = 0.5  # weight of the newest frame's code in the smoothed code of a face
 CODE_KEEP = 0.3  # seconds: an older smoothed code starts afresh
-
-
-@dataclass
-class Settings:
-    """What the sliders and switches say."""
-
-    age: float = 0.0  # years older (negative: younger)
-    gender: float = 0.0  # -1 towards female ... +1 towards male
-    enabled: bool = True  # False: show the camera picture as it is
-    replace: bool = False  # True: the generated face replaces the real one; False: only the change is added
-    readout: bool = True  # let MiVOLO read the faces (if it is loaded)
-
-    @property
-    def edits(self) -> bool:
-        return self.enabled and (abs(self.age) >= 0.5 or abs(self.gender) >= 0.01)
-
-
-@dataclass
-class FaceResult:
-    track_id: int
-    box: tuple[float, float, float, float]
-    quad: np.ndarray
-    before: AgeGender | None = None
-    after: AgeGender | None = None
-
-
-@dataclass
-class FrameResult:
-    image: np.ndarray
-    faces: list[FaceResult]
-    timings: dict = field(default_factory=dict)  # seconds per step
 
 
 def _sync(device: torch.device) -> None:

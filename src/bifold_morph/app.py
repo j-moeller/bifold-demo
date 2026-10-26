@@ -10,22 +10,19 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import torch
 
 from . import models
-from .directions import AGE_END, Directions
-from .e4e import E4E
-from .editor import FaceEditor, FrameResult, Settings
-from .faces import FaceDetector
-from .mivolo import MiVOLO
 from .sources import Source, open_source
+from .state import AGE_END, FrameResult, Settings
 from .ui import Panel, Slider, Window, describe_label, draw_face
 
 TITLE = "bifold morph"
 KEYS_HELP = "drag the sliders | Space original | D mode | E MiVOLO | R reset | H help | Q quit"
 
 
-def pick_device(name: str = "auto") -> torch.device:
+def pick_device(name: str = "auto"):
+    import torch
+
     if name != "auto":
         return torch.device(name)
     if torch.cuda.is_available():
@@ -35,9 +32,16 @@ def pick_device(name: str = "auto") -> torch.device:
     return torch.device("cpu")
 
 
-def load_editor(device: torch.device, size: int = 256, max_faces: int = 2, readout: bool = True,
-                half: bool = False, folder=None, download: bool = True, progress=print) -> FaceEditor:
-    """The editor with its models from the models folder (fetching missing ones when ``download``)."""
+def load_editor(device, size: int = 256, max_faces: int = 2, readout: bool = True, half: bool = False,
+                folder=None, download: bool = True, progress=print):
+    """The :class:`~.editor.FaceEditor` with its models from the models folder (fetching missing ones when
+    ``download``). This is where PyTorch and the model files come in."""
+    from .directions import Directions
+    from .e4e import E4E
+    from .editor import FaceEditor
+    from .faces import FaceDetector
+    from .mivolo import MiVOLO
+
     directions_file = models.directions_path(folder)
     if not directions_file.is_file():
         raise FileNotFoundError(f"no age and gender directions in {directions_file}: run `bifold-morph setup` once "
@@ -69,8 +73,8 @@ class Worker:
     """Runs the editor on a thread of its own: :meth:`submit` hands it the newest frame (replacing one it has not
     started yet), :meth:`take` returns the newest result once."""
 
-    def __init__(self, editor: FaceEditor):
-        self.editor = editor
+    def __init__(self, editor):
+        self.editor = editor  # a FaceEditor or an IsolatedEditor
         self.error: BaseException | None = None
         self.busy_seconds = 0.0  # how long the newest result took
         self._cond = threading.Condition()
@@ -130,7 +134,7 @@ def make_sliders() -> tuple[Slider, Slider]:
 
 
 class App:
-    def __init__(self, editor: FaceEditor, source: Source, settings: Settings, fullscreen: bool = False,
+    def __init__(self, editor, source: Source, settings: Settings, fullscreen: bool = False,
                  screenshots: Path = Path("screenshots")):
         self.editor, self.source, self.settings = editor, source, settings
         self.age, self.gender = make_sliders()
@@ -252,13 +256,26 @@ class App:
 
 def run(source: str = "0", device: str = "auto", size: int = 256, max_faces: int = 2, readout: bool = True,
         half: bool = False, width: int = 1280, height: int = 720, mirror: bool | None = None,
-        fullscreen: bool = False, age: float = 0.0, gender: float = 0.0, replace: bool = False) -> None:
-    dev = pick_device(device)
-    editor = load_editor(dev, size=size, max_faces=max_faces, readout=readout, half=half)
+        fullscreen: bool = False, age: float = 0.0, gender: float = 0.0, replace: bool = False,
+        isolate: bool = False, image: str | None = None) -> None:
+    """The live demo. ``isolate``: the models run in the locked-down Docker container ``image`` (see
+    :mod:`.isolated`) and this process only handles the camera and the window."""
+    if isolate:
+        from .isolated import IMAGE, IsolatedEditor, docker_command
+
+        print("[morph] starting the model container (no network, read-only) ...")
+        editor = IsolatedEditor(docker_command(image or IMAGE, device="cpu" if device == "auto" else device,
+                                               size=size, max_faces=max_faces, readout=readout))
+    else:
+        editor = load_editor(pick_device(device), size=size, max_faces=max_faces, readout=readout, half=half)
     src = open_source(source, width, height, mirror)
     settings = Settings(age=age, gender=gender, replace=replace, readout=readout)
-    print(f"[morph] running on {dev}; {KEYS_HELP}")
-    App(editor, src, settings, fullscreen=fullscreen).run()
+    print(f"[morph] running on {editor.device}; {KEYS_HELP}")
+    try:
+        App(editor, src, settings, fullscreen=fullscreen).run()
+    finally:
+        if isolate:
+            editor.close()
 
 
 def edit_file(path, output, age: float, gender: float, device: str = "auto", size: int = 1024,

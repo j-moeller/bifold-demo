@@ -13,7 +13,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
-from .mivolo import AgeGender
+from .state import AgeGender
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 BG, TEXT, DIM, TRACK = (32, 32, 32), (235, 235, 235), (150, 150, 150), (85, 85, 85)

@@ -16,7 +16,7 @@ import time
 
 from . import models
 
-COMMANDS = ("run", "setup", "fetch", "directions", "edit")
+COMMANDS = ("run", "setup", "fetch", "directions", "edit", "serve")
 
 
 def _device_arg(p: argparse.ArgumentParser) -> None:
@@ -44,6 +44,15 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--gender", type=float, default=0.0, help="start with the gender slider here (-1 ... 1)")
     run.add_argument("--replace", action="store_true", help="start in the mode where the generated face replaces "
                      "the real one")
+    run.add_argument("--isolate", action="store_true", help="run the models in a locked-down Docker container "
+                     "(no network, read-only); only the camera and the window stay here")
+    run.add_argument("--image", default=None, help="the container image for --isolate (bifold-morph-worker)")
+
+    serve = sub.add_parser("serve", help="(inside the container) edit frames sent on stdin, answer on stdout")
+    serve.add_argument("--device", default="cpu")
+    serve.add_argument("--size", type=int, default=256, choices=(128, 256, 512, 1024))
+    serve.add_argument("--max-faces", type=int, default=2)
+    serve.add_argument("--no-mivolo", action="store_true")
 
     setup = sub.add_parser("setup", help="download the models and find the directions (once)")
     _device_arg(setup)
@@ -113,7 +122,11 @@ def main(argv=None) -> int:
             run(source=args.source, device=args.device, size=args.size, max_faces=args.max_faces,
                 readout=not args.no_mivolo, half=args.half, width=args.width, height=args.height,
                 mirror=False if args.no_mirror else None, fullscreen=args.fullscreen, age=args.age,
-                gender=args.gender, replace=args.replace)
+                gender=args.gender, replace=args.replace, isolate=args.isolate, image=args.image)
+        elif args.command == "serve":
+            from .isolated import serve
+
+            serve(device=args.device, size=args.size, max_faces=args.max_faces, readout=not args.no_mivolo)
         elif args.command == "fetch":
             _fetch()
         elif args.command == "setup":
