@@ -1,44 +1,51 @@
 """Behaviours for animated people: where they walk, which clips they play and where they look.
 
 A behaviour is a callable ``t -> CharacterState`` built from a looping timeline of segments: :class:`Walk`,
-:class:`Idle`, :class:`Turn` and :class:`Hide`. Everything is precomputed when it is built, so evaluating a time
-is a pure, cheap function of ``t`` (pausing, rewinding and seeking just work). The factories :func:`walk_by`,
-:func:`approach`, :func:`wander`, :func:`chat` and :func:`stand` build typical trade-fair behaviours from a
-``style`` dict (avatar metadata: ``sex``, ``age_group``, optional ``stride_scale`` / ``speed``) and a seed.
+:class:`Idle`, :class:`Turn` and :class:`Hide`. Everything is precomputed when it is built (about 20 ms), so evaluating
+a time is a pure, cheap (about 10 microseconds) function of ``t``: pausing, rewinding and seeking just work. The
+factories :func:`walk_by`, :func:`approach`, :func:`wander`, :func:`chat` and :func:`stand` build typical trade-fair
+behaviours from a ``style`` dict (avatar metadata: ``sex``, ``age_group``, optional ``stride_scale`` / ``speed``) and
+a seed; the same arguments give the same behaviour.
 
 Locomotion. Walks follow a polyline with rounded corners, parametrised by arc length; the heading follows the
-tangent and blends in from the previous heading. Speed eases in and out at both ends, and the walk clip's time is
-``distance / (clip.metadata["speed"] * stride_scale)``, so the feet never slide whatever the speed (``stride_scale``
-is the size ratio the :class:`~bifold_demo.characters.model.Poser` applies to the clip; see :func:`stride_scale`).
-Turns of 45 degrees or more play the closest turn clip and add its ``metadata["turn"]`` to the heading when it
-ends (the contract of the clip loader), with any remaining angle turned procedurally during the clip; smaller turns,
-or turns without clips, rotate the heading procedurally while idling. Position is continuous everywhere except
-inside :class:`Hide` (an intentional teleport while invisible), and the body's facing ``heading + clip yaw`` is
-continuous (``heading`` itself jumps by the clip's turn exactly when a turn clip ends, as the contract requires).
-Consecutive clips crossfade over ``FADE`` seconds with two layers whose weights sum to 1.
+tangent and blends in from the previous heading. Speed eases in and out at both ends. People walk at their walk
+clip's own speed times ``stride_scale`` times a random pace (about +-10 %) unless a speed is given, and the clip's
+time is ``distance / (clip.metadata["speed"] * stride_scale)``, so the feet never slide whatever the speed
+(``stride_scale`` is the size ratio the :class:`~bifold_demo.characters.model.Poser` applies to the clip; see
+:func:`stride_scale`). Turns of 45 degrees or more play the turn clip closest in angle (same direction, at most
+``max(45, angle / 2)`` off) and add its ``metadata["turn"]`` to the heading when it ends (the contract of the clip
+loader), with the rest of the angle turned procedurally during the clip; smaller turns, or turns without a fitting
+clip, rotate the heading procedurally while an idle clip plays. Position is continuous everywhere except inside
+:class:`Hide` (an intentional teleport while invisible), and the body's facing ``heading + clip yaw`` is continuous
+(``heading`` itself jumps by the clip's turn exactly when a turn clip ends, as the contract requires). Consecutive
+clips crossfade with two layers whose weights sum to 1, over ``FADE`` seconds or longer (up to a second) when the
+clips hold the head at very different angles.
 
-Never looking at the camera. The *face heading* is ``heading + clip_yaw + head_yaw``, where ``clip_yaw`` is the
-yaw (on the floor plane) of the head bone in the playing clips, blended with the layer weights. It is computed
-from each clip's root-to-head bone chain, so it includes the body rotation inside turn clips and the head turns
-of look-around or talk clips; without clips it is 0 and the face heading is ``heading + head_yaw``. Given a
-camera, a behaviour guarantees for every ``t`` at which the state is visible and the camera is at least
-``MIN_CAMERA_DISTANCE`` away on the floor plane:
+Never looking at the camera. The *face heading* is ``heading + clip_yaw + head_yaw + pitch_shift``: ``clip_yaw`` is
+the yaw (on the floor plane) of the head bone in the playing clips, blended with the layer weights and computed from
+each clip's root-to-head bone chain, so it includes the body rotation inside turn clips and the head turns of
+look-around or talk clips (0 without clips); :func:`pitch_shift` is the small sideways effect of ``head_pitch`` as
+:class:`~bifold_demo.characters.character.Character` applies it. That is where the rendered face points (within
+about a degree for the Rocketbox clips). Given a camera, a behaviour guarantees for every ``t`` at which the state is
+visible and the camera is at least ``MIN_CAMERA_DISTANCE`` away on the floor plane:
 
 * ``|head_yaw| <= HEAD_YAW_LIMIT`` (70 degrees), always;
 * if ``look_feasible`` is true, the angle on the floor plane between the face heading and the direction to the
-  camera position at ``t`` is at least ``min_angle`` (35 degrees by default). This holds wherever the camera is
-  in front of, beside or behind the person, for a fixed camera and for a moving one that stays inside the range
-  sampled over its first ``CAMERA_HORIZON`` seconds; it is enforced on every evaluation against the actual camera
-  position, on top of a head plan made with extra margin.
+  camera position at ``t`` is at least ``min_angle`` (35 degrees by default), wherever the camera is: in front of,
+  beside or behind the person. It is enforced on every evaluation against the actual camera position, on top of a
+  head plan made with 5 degrees to spare. For a fixed camera ``look_feasible`` also certifies that this never needs
+  a head turn beyond the limit (checked half way between the plan's 0.1 s steps); a moving camera must stay inside
+  the range sampled over its first ``CAMERA_HORIZON`` seconds.
 
-``look_feasible`` is false only when no continuous head motion within the yaw limit can avoid the camera (e.g. a
-path whose heading swings across the camera while it is in front). The factories choose turn directions (away
-from the camera), clips (whose own head motion leaves room) and wander paths so that it is true; they retry with
-other random choices and only then give up and return a best-effort plan. Head looks are smooth: looking ahead
-into curves and turns, glancing at ``look_at`` points (booths) and ``partners`` (people one talks to), small
-glances while idling, a lowered head when looking at a phone or walking towards the camera. The angle between
-``heading + head_yaw`` and the camera direction (ignoring the clips) is kept above ``min_angle`` too when that
-costs little, but that is not guaranteed (clips that turn the head may need it to point elsewhere).
+Building makes this feasible wherever it can. The face can only avoid the camera while ``heading + clip yaw - camera
+bearing`` stays inside one window of ``360 + 2 * (HEAD_YAW_LIMIT - min_angle - margins)`` degrees, so turns with a
+choice of direction (the automatic turns before walks, ``Turn(either_way=True)`` in the factories) go whichever way
+keeps it there over the whole loop, idles pick clips whose own head motion fits, and :func:`wander` tries other
+points; ``look_feasible`` is false only when all that fails, and the head plan is then a best effort. Head looks are
+smooth: looking ahead into curves and turns, glancing at ``look_at`` points (booths) and ``partners`` (people one
+talks to), small glances while idling, a lowered head when looking at a phone or walking towards the camera. The
+angle between ``heading + head_yaw`` and the camera direction (ignoring the clips) is kept above ``min_angle`` too
+when that costs little, but that is not guaranteed (clips that turn the head may need it to point elsewhere).
 """
 
 from __future__ import annotations
@@ -675,7 +682,8 @@ class Behaviour:
         for j, entry in enumerate(self._entries):
             before = self._entries[j - 1]
             if entry.clip is not None and before.clip is not None:
-                gap = abs(_wrap(before.sample(entry.t0 if j else entry.t0 + self.duration)[2] - entry.sample(entry.t0)[2]))
+                previous = before.sample(entry.t0 if j else entry.t0 + self.duration)[2]
+                gap = abs(_wrap(previous - entry.sample(entry.t0)[2]))
                 fade = min(max(FADE, gap / _FADE_SPEED), _MAX_FADE)
                 entry.fade = min(fade, 0.5 * (before.t1 - before.t0), 0.5 * (entry.t1 - entry.t0))
 
@@ -775,7 +783,7 @@ class Behaviour:
         return self._walk_clips[role]
 
     def _turn_direction(self, delta: float) -> float:
-        """``delta`` or the same turn the other way round, so that the face sweeps behind rather than past the camera."""
+        """``delta`` or the same turn the other way round, so the face sweeps behind rather than past the camera."""
         delta = _wrap(delta)
         cam = self.camera.nominal
         if cam is None or abs(delta) < 45.0:
@@ -1081,6 +1089,23 @@ class Behaviour:
         self._grid_pitch = [float(v) for v in pitch]
         self._grid_yaw.append(self._grid_yaw[0])
         self._grid_pitch.append(self._grid_pitch[0])
+        if self.look_feasible and cam is not None and self.camera.fn is None:
+            self.look_feasible = self._verify()
+
+    def _verify(self) -> bool:
+        """Whether the face keeps ``min_angle`` from the (fixed) camera half way between the plan's steps too."""
+        cam = self.camera.nominal
+        for i in range(len(self._grid_yaw) - 1):
+            tl = (i + 0.5) * self._dt
+            state, clip_yaw, elevation = self._state(tl, tl)
+            x, _, z = state.position
+            if not state.visible or (cam[0] - x) ** 2 + (cam[1] - z) ** 2 < MIN_CAMERA_DISTANCE ** 2:
+                continue
+            face = state.heading + clip_yaw + state.head_yaw + pitch_shift(clip_yaw, elevation, state.head_yaw,
+                                                                          state.head_pitch)
+            if abs(_wrap(face - math.degrees(math.atan2(cam[0] - x, cam[1] - z)))) < self.min_angle - 1e-6:
+                return False
+        return True
 
     def _desired_looks(self, body, dt: float) -> tuple[np.ndarray, np.ndarray]:
         """Head yaw / pitch the person would like (before avoiding the camera), sampled every ``dt``."""
@@ -1145,8 +1170,11 @@ class Behaviour:
     # -- evaluation ----------------------------------------------------------------------------------
 
     def _evaluate(self, t: float):
-        tl = (t + self.offset) % self.duration
-        x, z, heading, piece, entry, layers, clip_yaw, elevation = self._body(tl)
+        return self._state((t + self.offset) % self.duration, t)
+
+    def _state(self, tl: float, t: float):
+        """``(state, clip yaw, clip elevation)`` at loop time ``tl`` (``t``: the time for a moving camera)."""
+        x, z, heading, piece, _, layers, clip_yaw, elevation = self._body(tl)
         u = tl / self._dt
         i = int(u)
         if i >= len(self._grid_yaw) - 1:
