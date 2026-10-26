@@ -230,6 +230,25 @@ def test_downward_dog_is_an_inverted_v(body):
     assert all(getattr(pose, limb).contact for limb in yoga.LIMBS)  # both hands and both feet on the floor
 
 
+def test_warrior_2_opens_to_the_front_with_the_arms_level(body):
+    spec = yoga.POSES["warrior_2"]
+    pose = yoga.settle(body, spec.steps(body)[spec.main].pose)
+    _, glob = yoga.solve(body, pose)
+    left, right = body.sides["left"], body.sides["right"]
+    front, back = glob[left["foot"], :3, 3], glob[right["foot"], :3, 3]
+    assert front[0] - back[0] > 1.2 * body.leg and abs(front[2] - back[2]) < 0.05  # wide, across the body
+    assert 75.0 < _bend(glob, left["thigh"], left["calf"], left["foot"]) < 105.0  # the front knee bent ...
+    assert abs(glob[left["calf"], 0, 3] - front[0]) < 0.1  # ... over the ankle
+    assert _bend(glob, right["thigh"], right["calf"], right["foot"]) < 15.0  # the back leg straight
+    toes = glob[left["foot"], :3, :3] @ left["foot_forward"]
+    assert toes[0] > 0.95  # the front foot points along the stance
+    for s in (left, right):
+        shoulder, wrist = glob[s["upper"], :3, 3], glob[s["hand"], :3, 3]
+        assert abs(wrist[1] - shoulder[1]) < 0.06 and abs(wrist[0] - shoulder[0]) > 0.9 * body.arm  # level arms
+    gaze = glob[body.head, :3, :3] @ body.rest_rot[body.head].T @ (0.0, 0.0, 1.0)
+    assert gaze[0] > 0.8  # looking over the front hand
+
+
 def test_yogi_squat_is_deep_with_wide_knees_and_palms_together(body):
     pose = yoga.settle(body, yoga.POSES["yogi_squat"].steps(body)[1].pose)
     _, glob = yoga.solve(body, pose)

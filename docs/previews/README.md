@@ -41,3 +41,6 @@ work goes on. The people are avatars from the
 - `yoga_downward_dog.jpg`: the Downward Facing Dog clip: down to hands and
   knees, the toes tucked, the hips lifting into an inverted V with straight
   arms and legs and the heels down.
+- `yoga_warrior_2.jpg`: the Warrior 2 (Virabhadrasana II) clip: a wide stance
+  across the mat, the front knee over the ankle, the arms level, the gaze over
+  the front hand.

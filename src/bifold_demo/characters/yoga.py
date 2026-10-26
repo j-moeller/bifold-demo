@@ -848,9 +848,34 @@ def _downward_dog_steps(body: Body) -> list[Step]:
                                                                      lift=feet)] + _up_from(down)
 
 
+def _warrior2_steps(body: Body) -> list[Step]:
+    """Virabhadrasana II: the feet wide apart, the front (left) foot turned out and its knee bent over the ankle,
+    the back leg straight with the foot turned slightly in, hips and chest open to the front, the arms straight
+    out at shoulder height, palms down, the gaze over the front hand."""
+    stand = mountain(body)
+    left, right = body.sides["left"], body.sides["right"]
+    z = stand.left_leg.target[2]
+    knee_height = left["ankle_height"] + 0.97 * left["shin_length"]  # the front shin upright
+    hip_height = knee_height + 0.1 * left["thigh_length"]  # the front thigh about level
+    front_x = 0.5 * body.hip_width + 0.95 * left["thigh_length"]
+    drop = hip_height - right["ankle_height"]
+    back_x = -0.5 * body.hip_width - math.sqrt(max((ARM_STRAIGHT * (right["thigh_length"] + right["shin_length"])) ** 2
+                                                    - drop ** 2, 0.0))
+    front = Limb((front_x, left["ankle_height"], z), (1.0, 0.0, 0.15), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), contact=True)
+    back_toes = axis_rotation((0, 1, 0), 12.0) @ (0.0, 0.0, 1.0)  # turned in a little, towards the front foot
+    back = Limb((back_x, right["ankle_height"], z), (0.0, 0.0, 1.0), tuple(back_toes), (0.0, 1.0, 0.0), contact=True)
+    wide = replace(stand, root=(0.0, hip_height + body.hip_drop, float(body.rest_pos[body.root, 2])), left_leg=front,
+                   right_leg=back, spine=(-4.0, 0.0, 0.0), head=(-4.0, 72.0, 0.0))
+    warrior = replace(wide, **_arms_out(body, wide))
+    steps = {"left_leg": 0.03, "right_leg": 0.08}  # the back foot steps out, the front one turns
+    return [Step(stand, hold=1.5, breathe=False), Step(warrior, seconds=3.0, hold=9.0, lift=steps),
+            Step(stand, seconds=3.0, lift=steps)]
+
+
 POSES: dict[str, PoseSpec] = {
     "yogi_squat": PoseSpec("Yogi Squat (Malasana)", _yogi_squat_steps, main=1, view=0.0),
     "cow": PoseSpec("Cow Pose (Bitilasana)", _cow_steps, main=5, view=90.0),
     "warrior_1": PoseSpec("Warrior 1 (Virabhadrasana I)", _warrior1_steps, main=2, view=90.0),
     "downward_dog": PoseSpec("Downward Facing Dog (Adho Mukha Svanasana)", _downward_dog_steps, main=6, view=90.0),
+    "warrior_2": PoseSpec("Warrior 2 (Virabhadrasana II)", _warrior2_steps, main=1, view=0.0),
 }
