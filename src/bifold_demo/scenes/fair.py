@@ -5,8 +5,10 @@ People are animated 3D characters (Microsoft Rocketbox avatars, prepared once wi
 in a half circle in front of it, watching it, always at least three people, while visitors walk up
 the aisle to join them for a while, turn around and leave. Others walk by along the cross aisles or
 wander about, small groups chat, exhibitors stand behind their counters talking to visitors, and a
-speaker is on the stage. Apart from the audience, nobody looks at the camera. The crowd mixes women
-and men, skin tones and ages (see ``characters.crowd``).
+speaker is on the stage. Apart from the audience, nobody looks at the camera. The audience sees
+itself on the demo screen like in a mirror and now and then plays with it: people wave, make faces,
+step and lean from side to side, lean in or walk up closer and back (``characters.camera_play``,
+``CAMERA_PLAY``). The crowd mixes women and men, skin tones and ages (see ``characters.crowd``).
 
 Until the characters are prepared, 2D cut-out people stand in: from the ``people/`` folder
 (``bifold-people generate -n 30``) or cut out of the Ultralytics sample photos.
@@ -28,6 +30,7 @@ from functools import partial
 import cv2
 import numpy as np
 
+from bifold_demo.characters import camera_play
 from bifold_demo.characters.behaviour import approach, chat, fits_period, stand, walk_by, wander, watch
 from bifold_demo.characters.crowd import age_group, describe_crowd, populate, sample_crowd
 from bifold_demo.characters.library import CharacterLibrary, fetch_command
@@ -219,6 +222,11 @@ MIN_DISTANCE = 0.6  # metres people keep from each other (walk timings are shift
 LOOP_PERIOD = 360.0  # seconds; moving people's loops are stretched to fit it, so the hall repeats every 6 min
 FRAME_ASPECT = 16 / 9  # the widest picture the camera is used with (for the "out of view" checks)
 MOVING = ("approach", "walker", "wanderer")  # kinds of people whose timings keep_apart may shift (visitors approach)
+# The audience plays with the camera now and then while it watches (see characters.camera_play): CAMERA_PLAY = False
+# switches it off; CAMERA_PLAY_MOVES are the moves they choose from (any of camera_play.MOVES).
+CAMERA_PLAY = True
+CAMERA_PLAY_MOVES = ("wave", "faces", "side_steps", "lean_sideways", "lean_forward", "closer")
+PLAYERS = ("audience", "approach")  # kinds of people who play: everyone who stands in front of the camera
 
 
 def shared_library():
@@ -274,6 +282,19 @@ def in_view(point, margin: float = 0.5, height: float = 1.9, aspect: float = FRA
         return not behind.all()
     ndc = clip[:, :2] / clip[:, 3:]
     return bool(np.all(ndc.min(axis=0) <= 1.0) and np.all(ndc.max(axis=0) >= -1.0))
+
+
+def feet_in_view(point, toes: float = 0.15, margin: float = 0.03) -> bool:
+    """Whether the feet of someone standing at ``point`` (``(x, z)`` on the floor) show in the fixed camera's picture:
+    their toes, ``toes`` metres nearer the camera, ``margin`` (a share of the picture's height) above its bottom edge.
+    The camera play keeps the audience's feet in the picture (:func:`play_with_camera`)."""
+    camera = Camera(position=CAMERA_POSITION, target=CAMERA_TARGET, fov=CAMERA_FOV, near=0.1)
+    x, z = point
+    cx, _, cz = CAMERA_POSITION
+    d = math.hypot(cx - x, cz - z) or 1.0
+    clip = camera.projection_matrix(FRAME_ASPECT) @ camera.view_matrix() @ (x + toes * (cx - x) / d, 0.0,
+                                                                           z + toes * (cz - z) / d, 1.0)
+    return bool(clip[3] > 1e-6 and clip[1] / clip[3] >= -1.0 + 2.0 * margin)
 
 
 def _bearing(frm, to) -> float:
@@ -376,6 +397,8 @@ def add_3d_people(scene: Scene, library, rng: random.Random) -> list:
     if left:
         print(f"[fair] {left} pair(s) of people still walk through each other now and then "
               f"(try another CROWD_SEED)")
+    if CAMERA_PLAY:
+        play_with_camera(people, [kind for kind, *_ in slots])
     counts: dict[str, int] = {}
     for (kind, *_), person in zip(slots, people):
         counts[kind] = counts.get(kind, 0) + 1
@@ -385,6 +408,18 @@ def add_3d_people(scene: Scene, library, rng: random.Random) -> list:
           + "; ".join(f"{key.replace('_', ' ')} " + ", ".join(f"{v} {k}" for k, v in summary[key].items())
                       for key in ("sex", "age_group", "skin_band")))
     return people
+
+
+def play_with_camera(people, kinds) -> list:
+    """Let the people in front of the camera (``PLAYERS`` kinds) play with it now and then: their moves are planned
+    together over ``LOOP_PERIOD``, clear of everyone else (:func:`~bifold_demo.characters.camera_play.play_along`),
+    their feet in the picture (:func:`feet_in_view`).
+    Call it once their timings are final (after :func:`keep_apart`). Returns the plays."""
+    players = [p for p, kind in zip(people, kinds) if kind in PLAYERS]
+    others = [p for p, kind in zip(people, kinds) if kind not in PLAYERS]
+    return camera_play.play_along(players, CAMERA_POSITION, others=others, period=LOOP_PERIOD,
+                                  rng=random.Random(f"camera play {CROWD_SEED}"), moves=CAMERA_PLAY_MOVES,
+                                  place=feet_in_view)
 
 
 def assign_people(names: list[str], slots, catalog: dict, rng: random.Random) -> list[str]:

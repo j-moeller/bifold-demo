@@ -105,3 +105,9 @@ work goes on. The people are avatars from the
 - `face_photo.jpg`: `characters/face_photo.py`: a "photo" (here a close-up
   render of another avatar, standing in for a photo of a real person), the
   avatar as it is, with the photo's face painted on, and turned 35°.
+- `camera_play.jpg`: the fair's audience playing with the camera, cropped from
+  the fixed camera's picture: each pair shows someone just before a move and
+  at its most visible moment: waving (a Rocketbox wave clip), making faces
+  (thumbs at the temples, wiggling the fingers; the expressions come with
+  `characters/faces.py`), stepping to the side, leaning sideways, leaning in
+  towards the camera and stepping up closer.

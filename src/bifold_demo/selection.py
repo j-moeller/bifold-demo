@@ -24,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .characters import accessories, yoga
+from .characters import accessories, camera_play, yoga
 from .characters.accessories import Wardrobe
 from .characters.performer import (
     TURN_MIN,
@@ -782,8 +782,9 @@ class Selection:
         return ", ".join(items + ([f"{face}'s face"] if face else []))
 
     def detail(self, character, t: float) -> str:
-        """The second line of the selected person's tag: what they are doing, else what they wear."""
-        return self.describe(character, t) or self.wears(character)
+        """The second line of the selected person's tag: what they are doing (a yoga pose, or playing with the
+        camera, e.g. "waves at the camera"), else what they wear."""
+        return self.describe(character, t) or camera_play.doing(character, t) or self.wears(character)
 
     def status_lines(self, t: float) -> list[str]:
         if not self.active:

@@ -228,8 +228,8 @@ It contains:
 
 | Who | What they do | Configured by |
 |-----|--------------|---------------|
-| 3 in the audience | stand in a half circle 3.9 m in front of the camera (our exhibit), facing it and watching it, always there | `AUDIENCE` |
-| 3 visitors | walk down the aisle towards the camera, join the audience, watch for 15–30 s, turn around, walk back | `AUDIENCE`, `VISITORS_FROM` |
+| 3 in the audience | stand in a half circle 3.9 m in front of the camera (our exhibit), facing it and watching it, always there; now and then they [play with the camera](#playing-with-the-camera) | `AUDIENCE` |
+| 3 visitors | walk down the aisle towards the camera, join the audience, watch (and play) for 15–30 s, turn around, walk back | `AUDIENCE`, `VISITORS_FROM` |
 | 7 walkers | walk across the hall along the cross aisles, both directions; on the near aisle they come and go at the side walls, out of view, on the far aisles they turn round near the walls | `CROSSINGS` |
 | 3 wanderers | stroll between random points in an area, pausing | `WANDER_AREAS` |
 | 3 groups (7 people) | stand and chat, alternating talking and listening, with small shifts | `CHAT_GROUPS` |
@@ -270,6 +270,63 @@ then, people cut out of the Ultralytics sample photos.
 on it through the uploads folder, e.g. `uploads/booth1_wall.png` for a booth's
 back wall. The names are `booth1_wall` … `booth8_wall`, `booth1_counter`,
 `booth1_sign`, `booth1_screen`, `stage_screen`, `banner` and `floor`.
+
+## Playing with the camera
+
+The demo screen shows what the fixed camera sees, so the people in front of it
+see themselves like in a mirror, and now and then they play with their picture
+([`characters/camera_play.py`](src/bifold_demo/characters/camera_play.py)):
+
+| Move | What they do |
+|------|--------------|
+| `wave` | wave at the camera with one hand (mostly the right, the left when the right one holds a sign) or both, with a light smile |
+| `faces` | make one to three faces in a row, tilting and wobbling the head, sometimes with their hands: thumbs at the temples wiggling the fingers, index fingers pulling the mouth wide, palms squashing the cheeks |
+| `side_steps` | step to one side, check the picture, step over to the other side and back to the middle |
+| `lean_sideways` | lean to one side and the other, the hips shifting the other way, the feet staying put |
+| `lean_forward` | bend forward towards the camera, the hips going back, peering up at it |
+| `closer` | walk up two or three steps, peer at the camera (perhaps making a face), walk backwards to the spot |
+
+Only the audience and the visitors play, only while they watch the camera,
+and a move only starts when all of it fits in before they turn away
+(visitors do one to three moves per visit). Most of the time they just watch:
+about a third of the time on average, children and some adults more often
+and with bigger moves, shy people seldom and small. The moves are planned for
+everyone together over the hall's 6-minute loop, so nobody comes within
+0.55 m of anyone else because of a move (people walking by included), and no
+waving arm, elbow or leaning head reaches into anyone: such a move goes the
+other way, less far, waves with one hand, leaves the hands out of a face, or
+becomes another move. Going closer stops where the feet would leave the
+picture. Like everything
+else they are a pure function of time, so pausing, rewinding and `R` just
+work. A foot only moves while it steps, one at a time, and the face keeps on
+the camera through every move but the deliberate head tilts of making faces.
+The expressions themselves come from
+[`characters/faces.py`](src/bifold_demo/characters/faces.py) (the Rocketbox
+face bones). While someone does a yoga pose in selection mode, they stop
+playing; the tag of the selected person says what they do, for example
+"waves at the camera".
+
+The waves use the Rocketbox `wave_01` and `wave_02` clips (for men and women),
+which `bifold-characters fetch` downloads with the other animations (also
+with `--clips basic`); a cache prepared before they were part of it gets them
+with the same command (it only downloads what is missing), and until then
+people wave procedurally. `CAMERA_PLAY = False` in `scenes/fair.py` switches
+the playing off, and `CAMERA_PLAY_MOVES` lists the moves people choose from.
+
+```python
+from bifold_demo.characters.camera_play import make_move, play_along
+
+# people (Characters) whose behaviours watch the camera; the others' positions are kept clear of
+plays = play_along(audience, camera=(0, 1.6, 6), others=everyone_else, period=360.0, rng=5)
+plays[0].moves                           # Move("wave", 12.3-17.1 s), ...: kind, start, channel table
+move = make_move("closer", model, rng=1, playful=1.3)   # one move, e.g. to look at its channels
+```
+
+`play_along` plans the moves (`plan_camera_play`), wraps each behaviour in a
+`CameraPlay` (it moves the person and points the head at the camera from where
+the eyes are) and gives the character a `PlayPose` pose adjuster (hips, torso,
+leg IK, the arms, the face). It adds well under a millisecond per person and
+frame while someone plays, and next to nothing otherwise.
 
 ## 3D people
 
