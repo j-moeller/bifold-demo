@@ -20,7 +20,7 @@ describe the code itself.
 | A | A2 UV bake (shared with B) | on the branch (`1d962c7`) | `src/bifold_demo/characters/uvbake.py` |
 | A | **A3 landmarks on the head mesh, photos registered** (stages 0-1) | implemented (`04faecd`); the review was interrupted | [A3-head-landmarks-and-registration.md](A3-head-landmarks-and-registration.md) |
 | B: character creator | B0 literature review | on the branch (`e494da2`) | [docs/research/outfit_textures.md](../research/outfit_textures.md) |
-| B | **B1 garment regions, fills, patterns, presets** (stages 0-1) | implemented (`3b1be67`, `17a2137`) and reviewed; the fix was interrupted, partly done | [B1-outfit-regions-and-fills.md](B1-outfit-regions-and-fills.md) |
+| B | **B1 garment regions, fills, patterns, presets** (stages 0-1) | implemented (`3b1be67`, `17a2137`) and reviewed; the fix was interrupted, partly done. Since then fixed (`917ae88`) and on the branch as `b2adef8`, `dc46e51`, `2c75ec0` | [B1-outfit-regions-and-fills.md](B1-outfit-regions-and-fills.md) |
 | C: saved characters in the scene | C1 the saved format and the book | on the branch (`5054840`) | `src/bifold_demo/characters/created.py` |
 | C | **C2 created characters take over places in the fair** | implemented (`a9ea9c2`, `58749f6`, `ba58d8c`) and reviewed; the fix was interrupted, partly done. Since then the fix is finished (`f88536b`) and four independent checkers are testing it | [C2-created-characters-in-the-fair.md](C2-created-characters-in-the-fair.md) |
 
@@ -61,3 +61,7 @@ Only the commits integrated into the branch are.
 | A3 | `wf_9c8d2dc1-3c2` | `.claude/worktrees/wf_9c8d2dc1-3c2-1` | review |
 | B1 | `wf_c2a91440-c22` | `.claude/worktrees/wf_c2a91440-c22-1` | fix (edits in `outfit/regions.py` uncommitted) |
 | C2 | `wf_17f4d8c3-caf` | `.claude/worktrees/wf_17f4d8c3-caf-1` | fix (edits in 9 files and a new `pacing.py`, uncommitted) |
+
+Since the pause, the account's usage limit cut off the A3 review, the B1 fix and C2's checkers once more. All three
+resumed the same way once the limit reset. Since then, every review, check and fix stage writes its findings or a
+progress log to its scratch folder as it goes, so the next interruption loses none of it.

@@ -8,6 +8,10 @@
 It is reviewed. The fix was interrupted while partly done: uncommitted edits in `outfit/regions.py` (see the end of
 this page). The fix starts again from those edits. The commits are not on the branch yet.
 
+**Update: on the branch.** The fix finished (after one more interruption, by the usage limit) in commit `917ae88`
+"Outfits: review fixes: labels, colour blocks, bounded caches, parser". All three commits are on the branch as
+`b2adef8`, `dc46e51` and `2c75ec0`. See [the fix, finished](#the-fix-finished).
+
 ## What it builds
 
 The new package `src/bifold_demo/characters/outfit/` holds stages 0 and 1 of [the literature
@@ -222,6 +226,58 @@ The edits in `src/bifold_demo/characters/outfit/regions.py` (+167/-29 lines) so 
 
 Not started yet: the shading per colour cluster in `tailor.py`, the weak or LRU caches, the parser fixes, the
 round-trips, `dress()` on top of another body texture, and the new tests.
+
+## The fix, finished
+
+Every review finding is fixed. Each label fix has a real-avatar test that fails on the old labels.
+
+- **Female_Party_02:**
+  - at the waist, an island or colour of an upper garment keeps that garment's label however large it is, so the
+    blouse front below the belt went from 0 % to 100 % top (the back was already 99 %);
+  - a shipped override (`overrides/Female_Party_02.json`) labels the belt's loose end, which the hip bones move, as
+    other.
+- **Colour blocks:** `regions.colour_blocks()` groups each region's colour clusters by colour. The shading layers give
+  each block its own reference brightness, so Male_Adult_17's hoodie comes out even in white, festival, red, navy
+  pinstripe and tartan. Regions of one colour take exactly the old path.
+- **Hems:** a thin colour that, texel by texel, looks like a neighbouring garment is split among those garments.
+  Female_Child_01's sleeve and waist rims are now top, or shirt where the white undershirt shows below the hem, and the
+  preview has no pink lines.
+- **Tie knots:** a small island of the tie's colour just above the tie, at the front centre, is other. On the visible
+  knot, "other" went from 18 / 0 / 78 % to 100 / 97 / 100 % on the three business men.
+- **Belts:** a band of its own colour within 6 cm of the top of the trousers, going at least a quarter of the way
+  round, is other. The share of belt texels labelled other is now 86-95 %. Buckles still count as trousers: a buckle
+  rule took stonewashed denim on four avatars and was reverted.
+- **Memory:** `regions.Recent` is a least-recently-used cache that holds models only weakly. It keeps 4 avatars' labels
+  and 3 tailors; a tailor is about 140 MB at 1024. Dressing 7 avatars in a row used to grow to 1.3 GB; it now levels
+  off at about 800 MB.
+- **The parser:**
+  - it splits at `, ; & +`, "with", "over", "under", "underneath", "beneath", "plus", and "and" between garments;
+  - parts it does not understand, or that name details (buttons, pockets), are left out, and it fails only when no
+    part parses;
+  - the last, then the longest, garment word names the region ("white dress shirt" is a shirt);
+  - the documented example works, also from the CLI.
+- **Damaged caches** of any kind are rebuilt. A bad user override file is left out with a warning.
+- **Fit for the later steps:**
+  - `Tailor.texture(outfit, base=...)` and `dress()` build on the body texture a person already wears (for example a
+    skin matched to photos by component 1), and `undress()` puts it back;
+  - image swatches and atlases round-trip as PNG data URIs or paths;
+  - `fills.image_rgb` takes paths, data URIs, grey, RGBA, 16-bit and float images.
+- **Tests:** patterns are checked across a UV cut on a synthetic person; there are real-avatar tests for every problem
+  avatar above.
+
+Checks reported:
+
+- the full suite with the real avatars: 490 passed, 9 skipped;
+- the outfit and UV bake tests with the real avatars: 58 passed;
+- no new ruff findings.
+
+The labels of all 20 avatars were remade and every changed area was inspected.
+
+Labels are now right by themselves on 17 of 20 avatars. Overrides ship for Female_Adult_06, Male_Adult_21 and
+Female_Party_02 (the belt's end).
+
+Found outside the package and left alone: `face_photo._layouts` keeps every model and its small head layout alive
+forever. It should get a bounded or weak cache when the face work touches it.
 
 ## Open issues the builder admits
 
