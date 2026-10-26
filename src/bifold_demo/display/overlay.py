@@ -54,6 +54,33 @@ def draw_detections(image: np.ndarray, detections: list[Detection], from_size: t
                     text_thickness, cv2.LINE_AA)
 
 
+KNOWN_FACE, UNKNOWN_FACE = (60, 200, 60), (170, 170, 170)
+
+
+def draw_faces(image: np.ndarray, faces, from_size: tuple[int, int] | None = None) -> None:
+    """Draw recognised faces in place: a box round each face and the person's name under it (green), or "?" for a
+    stranger (grey). ``faces``: :class:`~bifold_demo.recognition.recognizer.Recognized` items; ``from_size`` as for
+    :func:`draw_detections`."""
+    h, w = image.shape[:2]
+    sx, sy = (w / from_size[0], h / from_size[1]) if from_size else (1.0, 1.0)
+    s = _ui_scale(image)
+    thickness, font_scale, text_thickness = max(1, round(1.5 * s)), 0.5 * s, max(1, round(1.2 * s))
+    for item in faces:
+        x, y, bw, bh = item.face.box
+        x1, y1, x2, y2 = round(x * sx), round(y * sy), round((x + bw) * sx), round((y + bh) * sy)
+        known = item.name is not None
+        color = KNOWN_FACE if known else UNKNOWN_FACE
+        cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness, cv2.LINE_AA)
+        label = f"{item.name} {item.match.score:.2f}" if known else "?"
+        (tw, th), baseline = cv2.getTextSize(label, FONT, font_scale, text_thickness)
+        pad = max(2, round(3 * s))
+        left = max(0, min(w - tw - 2 * pad, (x1 + x2 - tw) // 2 - pad))
+        top = y2 + 2 if y2 + th + baseline + 2 * pad + 2 <= h else max(0, y1 - th - baseline - 2 * pad - 2)
+        cv2.rectangle(image, (left, top), (left + tw + 2 * pad, top + th + baseline + 2 * pad), color, -1)
+        cv2.putText(image, label, (left + pad, top + pad + th), FONT, font_scale, _text_color(color), text_thickness,
+                    cv2.LINE_AA)
+
+
 def draw_panel(image: np.ndarray, lines: list[str], corner: str = "top-left", alpha: float = 0.55) -> None:
     """Draw lines of text on a translucent dark panel in a corner of the image."""
     if not lines:

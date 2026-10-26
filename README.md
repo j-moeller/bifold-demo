@@ -54,6 +54,7 @@ for your terminal app. Allow it, then run the command again.
 |-----------|-----------------------------------------------------------|
 | `S`       | switch the source: scene ↔ webcam                         |
 | `D`       | turn detection on or off                                  |
+| `N`       | face recognition on or off: names on the faces of known people (see [Face recognition](#face-recognition)) |
 | `Space`   | pause or resume the scene's simulation time               |
 | `R`       | restart the scene (time 0, physics reset)                 |
 | `[` / `]` | lower / raise the confidence threshold                    |
@@ -413,9 +414,15 @@ apps, in two steps:
    similar photo, if that reaches 0.363 (OpenCV's recommended cut); else it is
    unknown.
 
-The known people are the photos in [`faces/`](faces/README.md), a folder per
-person with as many photos as you like (several photos taken on different days
-make it surer):
+In the demo `N` (or `--recognize`) turns it on: every face in the picture gets
+a box with the name of the person and the similarity under it, or `?` for a
+stranger, and the status panel lists who is in the picture. It runs on its own
+thread beside the object detection.
+
+The known people are the photos in [`faces/`](faces/README.md) (`--faces DIR`
+for another folder), a folder per person with as many photos as you like
+(several photos taken on different days make it surer). Photos added while the
+demo runs are known a second later:
 
 ```bash
 bifold-faces add "Ada Lovelace" portrait.jpg holiday.png   # copies them to faces/Ada Lovelace/

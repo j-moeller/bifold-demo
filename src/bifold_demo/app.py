@@ -12,13 +12,14 @@ import cv2
 
 from .detection import DEFAULT_MODEL, AsyncDetector, DetectionResult
 from .display import Window, draw_banner, draw_detections, draw_panel, draw_selection
+from .display.overlay import draw_faces
 from .display.window import TAB
 from .loader import SceneReloader, load_scene
 from .scene import Scene
 from .selection import Selection, person_name
 from .sources import FixedStepClock, Frame, SceneSource, SimulationClock, SourceSwitcher, WebcamSource
 
-HELP = ("S source | D detect | Space pause | R reset | [ ] confidence | Y / click people | F fullscreen | "
+HELP = ("S source | D detect | N names | Space pause | R reset | [ ] confidence | Y / click people | F fullscreen | "
         "P screenshot | H hide | Q quit")
 STALE_AFTER = 1.0  # seconds after which old detections are no longer drawn
 
@@ -49,6 +50,8 @@ class DemoConfig:
     reload: bool = True
     uploads: str | None = "uploads"
     items: str | None = "items"  # looks for the hats, glasses, signs and t-shirts (see characters.accessories)
+    faces: str = "faces"  # photos of the people the face recognition knows (see recognition.gallery)
+    recognize: bool = False  # start with the face recognition on (N toggles it)
     title: str = "bifold demo"
 
 
@@ -86,6 +89,12 @@ class DemoApp:
         self.detector = None
         self.worker: AsyncDetector | None = None
         self.detect_enabled = config.detect
+        self.recognizer = None  # the face recognition (N), loaded when first switched on
+        self.face_worker: AsyncDetector | None = None
+        self.recognize_enabled = False
+        self._face_error: str | None = None
+        self._faces_submitted: tuple[str, int] | None = None
+        self._last_faces = None
         self.sync = config.sync or config.headless  # headless renders faster than real time: keep boxes in step
         self.show_hud = True
         self.display_rate = _Rate()
@@ -127,6 +136,47 @@ class DemoApp:
             self.worker = AsyncDetector(self.detector).start()
         return True
 
+    def _load_recognizer(self) -> bool:
+        """Load the face models (downloading them the first time) and the known people; on failure keep the video
+        running and show the error (``N`` retries)."""
+        from .recognition.gallery import Gallery
+        from .recognition.recognizer import FaceRecognizer
+
+        try:
+            gallery = Gallery(self.config.faces)
+            self.recognizer = FaceRecognizer(gallery)
+            gallery.refresh(force=True)
+        except Exception as exc:  # noqa: BLE001 - e.g. the models cannot be downloaded
+            self.recognizer = None
+            self._face_error = f"face recognition unavailable: {type(exc).__name__}: {exc}"
+            print(f"[faces] {self._face_error}")
+            return False
+        self._face_error = None
+        people = gallery.people()
+        print(f"[faces] {len(people)} known: {', '.join(people) or f'nobody yet (photos go in {gallery.folder}/)'}")
+        if not self.sync:
+            self.face_worker = AsyncDetector(self.recognizer).start()
+        return True
+
+    def _faces_for(self, frame: Frame):
+        """The recognised faces of ``frame`` (or of a frame just before it), or ``None``; kept for the status panel."""
+        self._last_faces = self._recognized(frame)
+        return self._last_faces
+
+    def _recognized(self, frame: Frame):
+        if not self.recognize_enabled or self.recognizer is None:
+            return None
+        if self.face_worker is None:
+            return self.recognizer.detect_frame(frame)
+        key = (frame.source, frame.index)
+        if key != self._faces_submitted:
+            self.face_worker.submit(frame)
+            self._faces_submitted = key
+        result = self.face_worker.latest()
+        if result is None or result.source != frame.source or time.perf_counter() - result.timestamp > STALE_AFTER:
+            return None
+        return result
+
     def notify(self, message: str, seconds: float = 2.5, error: bool = False) -> None:
         print(f"[demo] {message}")
         self._message = (message, time.perf_counter() + seconds, error)
@@ -142,6 +192,8 @@ class DemoApp:
             self.notify(f"{cfg.source} unavailable, showing the scene instead", 5, error=True)
         if cfg.detect:
             self._load_detector()
+        if cfg.recognize:
+            self.recognize_enabled = self._load_recognizer()
         window = None if cfg.headless else Window(cfg.title, cfg.fullscreen)
         if window:
             print(f"[demo] controls: {HELP}")
@@ -155,7 +207,7 @@ class DemoApp:
                         if message:
                             self.notify(message)
                     result = self._detections_for(frame)
-                    self._last_canvas = self._compose(frame, result)
+                    self._last_canvas = self._compose(frame, result, self._faces_for(frame))
                     self.display_rate.tick(time.perf_counter())
                     if cfg.record:
                         self._record(self._last_canvas)
@@ -177,6 +229,8 @@ class DemoApp:
         finally:
             if self.worker:
                 self.worker.stop()
+            if self.face_worker:
+                self.face_worker.stop()
             self.selection.close()
             self.switcher.stop()
             if self._writer is not None:
@@ -199,10 +253,12 @@ class DemoApp:
             return None
         return result
 
-    def _compose(self, frame: Frame, result: DetectionResult | None):
+    def _compose(self, frame: Frame, result: DetectionResult | None, faces=None):
         canvas = frame.image.copy()  # the detector may still be reading the original
         if result is not None:
             draw_detections(canvas, result.detections, None if result.frame_size == frame.size else result.frame_size)
+        if faces is not None:
+            draw_faces(canvas, faces.faces, None if faces.frame_size == frame.size else faces.frame_size)
         selecting = self.selection.active and frame.source == "scene"
         if selecting and self.selection.box is not None:
             t = self.scene_source.scene.time
@@ -217,7 +273,8 @@ class DemoApp:
             draw_banner(canvas, text, color=(40, 40, 200) if is_error else (60, 140, 40))
         else:
             error = (getattr(self.switcher.active, "error", None) or self._detector_error
-                     or (self.worker.error if self.worker else None))
+                     or (self.worker.error if self.worker else None) or self._face_error
+                     or (self.face_worker.error if self.face_worker else None))
             if error:
                 draw_banner(canvas, error)
         return canvas
@@ -241,6 +298,16 @@ class DemoApp:
                     counts[det.label] = counts.get(det.label, 0) + 1
                 summary = ", ".join(f"{n} {label}" for label, n in sorted(counts.items(), key=lambda kv: -kv[1]))
                 lines.append(f"objects: {summary or 'none'}")
+        if self.recognize_enabled and self.recognizer is not None:
+            known = self.recognizer.gallery.people()
+            faces = self._last_faces
+            line = f"faces: {len(known)} known"
+            if faces is not None and faces.source == frame.source:
+                names = sorted(f.name for f in faces.faces if f.name)
+                strangers = sum(f.name is None for f in faces.faces)
+                line += f", in the picture: {', '.join(names) or 'nobody known'}"
+                line += f" (+{strangers} unknown)" if strangers else ""
+            lines.append(line)
         if frame.source == "scene":
             lines += self.selection.status_lines(self.scene_source.scene.time)
         return lines
@@ -269,6 +336,12 @@ class DemoApp:
                 self.detect_enabled = False
             self.detect_enabled = not self.detect_enabled
             self.notify(f"detection {'on' if self.detect_enabled else 'off'}")
+        elif key == ord("n"):
+            if self.recognizer is None and not self._load_recognizer():
+                self.notify(self._face_error, 5, error=True)
+                return
+            self.recognize_enabled = not self.recognize_enabled
+            self.notify(f"face recognition {'on' if self.recognize_enabled else 'off'}")
         elif key == ord(" "):
             self.notify("paused" if clock.toggle_pause() else "running", 1.0)
         elif key == ord("r"):
@@ -377,6 +450,9 @@ def parse_args(argv=None) -> DemoConfig:
     g.add_argument("--uploads", default="uploads",
                    help="folder whose files replace textures of same-named objects ('' to disable)")
     g.add_argument("--no-reload", dest="reload", action="store_false", help="do not reload the scene file on save")
+    g.add_argument("--faces", default="faces",
+                   help="folder of photos of the people to recognise, a folder per person (default: faces)")
+    g.add_argument("--recognize", action="store_true", help="start with the face recognition on (N toggles it)")
     g.add_argument("--items", default="items",
                    help="folder of looks for the hats, glasses, signs and t-shirts of selection mode, e.g. "
                         "items/sign_logo.png ('' for the built-in ones only)")
@@ -400,7 +476,8 @@ def parse_args(argv=None) -> DemoConfig:
         source=a.source, scene=a.scene, camera=a.camera, width=a.size[0], height=a.size[1], fps=a.fps,
         mirror=a.mirror, model=a.model, device=a.device, conf=a.conf, iou=a.iou, imgsz=a.imgsz, classes=a.classes,
         detect=a.detect, sync=a.sync, fullscreen=a.fullscreen, record=a.record, headless=a.headless,
-        frames=a.frames, reload=a.reload, uploads=a.uploads or None, items=a.items or None,
+        frames=a.frames, reload=a.reload, uploads=a.uploads or None, items=a.items or None, faces=a.faces,
+        recognize=a.recognize,
     )
 
 

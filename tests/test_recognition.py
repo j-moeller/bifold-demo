@@ -149,3 +149,52 @@ def test_a_gallery_of_real_photos_names_the_faces(engine, zidane, tmp_path):
     assert gallery.people() == {"Left Man": 1, "Right Man": 1}
     named = sorted(((f.box[0], gallery.match(v).name) for f, v in engine.faces(cv2.convertScaleAbs(zidane, alpha=0.8))))
     assert [name for _, name in named] == ["Left Man", "Right Man"]
+
+
+def test_the_demo_names_the_faces_in_the_rendered_scene(gl, engine, zidane, tmp_path, monkeypatch):
+    from bifold_demo.app import DemoApp, DemoConfig
+    from bifold_demo.scene import Camera, Quad, Scene
+    from bifold_demo.scene.textures import sample_image
+
+    monkeypatch.chdir(tmp_path)
+    faces = sorted(engine.detect(zidane), key=lambda f: f.box[0])
+    for name, face in zip(("Left Man", "Right Man"), faces):
+        x, y, w, h = (int(v) for v in face.box)
+        (tmp_path / "faces" / name).mkdir(parents=True)
+        crop = zidane[max(0, y - h // 2):y + 2 * h, x - w // 2:x + w * 3 // 2]
+        cv2.imwrite(str(tmp_path / "faces" / name / "crop.jpg"), crop)
+    scene = Scene(background=(40, 40, 40), camera=Camera(position=(0, 0, 2.2), target=(0, 0, 0), fov=50))
+    scene.add(Quad(texture=sample_image("zidane.jpg"), height=1.6, lit=False), name="photo")
+    app = DemoApp(DemoConfig(headless=True, frames=1, width=960, height=540, detect=False, recognize=True,
+                             uploads=None, faces=str(tmp_path / "faces")), scene=scene)
+    app.run()  # headless runs are in step: the faces of each frame are found before it is drawn
+    assert app.recognize_enabled and app.recognizer is not None and app.face_worker is None
+    frame = app.scene_source.read()
+    result = app._faces_for(frame)
+    assert sorted(f.name for f in result.faces) == ["Left Man", "Right Man"]
+    lines = app._status_lines(frame, None)
+    canvas = app._compose(frame, None, result)
+    assert (canvas != frame.image).any()
+    assert "faces: 2 known, in the picture: Left Man, Right Man" in lines
+
+
+def test_n_switches_the_face_recognition(gl, tmp_path, monkeypatch):
+    from bifold_demo.app import DemoApp, DemoConfig
+    from bifold_demo.recognition import gallery, recognizer
+    from bifold_demo.recognition.engine import FaceEngine
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(FaceEngine, "__init__", lambda self, *a, **k: None)
+    monkeypatch.setattr(FaceEngine, "faces", lambda self, image, min_size=0: [])
+    app = DemoApp(DemoConfig(headless=True, frames=1, width=160, height=90, detect=False, uploads=None))
+    app.run()
+    window = type("W", (), {"toggle_fullscreen": lambda self: None})()
+    messages = []
+    app.notify = lambda message, *args, **kwargs: messages.append(message)
+    app._handle_key(ord("n"), window)
+    assert app.recognize_enabled and isinstance(app.recognizer, recognizer.FaceRecognizer)
+    assert isinstance(app.recognizer.gallery, gallery.Gallery) and messages[-1] == "face recognition on"
+    frame = app.scene_source.read()
+    assert app._faces_for(frame).faces == []
+    app._handle_key(ord("n"), window)
+    assert not app.recognize_enabled and app._faces_for(frame) is None and messages[-1] == "face recognition off"
