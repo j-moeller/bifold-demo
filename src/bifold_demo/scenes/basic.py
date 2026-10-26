@@ -1,4 +1,4 @@
-"""Basic scene: a photo poster, a photo cube and a bouncing ball under a slowly drifting camera.
+"""Basic scene: a photo poster, a photo cube and a bouncing ball in front of a fixed camera.
 
 Objects (drop ``uploads/<name>.jpg`` to replace a texture): ``poster``, ``cube``, ``ball``, ``floor``.
 """
@@ -22,7 +22,7 @@ from bifold_demo.scene import (
 def build_scene() -> Scene:
     scene = Scene(background=gradient(top=(110, 135, 165), bottom=(30, 32, 40)), ambient=0.55)
     scene.camera = Camera(
-        position=oscillate(center=(0.0, 1.6, 5.4), amplitude=(1.0, 0.15, 0.0), period=14),
+        position=(0.0, 1.6, 5.4),
         target=(0.0, 1.15, 0.0),
         fov=50,
     )

@@ -25,7 +25,8 @@ from bifold_demo.scene.transforms import rotation_y
 
 # -- layout (metres; Y is up and the camera looks down the hall towards -Z) ----------------------
 SEED = 7  # change for a different arrangement of people
-CAMERA_POSITION = (0.0, 1.6, 6.0)
+CAMERA_POSITION = (0.0, 1.6, 6.0)  # the camera is fixed, like a mounted camera
+CAMERA_TARGET = (0.0, 1.5, -12.0)
 HALL_WIDTH, HALL_LENGTH, HALL_HEIGHT = 44.0, 72.0, 12.0
 HALL_FRONT = 12.0  # z of the wall behind the camera; the hall extends to HALL_FRONT - HALL_LENGTH
 VISITORS = 6  # people standing in a half circle in front of the camera, open towards it
@@ -61,12 +62,7 @@ def build_scene(people=None) -> Scene:
         light_color=(255, 250, 240),
         fog=Fog(start=18, end=95, color=(214, 216, 222), strength=0.55),
     )
-    scene.camera = Camera(
-        position=oscillate(center=CAMERA_POSITION, amplitude=(0.3, 0.02, 0.0), period=17),
-        target=oscillate(center=(0.0, 1.5, -12.0), amplitude=(1.2, 0.1, 0.0), period=23),
-        fov=55,
-        near=0.1,
-    )
+    scene.camera = Camera(position=CAMERA_POSITION, target=CAMERA_TARGET, fov=55, near=0.1)
     add_hall(scene)
     add_stage(scene)
     people = Crowd(people_for_scene(PEOPLE_FOLDER) if people is None else people, rng)
