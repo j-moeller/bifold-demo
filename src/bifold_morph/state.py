@@ -1,5 +1,4 @@
-"""The plain data the window and the editor pass each other: no PyTorch here, so the window side of an isolated
-run (see :mod:`.isolated`) never imports it."""
+"""The plain data the window and the editor pass each other (no PyTorch here)."""
 
 from __future__ import annotations
 

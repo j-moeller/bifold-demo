@@ -8,15 +8,15 @@ version = "0.1.0"
 description = "Live webcam face editing with age and gender sliders (e4e + StyleGAN2, directions found with MiVOLO)"
 readme = "README.md"
 requires-python = ">=3.10"
-# the window side: enough for `bifold-morph run --isolate`, where the models run in Docker
 dependencies = [
     "numpy>=1.24",
     "opencv-python>=4.8",
+    "torch>=2.5",
+    "timm>=0.9",
+    "gdown>=5.1",
 ]
 
 [project.optional-dependencies]
-# the model side: to run the models in this Python (and inside the container)
-models = ["torch>=2.5", "timm>=0.9", "gdown>=5.1"]
 dev = ["pytest>=7"]
 
 [project.scripts]

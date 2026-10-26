@@ -74,7 +74,7 @@ class Worker:
     started yet), :meth:`take` returns the newest result once."""
 
     def __init__(self, editor):
-        self.editor = editor  # a FaceEditor or an IsolatedEditor
+        self.editor = editor
         self.error: BaseException | None = None
         self.busy_seconds = 0.0  # how long the newest result took
         self._cond = threading.Condition()
@@ -256,26 +256,12 @@ class App:
 
 def run(source: str = "0", device: str = "auto", size: int = 256, max_faces: int = 2, readout: bool = True,
         half: bool = False, width: int = 1280, height: int = 720, mirror: bool | None = None,
-        fullscreen: bool = False, age: float = 0.0, gender: float = 0.0, replace: bool = False,
-        isolate: bool = False, image: str | None = None) -> None:
-    """The live demo. ``isolate``: the models run in the locked-down Docker container ``image`` (see
-    :mod:`.isolated`) and this process only handles the camera and the window."""
-    if isolate:
-        from .isolated import IMAGE, IsolatedEditor, docker_command
-
-        print("[morph] starting the model container (no network, read-only) ...")
-        editor = IsolatedEditor(docker_command(image or IMAGE, device="cpu" if device == "auto" else device,
-                                               size=size, max_faces=max_faces, readout=readout))
-    else:
-        editor = load_editor(pick_device(device), size=size, max_faces=max_faces, readout=readout, half=half)
+        fullscreen: bool = False, age: float = 0.0, gender: float = 0.0, replace: bool = False) -> None:
+    editor = load_editor(pick_device(device), size=size, max_faces=max_faces, readout=readout, half=half)
     src = open_source(source, width, height, mirror)
     settings = Settings(age=age, gender=gender, replace=replace, readout=readout)
     print(f"[morph] running on {editor.device}; {KEYS_HELP}")
-    try:
-        App(editor, src, settings, fullscreen=fullscreen).run()
-    finally:
-        if isolate:
-            editor.close()
+    App(editor, src, settings, fullscreen=fullscreen).run()
 
 
 def edit_file(path, output, age: float, gender: float, device: str = "auto", size: int = 1024,
