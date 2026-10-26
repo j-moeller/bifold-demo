@@ -26,7 +26,7 @@ from functools import partial
 import cv2
 import numpy as np
 
-from bifold_demo.characters.behaviour import approach, chat, stand, walk_by, wander
+from bifold_demo.characters.behaviour import approach, chat, fits_period, stand, walk_by, wander
 from bifold_demo.characters.crowd import age_group, describe_crowd, populate, sample_crowd
 from bifold_demo.characters.library import CharacterLibrary
 from bifold_demo.people import people_for_scene
@@ -93,22 +93,10 @@ def build_scene(people=None) -> Scene:
     scene.camera = Camera(position=CAMERA_POSITION, target=CAMERA_TARGET, fov=CAMERA_FOV, near=0.1)
     add_hall(scene)
     add_stage(scene)
-    if people is None and PEOPLE_3D:
-        try:
-            library = shared_library()
-            ready = crowd_ready(library)
-            if ready:
-                add_3d_people(scene, library, random.Random(CROWD_SEED))
-        except Exception as error:  # noqa: BLE001 - e.g. a damaged file in the character cache: the demo still runs
-            print(f"[fair] could not set up the 3D people ({type(error).__name__}: {error}); "
-                  "showing 2D cut-outs instead")
-        else:
-            if ready:
-                for index, origin, yaw in booth_layout():
-                    add_booth(scene, index, origin, yaw, COMPANIES[(index - 1) % len(COMPANIES)], Crowd([], rng), rng)
-                return scene
-            print("[fair] no 3D people prepared yet (run: bifold-characters fetch --set conference); "
-                  "showing 2D cut-outs instead")
+    if people is None and PEOPLE_3D and _add_3d_people_if_ready(scene):
+        for index, origin, yaw in booth_layout():
+            add_booth(scene, index, origin, yaw, COMPANIES[(index - 1) % len(COMPANIES)], Crowd([], rng), rng)
+        return scene
     people = Crowd(people_for_scene(PEOPLE_FOLDER) if people is None else people, rng)
     for index, origin, yaw in booth_layout():
         add_booth(scene, index, origin, yaw, COMPANIES[(index - 1) % len(COMPANIES)], people, rng)
@@ -201,14 +189,14 @@ PEOPLE_3D = True  # False: always use the 2D cut-outs
 CROWD_SEED = 5  # change for a different crowd and different timings
 # walk from far away towards the camera, stop (3.5-5 m from it, so the feet stay in the picture), turn around,
 # walk back: (start, stop) on the floor
-APPROACHES = [((-0.8, -16.0), (-1.7, 2.4)), ((1.4, -22.0), (1.6, 1.2)), ((0.3, -12.5), (0.6, 2.0))]
+APPROACHES = [((-0.8, -16.0), (-1.7, 2.4)), ((1.4, -23.5), (1.6, 1.2)), ((0.3, -12.5), (0.6, 2.0))]
 # walk across the hall: (z, direction); people vanish at the side walls where the camera cannot see the wall,
 # elsewhere they turn around there and walk back
 CROSSINGS = [(-7.0, 1), (-6.2, -1), (-7.8, 1), (-20.5, -1), (-19.8, 1), (-21.3, -1), (-34.0, 1)]
 WANDER_AREAS = [((-8.0, -4.5), (-4.0, 1.5)), ((5.8, -5.4), (8.2, -3.4)), ((-3.0, -42.0), (3.0, -36.0))]
 CHAT_GROUPS = [((4.6, -2.4), 2), ((3.8, -12.5), 3), ((-3.6, -15.6), 2)]  # (centre, size); a child may join
 MIN_DISTANCE = 0.6  # metres people keep from each other (walk timings are shifted until they do)
-LOOP_PERIOD = 360.0  # seconds; moving people's loops are stretched to divide it, so the hall repeats every 6 min
+LOOP_PERIOD = 360.0  # seconds; moving people's loops are stretched to fit it, so the hall repeats every 6 min
 FRAME_ASPECT = 16 / 9  # the widest picture the camera is used with (for the "out of view" checks)
 MOVING = ("approach", "walker", "wanderer")  # kinds of people whose timings keep_apart may shift
 
@@ -217,6 +205,26 @@ def shared_library():
     """The character library, kept across scene reloads when it can be (loading avatars takes a while)."""
     shared = getattr(CharacterLibrary, "shared", None)
     return shared() if shared is not None else CharacterLibrary()
+
+
+def _add_3d_people_if_ready(scene: Scene) -> bool:
+    """Add the animated people, or say why not (then the hall gets 2D cut-outs)."""
+    for attempt in (1, 2):
+        try:
+            library = shared_library()
+            if not crowd_ready(library):
+                print("[fair] no 3D people prepared yet (run: bifold-characters fetch --set conference, or set "
+                      "BIFOLD_CHARACTERS to the folder you prepared them in); showing 2D cut-outs instead")
+                return False
+            add_3d_people(scene, library, random.Random(CROWD_SEED))
+            return True
+        except Exception as error:  # noqa: BLE001 - e.g. a damaged file in the character cache: the demo still runs
+            if attempt == 1:  # the library leaves out an avatar whose files turn out to be damaged: try without it
+                print(f"[fair] trouble setting up the 3D people ({type(error).__name__}: {error}); trying again")
+            else:
+                print(f"[fair] could not set up the 3D people ({type(error).__name__}: {error}); "
+                      "showing 2D cut-outs instead")
+    return False
 
 
 def crowd_ready(library) -> bool:
@@ -273,73 +281,27 @@ def _raised(make, height: float):
     return lambda **kwargs: Raised(make(**kwargs), height)
 
 
-def loop_length(duration: float, period: float = LOOP_PERIOD) -> float:
-    """The shortest loop length of at least ``duration`` seconds that fits ``period`` (``period / k`` or ``k * period``)."""
-    if duration <= period:
-        return period / max(1, math.floor(period / duration + 1e-6))
-    return period * math.ceil(duration / period - 1e-6)
-
-
-def fits_period(duration: float, period: float = LOOP_PERIOD) -> bool:
-    return abs(loop_length(duration, period) - duration) < 1e-6
-
-
-def fit_loop(make, pause: str, spread, per_loop: int = 1, period: float = LOOP_PERIOD):
-    """A behaviour factory like ``make`` whose loop lasts a whole fraction (or multiple) of ``period``.
-
-    How long a walk takes depends on the avatar, so the pause given by the keyword ``pause`` (a ``(low, high)``
-    range, used about ``per_loop`` times per loop) is set to the length that rounds the loop up to the next
-    :func:`loop_length`; ``spread`` is the range the pause would otherwise come from. The behaviour is built two
-    or three times. A loop that cannot be fitted is kept as it is (:func:`keep_apart` then checks one period).
-    """
-    def build(rng, **kwargs):
-        value = random.Random(rng).uniform(*spread)
-        behaviour = make(rng=rng, **kwargs, **{pause: (value, value)})
-        target = loop_length(behaviour.duration, period)
-        slope, previous = float(per_loop), None
-        for _ in range(4):
-            missing = target - behaviour.duration
-            if abs(missing) < 1e-6:
-                break
-            if previous is not None and abs(value - previous[0]) > 1e-9:
-                slope = (behaviour.duration - previous[1]) / (value - previous[0])
-                if slope < 0.5:  # the pause hardly matters (no such pause in this loop)
-                    break
-            previous = value, behaviour.duration
-            value += missing / slope
-            if value < 0.05:  # rounding down is impossible: round up to the next length instead
-                target = loop_length(target + 1e-3, period)
-                value = previous[0] + (target - previous[1]) / slope
-            behaviour = make(rng=rng, **kwargs, **{pause: (value, value)})
-        return behaviour
-
-    return build
-
-
 def people_slots():
     """``(kind, behaviour factory, child allowed, prefers business clothes)`` for everyone in the hall."""
     cam = CAMERA_POSITION
     booths = booth_layout()
     booth_points = [(o[0], 1.5, o[2]) for _, o, _ in booths]
     slots = []
+    moving = {"camera": cam, "look_at": booth_points, "period": LOOP_PERIOD}  # all loops fit LOOP_PERIOD
     for (x0, z0), (x1, z1) in APPROACHES:
-        make = partial(approach, (x0, 0.0, z0), (x1, 0.0, z1), camera=cam, stop_distance=(3.5, 5.0),
-                       look_at=booth_points)
-        slots.append(("approach", fit_loop(make, "far_pause", (0.5, 3.0)), False, False))
+        slots.append(("approach", partial(approach, (x0, 0.0, z0), (x1, 0.0, z1), stop_distance=(3.5, 5.0), **moving),
+                      False, False))
     half = HALL_WIDTH / 2 - 1.0
     for z, direction in CROSSINGS:
         if in_view((-half, z)) or in_view((half, z)):  # they would be seen vanishing: turn round earlier instead
             ends = [(-(half - 4.0) * direction, 0.0, z), ((half - 4.0) * direction, 0.0, z)]
-            make = fit_loop(partial(walk_by, ends, camera=cam, return_mode="turn", look_at=booth_points),
-                            "pause", (0.5, 2.5), per_loop=2)
+            make = partial(walk_by, ends, return_mode="turn", pause=(0.5, 2.5), **moving)
         else:
             ends = [(-half * direction, 0.0, z), (half * direction, 0.0, z)]
-            make = fit_loop(partial(walk_by, ends, camera=cam, return_mode="teleport", look_at=booth_points),
-                            "gap", (0.5, 4.0))
+            make = partial(walk_by, ends, return_mode="teleport", **moving)
         slots.append(("walker", make, False, False))
     for area in WANDER_AREAS:
-        make = partial(wander, area, camera=cam, look_at=booth_points)
-        slots.append(("wanderer", fit_loop(make, "pause", (1.0, 6.0), per_loop=3), True, False))
+        slots.append(("wanderer", partial(wander, area, **moving), True, False))
     for g, ((cx, cz), size) in enumerate(CHAT_GROUPS):
         to_camera = _bearing((cx, cz), (cam[0], cam[2]))
         angles = {2: (95, -95), 3: (0, 105, -105)}[size]  # nobody on the far side, facing the camera
@@ -398,7 +360,8 @@ def assign_people(names: list[str], slots, catalog: dict, rng: random.Random) ->
     pool = list(names)
     result: list[str | None] = [None] * len(slots)
     kids = [n for n in pool if is_child(n)]
-    child_slots = sorted((i for i, slot in enumerate(slots) if slot[2]), key=lambda i: not slots[i][0].startswith("chat"))
+    child_slots = sorted((i for i, slot in enumerate(slots) if slot[2]),
+                         key=lambda i: not slots[i][0].startswith("chat"))  # with grown-ups first, then wandering
     for i in child_slots[:len(kids)]:
         result[i] = kids.pop(0)
         pool.remove(result[i])
@@ -457,6 +420,8 @@ def _separate_doubles(result: list[str], slots, is_child, rng: random.Random) ->
 
 def _track(behaviour, times) -> np.ndarray:
     """``(x, z)`` of a person at ``times``; nan while hidden."""
+    if hasattr(behaviour, "positions"):
+        return behaviour.positions(times)
     track = np.full((len(times), 2), np.nan)
     for k, t in enumerate(times):
         state = behaviour(float(t))
@@ -475,12 +440,13 @@ def keep_apart(behaviours, kinds, rng: random.Random, period: float = LOOP_PERIO
                rounds: int = 30) -> int:
     """Shift the timing of moving people until nobody ever comes closer than ``MIN_DISTANCE`` to anyone else.
 
-    Moving people (``MOVING`` kinds) loop in a whole fraction of ``period`` (:func:`fit_loop`), so after ``period``
-    seconds everyone is back where they started and checking one period covers all time; a loop that does not fit
-    is only checked for one period. Two people whose paths cross, looping in ``period / k1`` and ``period / k2``
-    seconds, meet at the crossing every ``period / lcm(k1, k2)`` seconds of timing difference: they can be kept
-    apart when that is longer than the time they take to pass it (true for the hall's 20-90 s loops). Standing
-    people never move out of the way. Returns the number of pairs of people who still come too close (0 = none).
+    Moving people (``MOVING`` kinds) loop in a whole fraction of ``period`` (their behaviours' ``period``), so after
+    ``period`` seconds everyone is back where they started and checking one period covers all time; a loop that
+    does not fit is only checked for one period. Two people whose paths cross, looping in ``period / k1`` and
+    ``period / k2`` seconds, meet at the crossing every ``period / lcm(k1, k2)`` seconds of timing difference: they
+    can be kept apart when that is longer than the time they take to pass it (true for the hall's 20-90 s loops).
+    Standing people never move out of the way. Returns the number of pairs of people who still come too close
+    (0 = none).
     """
     apart = MIN_DISTANCE + 0.05  # aim a little further apart, for passes between the samples
     samples = round(period / step)
@@ -503,29 +469,28 @@ def keep_apart(behaviours, kinds, rng: random.Random, period: float = LOOP_PERIO
         return [(i, j) for row, i in enumerate(movers) for j in np.nonzero(closest[row] < limit)[0]
                 if j != i and (not moving[j] or j > i)]
 
-    stuck = set()  # pairs no shift keeps apart (e.g. a walkway passing too close to someone standing)
+    tries: dict[tuple, int] = {}  # a pair no shift keeps apart (a walkway too close to someone standing) gives up
     for _ in range(rounds):
-        pairs = [pair for pair in conflicts(apart) if pair not in stuck]
+        pairs = [pair for pair in conflicts(apart) if tries.get(pair, 0) < 4]
         if not pairs:
             break
         for i, j in pairs:
-            k = rng.choice([x for x in (i, j) if moving[x]])
+            tries[i, j] = tries.get((i, j), 0) + 1
+            k = [x for x in (i, j) if moving[x]][tries[i, j] % 2 if moving[i] and moving[j] else 0]
             b = behaviours[k]
             if fits_period(b.duration, period):  # try shifts across the loop; shifting by whole steps rolls the track
                 own = max(1, round(b.duration / step))
                 shifts = np.unique(np.linspace(0, own, min(own, 64), endpoint=False).astype(int))
                 rolled = tracks[k][(np.arange(samples)[None, :] + shifts[:, None]) % samples]
-                clearance = np.full(len(shifts), np.inf)
-                for other in near(k):
-                    clearance = np.minimum(clearance, _closest(rolled, tracks[other]))
-                best = int(np.argmax(clearance))
+                others = near(k)
+                closest = np.stack([_closest(rolled, tracks[o]) for o in others] or [np.full(len(shifts), np.inf)])
+                # fewest people too close first, then the most room
+                best = int(np.lexsort((-closest.min(axis=0), (closest < apart).sum(axis=0)))[0])
                 b.offset = (b.offset + shifts[best] * step) % b.duration
                 tracks[k] = rolled[best]
             else:
                 b.offset = rng.uniform(0.0, b.duration)
                 tracks[k] = _track(b, times)
-            if _closest(tracks[i], tracks[j]) < apart:
-                stuck.add((i, j))
     return len(conflicts(MIN_DISTANCE))
 
 

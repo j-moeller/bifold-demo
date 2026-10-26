@@ -80,25 +80,33 @@ It contains:
 
 | Who | What they do | Configured by |
 |-----|--------------|---------------|
-| 3 approaching | walk down the aisle towards the camera, stop 3–5 m from it, idle, turn around, walk back | `APPROACHES` |
-| 7 walkers | walk across the hall along the cross aisles, both directions, appearing at the side walls | `CROSSINGS` |
+| 3 approaching | walk down the aisle towards the camera, stop 3.5–5 m from it, idle, turn around, walk back | `APPROACHES` |
+| 7 walkers | walk across the hall along the cross aisles, both directions; on the near aisle they come and go at the side walls, out of view, on the far aisles they turn round near the walls | `CROSSINGS` |
 | 3 wanderers | stroll between random points in an area, pausing | `WANDER_AREAS` |
 | 3 groups (7 people) | stand and chat, alternating talking and listening, with small shifts | `CHAT_GROUPS` |
-| 8 exhibitors | stand behind their counters | `booth_layout()` |
+| 8 exhibitors | stand on their booth platforms behind the counters | `booth_layout()` |
 | 4 visitors | talk to exhibitors at the left-hand booths | |
 | 1 speaker | talks on the stage | |
 
 The behaviours guarantee that nobody's face points at the camera. While
 someone approaches or stands close by, the head stays turned aside or lowered.
 The crowd is sampled from the prepared avatars with conference demographics:
-about 5% children, 80% adults and 15% older people, half women and half men,
-and every skin-tone band represented. Children only appear in groups or
-wandering, never alone in the aisles. Exhibitors and the speaker get business
-clothes when possible. Moving people's timings are shifted until nobody walks
-through anyone else.
+about 5% children, 80% adults and 15% older people (as far as the avatars
+allow, see below), half women and half men, and every skin-tone band
+represented. Children join the chat groups first, otherwise they wander, and
+never walk alone in the aisles. Exhibitors and the speaker get business
+clothes when possible, and nobody talks to their own double.
+
+Nobody walks through anyone else, however long the demo runs. Every moving
+person's loop is stretched to a whole fraction of `LOOP_PERIOD` (6 minutes),
+so the whole hall repeats every 6 minutes. `keep_apart` then shifts their
+timings until, over that period, nobody comes within `MIN_DISTANCE` (0.6 m)
+of anyone else.
 
 `CROWD_SEED` gives a different crowd and different timings, and `PEOPLE_3D =
-False` brings back the 2D cut-outs. Save the file while the demo runs and the
+False` brings back the 2D cut-outs. If setting up the 3D people fails, for
+example because of a damaged file in the character cache, the hall falls back
+to the 2D cut-outs and the terminal says why. Save the file while the demo runs and the
 scene reloads. The terminal prints the crowd's make-up, for example
 `33 animated people: 16 female, 17 male; 1 child, 30 adult, 2 older; skin band 20 1-3, 10 4-6, 3 7-10`.
 
@@ -131,8 +139,11 @@ into animated people. It has five parts:
 4. **Behaviours** (`behaviour.py`). `approach`, `walk_by`, `wander`, `chat`
    and `stand` build looping timelines of walking, turning (with turn clips)
    and idling (idle, look-around, talk, listen, phone clips), with crossfades.
-   - Walk clips play at the speed people move, so feet never slide.
+   - Walk clips play at the speed people move, so feet never slide, and
+     walks start and stop in the stride that best matches the standing pose.
    - The head plan keeps the face at least 35° away from the camera.
+   - `period=` stretches the pauses so that the loop lasts a whole fraction
+     of it, so people built with the same period repeat together.
    - A behaviour is a pure function of time, so pausing (`Space`) and
      restarting (`R`) just work.
 5. **Crowds** (`crowd.py`). `sample_crowd` picks avatars to match target
@@ -166,7 +177,7 @@ from bifold_demo.characters.crowd import populate, sample_crowd
 from bifold_demo.characters.library import CharacterLibrary
 
 camera = (0, 1.6, 6)
-library = CharacterLibrary()
+library = CharacterLibrary.shared()                                       # one library, kept across scene reloads
 names = sample_crowd(library.available(), 2, rng=1)
 people = populate(library, names, [
     partial(approach, (0, 0, -15), camera=camera),                        # comes closer, turns around
@@ -447,10 +458,16 @@ pytest
 
 The tests that need an OpenGL context are skipped when none is available. On
 a headless Linux machine, run them with `xvfb-run -a pytest`. The tests marked
-`yolo` download the nano weights on first use. The FBX tests also check real
-Rocketbox files when `BIFOLD_ROCKETBOX_TEST_DIR` points to a folder with
-`Avatars/` and `Animations/`, and skip otherwise. The tests never use your
+`yolo` download the nano weights on first use. The tests never use your
 prepared characters (`BIFOLD_CHARACTERS` is redirected to an empty folder).
+Some tests also check real data when you point them at it, and skip otherwise:
+
+- `BIFOLD_ROCKETBOX_TEST_DIR`: a folder with the Rocketbox `Avatars/` and
+  `Animations/` folders (any name), for the FBX and asset tests.
+- `BIFOLD_CHARACTERS_TEST_DIR`: a prepared character library, for the tests
+  of real walk clips.
+- `BIFOLD_ROCKETBOX_FILES`: a fresh full file listing of the Rocketbox
+  repository, instead of the committed `tests/rocketbox_files.txt`.
 
 ## Troubleshooting
 
@@ -464,8 +481,11 @@ prepared characters (`BIFOLD_CHARACTERS` is redirected to an empty folder).
   should print `arm64`), not one running under Rosetta.
 - **OpenGL errors on startup**: the scene renderer needs OpenGL 3.3 or newer.
   Current Macs provide OpenGL 4.1. On Linux without a display, use `xvfb-run`.
-- **The hall shows flat cut-out people**: no 3D people are prepared. Run
-  `bifold-characters fetch --set conference`, then check `bifold-characters list`.
+- **The hall shows flat cut-out people**: no 3D people are prepared, or the
+  demo looks in another folder. Run `bifold-characters fetch --set conference`,
+  then check `bifold-characters list`. If you fetched with `--dest DIR`, also
+  `export BIFOLD_CHARACTERS=DIR` before `bifold-demo`. If a cache file is
+  damaged, the terminal names it and the command that repairs it.
 - **Too slow with many people**: fewer people (shorten the lists at the top of
   `scenes/fair.py`), a smaller window (`--size 960x540`), or `--imgsz 480`
   for YOLO. Every person is ~7–9k triangles and costs ~0.3 ms of Python per

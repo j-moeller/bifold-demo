@@ -50,6 +50,11 @@ smooth: looking ahead into curves and turns, glancing at ``look_at`` points (boo
 talks to), small glances while idling, a lowered head when looking at a phone or walking towards the camera. The
 angle between ``heading + head_yaw`` and the camera direction (ignoring the clips) is kept above ``min_angle`` too
 when that costs little, but that is not guaranteed (clips that turn the head may need it to point elsewhere).
+
+Loop lengths. How long a loop takes depends on the avatar's walking speed. With ``period`` (in the factories that
+walk), pauses marked ``stretch`` are lengthened so that the loop lasts :func:`loop_length` seconds, a whole fraction
+(or multiple) of ``period``: people built with the same ``period`` are all back where they started every ``period``
+seconds, so their encounters can be checked over one period (see ``scenes.fair.keep_apart``).
 """
 
 from __future__ import annotations
@@ -57,13 +62,22 @@ from __future__ import annotations
 import bisect
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
 from .character import NECK_SHARE
-from .model import AnimationClip, CharacterModel, CharacterState, Layer, quat_from_axis_angle, quat_multiply, \
-    quat_nlerp, quat_to_matrix
+from .model import (
+    AnimationClip,
+    CharacterModel,
+    CharacterState,
+    Layer,
+    quat_from_axis_angle,
+    quat_multiply,
+    quat_nlerp,
+    quat_to_matrix,
+    root_scale,
+)
 
 ROLES = ("walk", "walk_slow", "stroll", "idle", "look_around", "talk", "listen", "phone",
          "turn_left_90", "turn_right_90", "turn_left_180", "turn_right_180")
@@ -311,8 +325,6 @@ def _chain_rotation(clip: AnimationClip, chain: list[int], frames=slice(None)) -
 
 def stride_scale(model: CharacterModel, clip: AnimationClip) -> float:
     """The factor the :class:`Poser` scales ``clip`` by for ``model`` (pass it as ``style["stride_scale"]``)."""
-    from .model import root_scale
-
     root = model.skeleton.find(clip.root) if clip.root else None
     if root is None or clip.root not in clip.bone_names:
         return 1.0
@@ -511,10 +523,12 @@ class Walk:
 
 @dataclass
 class Idle:
-    """Stand for ``duration`` seconds, cycling through clips of ``roles``."""
+    """Stand for ``duration`` seconds, cycling through clips of ``roles``; ``stretch``: may last longer to make the
+    loop fit its ``period``."""
 
     duration: float
     roles: tuple = ("idle", "look_around")
+    stretch: bool = False
 
 
 @dataclass
@@ -528,11 +542,25 @@ class Turn:
 
 @dataclass
 class Hide:
-    """Be invisible for ``duration`` seconds and reappear at ``to`` (default: where the loop starts)."""
+    """Be invisible for ``duration`` seconds and reappear at ``to`` (default: where the loop starts); ``stretch``:
+    may last longer to make the loop fit its ``period``."""
 
     duration: float
     to: tuple | None = None
     heading: float | None = None
+    stretch: bool = False
+
+
+def loop_length(duration: float, period: float) -> float:
+    """The shortest loop of at least ``duration`` seconds that fits ``period``: ``period / k`` or ``k * period``."""
+    if duration <= period:
+        return period / max(1, math.floor(period / duration + 1e-6))
+    return period * math.ceil(duration / period - 1e-6)
+
+
+def fits_period(duration: float, period: float) -> bool:
+    """Whether a loop of ``duration`` seconds repeats a whole number of times in ``period`` (or the reverse)."""
+    return abs(loop_length(duration, period) - duration) < 1e-6
 
 
 # -- timeline pieces --------------------------------------------------------------------------------
@@ -755,14 +783,17 @@ class Behaviour:
         look_at: points worth glancing at (booths, screens). partners: people to look at while talking/listening.
         min_angle: degrees the face keeps away from the camera direction.
         offset: seconds added to ``t`` (where in its loop the behaviour is at ``t = 0``).
+        period: lengthen the ``stretch`` pauses so the loop lasts ``loop_length(duration, period)`` (module docs);
+            ``None`` = as long as the segments take. Without such pauses the loop keeps its length.
 
     Attributes: ``duration`` (seconds of one loop), ``offset``, ``look_feasible`` (the camera guarantee holds, see
-    the module docs), ``style``. :meth:`face_heading`, :meth:`body_heading` and :meth:`teleports` help to check it.
+    the module docs), ``style``. :meth:`face_heading`, :meth:`body_heading` and :meth:`teleports` help to check it;
+    :meth:`positions` tells where the person is, cheaply.
     """
 
     def __init__(self, segments, library: MotionLibrary | None = None, *, start=(0.0, 0.0), heading: float = 0.0,
                  style=None, camera=None, rng=0, look_at=(), partners=(), min_angle: float = MIN_ANGLE,
-                 offset: float = 0.0):
+                 offset: float = 0.0, period: float | None = None):
         self.library = library
         self.rng = _as_random(rng)
         self.style = _Style(style, self.rng)
@@ -773,19 +804,41 @@ class Behaviour:
         self.partners = [_xz(p) for p in partners]
         self.start = _xz(start)
         self.start_heading = float(heading)
+        self.period = None if period is None else float(period)
         segments = list(segments)
         for segment in segments:
             if not isinstance(segment, (Walk, Idle, Turn, Hide)):
                 raise TypeError(f"unknown segment {segment!r}")
         state = self.rng.getstate()
-        self._build(segments, set(), {})
+        self._fit(segments, set(), {}, state)
         layout = self._layout()
         if layout is not None:
-            self.rng.setstate(state)
-            self._build(segments, *layout)
+            self._fit(segments, *layout, state)
         self._plan_head()
 
     # -- building ------------------------------------------------------------------------------------
+
+    def _fit(self, segments: list, flips: set[int], windows: dict[int, float], state) -> None:
+        """:meth:`_build` from rng ``state``, with the ``stretch`` pauses lengthened so that the loop fits ``period``
+        (an extra pause can change later clip choices, so this takes a few tries when it does)."""
+        self.rng.setstate(state)
+        self._build(segments, flips, windows)
+        stretch = [k for k, s in enumerate(segments) if isinstance(s, (Idle, Hide)) and s.stretch]
+        if self.period is None or not stretch:
+            return
+        target, extra = loop_length(self.duration, self.period), 0.0
+        for _ in range(6):
+            missing = target - self.duration
+            if abs(missing) < 1e-6:
+                return
+            if extra + missing < 0.0:  # an earlier try overshot by more than it added: aim for the next length
+                target = loop_length(target + 1e-3, self.period)
+                continue
+            extra += missing
+            share = extra / len(stretch)
+            fitted = [replace(s, duration=s.duration + share) if k in stretch else s for k, s in enumerate(segments)]
+            self.rng.setstate(state)
+            self._build(fitted, flips, windows)
 
     def _build(self, segments: list, flips: set[int], windows: dict[int, float]) -> None:
         """Lay out the pieces and the clip track. The turns with a choice of direction numbered in ``flips`` go the
@@ -1433,6 +1486,18 @@ class Behaviour:
         """Loop-time intervals ``(start, end)`` during which the person is hidden (and may jump)."""
         return [(p.t0, p.t1) for p in self._pieces if not p.visible]
 
+    def positions(self, times) -> np.ndarray:
+        """``(x, z)`` on the floor at each of ``times`` (like ``self(t).position``), nan while hidden; much cheaper
+        than evaluating the states (no clips or head)."""
+        track = np.full((len(times), 2), np.nan)
+        pieces, starts = self._pieces, self._piece_starts
+        for k, t in enumerate(times):
+            tl = (float(t) + self.offset) % self.duration
+            piece = pieces[bisect.bisect_right(starts, tl) - 1]
+            if piece.visible:
+                track[k] = piece.state(tl)[:2]
+        return track
+
 
 def _wrap_array(a):
     return (np.asarray(a, dtype=np.float64) + 180.0) % 360.0 - 180.0
@@ -1524,12 +1589,13 @@ def _turns_around(far, far_heading, near, near_heading, camera: _Camera, rng: ra
 
 def walk_by(points, speed: float | None = None, *, library: MotionLibrary | None, return_mode: str = "turn",
             camera=None, style=None, rng=0, pause=(0.0, 2.5), gap=(0.5, 4.0), look_at=(),
-            min_angle: float = MIN_ANGLE, offset: float | None = None) -> Behaviour:
+            min_angle: float = MIN_ANGLE, offset: float | None = None, period: float | None = None) -> Behaviour:
     """Walk along ``points`` (start and end, or a polyline), then come back.
 
     ``return_mode="turn"``: pause, turn around (away from the camera) and walk back, turn again, repeat.
     ``return_mode="teleport"``: disappear at the end for ``gap`` seconds and reappear at the start (put both
     ends outside the camera's view). ``offset`` = where in the loop ``t = 0`` is (random when ``None``).
+    ``period``: the pauses (or the gap) are lengthened so that the loop fits it (:func:`loop_length`).
     """
     rng = _as_random(rng)
     pts = [_xz(p) for p in points]
@@ -1543,24 +1609,28 @@ def walk_by(points, speed: float | None = None, *, library: MotionLibrary | None
     if return_mode == "turn":
         at_end, at_start = _turns_around(pts[-1], _bearing(*pts[-2], *pts[-1]), pts[0], _bearing(*pts[1], *pts[0]),
                                          camera, rng)
-        segments += [Idle(rng.uniform(*pause), ("look_around", "idle")), Turn(at_end, True), Walk(pts[::-1][1:], speed),
-                     Idle(rng.uniform(*pause), ("look_around", "idle")), Turn(at_start, True)]
-        segments = [s for s in segments if not isinstance(s, Idle) or s.duration > 0.3]
+        fit = period is not None
+        segments += [Idle(rng.uniform(*pause), ("look_around", "idle"), fit), Turn(at_end, True),
+                     Walk(pts[::-1][1:], speed), Idle(rng.uniform(*pause), ("look_around", "idle"), fit),
+                     Turn(at_start, True)]
+        segments = [s for s in segments if not isinstance(s, Idle) or s.duration > 0.3 or s.stretch]
     else:
-        segments.append(Hide(rng.uniform(*gap)))
+        segments.append(Hide(rng.uniform(*gap), stretch=True))
     behaviour = Behaviour(segments, library, start=pts[0], heading=heading, style=style, camera=camera, rng=rng,
-                          look_at=look_at, min_angle=min_angle)
+                          look_at=look_at, min_angle=min_angle, period=period)
     return _offset(rng, offset, behaviour)
 
 
 def approach(start, stop_point=None, camera=None, *, library: MotionLibrary | None, stop_distance=(2.5, 5.0),
              idle=(3.0, 8.0), far_pause=(0.5, 3.0), bow: float | None = None, speed: float | None = None, style=None,
-             rng=0, look_at=(), min_angle: float = MIN_ANGLE, offset: float | None = None) -> Behaviour:
+             rng=0, look_at=(), min_angle: float = MIN_ANGLE, offset: float | None = None,
+             period: float | None = None) -> Behaviour:
     """Walk from ``start`` towards the camera, stop, idle (phone, looking around), turn around, walk back, repeat.
 
     ``stop_point`` defaults to a point on the way to the camera ``stop_distance`` metres (random in the range)
     from it, and is moved back if it is nearer than ``stop_distance[0]``. ``bow`` bends the path sideways by that
-    many metres at its middle (random up to 0.8 m when ``None``; 0 walks straight at the camera).
+    many metres at its middle (random up to 0.8 m when ``None``; 0 walks straight at the camera). ``period``: the
+    pause far away is lengthened so that the loop fits it (:func:`loop_length`).
     """
     rng = _as_random(rng)
     if camera is None:
@@ -1591,9 +1661,9 @@ def approach(start, stop_point=None, camera=None, *, library: MotionLibrary | No
                                       camera, rng)
     segments = [Walk(path[1:], speed), Idle(rng.uniform(*idle), ("phone", "look_around", "idle")),
                 Turn(at_stop, True), Walk(path[::-1][1:], speed),
-                Idle(rng.uniform(*far_pause), ("look_around", "idle", "phone")), Turn(at_start, True)]
+                Idle(rng.uniform(*far_pause), ("look_around", "idle", "phone"), True), Turn(at_start, True)]
     behaviour = Behaviour(segments, library, start=start, heading=heading, style=style, camera=camera, rng=rng,
-                          look_at=look_at, min_angle=min_angle)
+                          look_at=look_at, min_angle=min_angle, period=period)
     return _offset(rng, offset, behaviour)
 
 
@@ -1628,8 +1698,11 @@ def _region_sampler(region):
 def wander(region, rng=0, *, library: MotionLibrary | None, points: int = 4, pause=(1.0, 6.0),
            pause_probability: float = 0.7, min_leg: float = 2.0, speed: float | None = None, camera=None,
            style=None, look_at=(), min_angle: float = MIN_ANGLE, offset: float | None = None,
-           attempts: int = 12) -> Behaviour:
-    """Walk between ``points`` random points inside ``region`` (rect ``((x0, z0), (x1, z1))`` or polygon), pausing."""
+           attempts: int = 12, period: float | None = None) -> Behaviour:
+    """Walk between ``points`` random points inside ``region`` (rect ``((x0, z0), (x1, z1))`` or polygon), pausing.
+
+    ``period``: the pauses are lengthened so that the loop fits it (:func:`loop_length`).
+    """
     rng = _as_random(rng)
     camera = _Camera(camera)
     sample = _region_sampler(region)
@@ -1647,10 +1720,12 @@ def wander(region, rng=0, *, library: MotionLibrary | None, points: int = 4, pau
         for p in stops[1:] + stops[:1]:
             segments.append(Walk([p], speed))
             if rng.random() < pause_probability:
-                segments.append(Idle(rng.uniform(*pause), ("look_around", "idle", "phone")))
+                segments.append(Idle(rng.uniform(*pause), ("look_around", "idle", "phone"), True))
+        if period is not None and not any(isinstance(s, Idle) for s in segments):
+            segments.append(Idle(0.5, ("look_around", "idle", "phone"), True))  # a pause to fit the period with
         heading = _bearing(*stops[0], *stops[1])
         behaviour = Behaviour(segments, library, start=stops[0], heading=heading, style=style, camera=camera,
-                              rng=random.Random(rng.random()), look_at=look_at, min_angle=min_angle)
+                              rng=random.Random(rng.random()), look_at=look_at, min_angle=min_angle, period=period)
         best = behaviour
         if behaviour.look_feasible:
             break

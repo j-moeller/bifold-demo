@@ -7,7 +7,7 @@ from functools import partial
 import pytest
 from test_behaviour import synthetic_clips, synthetic_model
 
-from bifold_demo.characters.behaviour import MotionLibrary, classify_clip, walk_by
+from bifold_demo.characters.behaviour import MotionLibrary, classify_clip, fits_period, walk_by
 from bifold_demo.scenes import fair
 
 CATALOG = {
@@ -89,7 +89,7 @@ def test_nobody_walks_through_anyone(hall):
     behaviours = [p.behaviour for p in people]
     for p in people:
         if _kind(p.name) in fair.MOVING:  # so the whole hall repeats after LOOP_PERIOD
-            assert fair.fits_period(p.behaviour.duration), (p.name, p.behaviour.duration)
+            assert fits_period(p.behaviour.duration, fair.LOOP_PERIOD), (p.name, p.behaviour.duration)
     assert fair.close_encounters(behaviours, 1.5 * fair.LOOP_PERIOD, step=0.05) == []
     kinds = [_kind(p.name) for p in people]
     assert fair.keep_apart(behaviours, kinds, random.Random(1), rounds=0) == 0
@@ -98,10 +98,9 @@ def test_nobody_walks_through_anyone(hall):
 def test_keep_apart_moves_people_out_of_each_others_way():
     clips = synthetic_clips(full=True)
     library = MotionLibrary(clips)
-    make = fair.fit_loop(partial(walk_by, [(-6, 0, 0), (6, 0, 0)], return_mode="teleport"), "gap", (1.0, 1.2))
-    across = fair.fit_loop(partial(walk_by, [(0, 0, -6), (0, 0, 6)], return_mode="teleport"), "gap", (1.0, 1.2))
-    walkers = [make(library=library, rng=1), across(library=library, rng=2)]
-    assert all(fair.fits_period(w.duration) for w in walkers)
+    make = partial(walk_by, return_mode="teleport", gap=(1.0, 1.2), period=fair.LOOP_PERIOD, library=library)
+    walkers = [make([(-6, 0, 0), (6, 0, 0)], rng=1), make([(0, 0, -6), (0, 0, 6)], rng=2)]
+    assert all(fits_period(w.duration, fair.LOOP_PERIOD) for w in walkers)
     assert walkers[0].duration == pytest.approx(walkers[1].duration)
     for w in walkers:
         w.offset = 0.0  # both reach the crossing at the same moment

@@ -322,9 +322,9 @@ def test_load_clip_measures_turns(tmp_path):
 
 # -- real Rocketbox files (skipped when missing) ----------------------------------------------------
 
-ROCKETBOX = Path(os.environ.get(
-    "BIFOLD_ROCKETBOX_TEST_DIR",
-    "/tmp/claude-0/-home-user-bifold-demo/44ad5b06-773f-5ffd-8306-515788fc8497/scratchpad/rb/Assets"))
+# a folder with the Rocketbox Avatars/ and Animations/ folders for the real-file tests; they skip without
+ROCKETBOX = Path(os.environ["BIFOLD_ROCKETBOX_TEST_DIR"]).expanduser() if os.environ.get("BIFOLD_ROCKETBOX_TEST_DIR") \
+    else None
 AVATARS = {"Male_Adult_05": ("Adults", (1.6, 1.95)), "Female_Child_01": ("Children", (1.1, 1.45))}
 CLIPS = {
     "m_walk_neutral_01": "all_animations_max_motextr_xy",
@@ -338,14 +338,16 @@ SEX = {"Male_Adult_05": "m", "Female_Child_01": "f"}
 
 
 def _avatar_path(name):
-    return ROCKETBOX / "Avatars" / AVATARS[name][0] / name / "Export" / f"{name}.fbx"
+    return ROCKETBOX / "Avatars" / AVATARS[name][0] / name / "Export" / f"{name}.fbx" if ROCKETBOX else None
 
 
 def _clip_path(name):
-    return ROCKETBOX / "Animations" / CLIPS[name] / f"{name}.max.fbx"
+    return ROCKETBOX / "Animations" / CLIPS[name] / f"{name}.max.fbx" if ROCKETBOX else None
 
 
 def _require(path):
+    if path is None:
+        pytest.skip("set BIFOLD_ROCKETBOX_TEST_DIR to a folder with Rocketbox Avatars/ and Animations/")
     if not path.is_file():
         pytest.skip(f"Rocketbox test file missing: {path}")
     return path

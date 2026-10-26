@@ -21,8 +21,8 @@ from bifold_demo.characters.model import (
 )
 
 CAMERA = (0.0, 1.6, 6.0)
-SCRATCH = "/tmp/claude-0/-home-user-bifold-demo/44ad5b06-773f-5ffd-8306-515788fc8497/scratchpad"
-CHARACTERS = Path(os.environ.get("BIFOLD_CHARACTERS_TEST_DIR", f"{SCRATCH}/charcache"))  # a prepared library
+# a prepared character library (bifold-characters fetch --dest DIR) for the real-clip tests; they skip without
+CHARACTERS = Path(os.environ.get("BIFOLD_CHARACTERS_TEST_DIR", "/nonexistent")).expanduser()
 BONES = ["Bip01", "Bip01 Pelvis", "Bip01 Spine", "Bip01 Neck", "Bip01 Head", "Bip01 L Thigh", "Bip01 R Thigh",
          "Bip01 L Calf", "Bip01 L Foot", "Bip01 L Toe0", "Bip01 R Calf", "Bip01 R Foot", "Bip01 R Toe0"]
 PARENTS = [-1, 0, 1, 2, 3, 1, 1, 5, 7, 8, 6, 10, 11]
@@ -510,6 +510,53 @@ def test_turn_directions_keep_the_face_off_the_camera(sparse):
     fixed = Behaviour([Walk([(0, -2)]), Idle(3.0), Turn(180.0), Walk([(0, -12)]), Idle(2.0), Turn(180.0)], sparse,
                       start=(0, -12), camera=CAMERA, rng=3)
     assert not fixed.look_feasible  # without the choice there is no way
+
+
+# -- loop lengths and positions --------------------------------------------------------------------------
+
+
+def test_loop_length_fits_the_period():
+    assert B.loop_length(41.0, 360.0) == pytest.approx(45.0) and B.loop_length(45.0, 360.0) == pytest.approx(45.0)
+    assert B.loop_length(200.0, 360.0) == pytest.approx(360.0) and B.loop_length(400.0, 360.0) == pytest.approx(720.0)
+    assert B.fits_period(360.0 / 7, 360.0) and not B.fits_period(50.0, 360.0)
+
+
+@pytest.mark.parametrize("lib_name", ["sparse", "full", None])
+def test_period_stretches_the_pauses_to_fit(sparse, full, lib_name):
+    lib = {"sparse": sparse, "full": full, None: None}[lib_name]
+    period = 360.0
+    made = {
+        "teleport": lambda **k: B.walk_by([(-9, 0, -3), (9, 0, -3)], return_mode="teleport", **k),
+        "turn": lambda **k: B.walk_by([(-9, 0, -7), (9, 0, -7)], pause=(0.0, 0.2), **k),
+        "approach": lambda **k: B.approach((-1, 0, -14), **k),
+        "wander": lambda **k: B.wander(((-3, 0), (3, 4)), **k),
+        "wander_without_pauses": lambda **k: B.wander(((-3, 0), (3, 4)), pause_probability=0.0, **k),
+    }
+    for name, make in made.items():
+        for seed in range(3):
+            plain = make(camera=CAMERA, library=lib, rng=seed)
+            fitted = make(camera=CAMERA, library=lib, rng=seed, period=period)
+            assert B.fits_period(fitted.duration, period), (name, seed, fitted.duration)
+            # the next fitting length (with a period, walk_by keeps even its very short pauses, < 0.5 s in all)
+            assert plain.duration - 1e-6 <= fitted.duration <= B.loop_length(plain.duration + 0.5, period) + 1e-6, name
+            assert fitted.look_feasible or not plain.look_feasible, name
+            walks = [round(p.t1 - p.t0, 6) for p in fitted._pieces if p.kind == "walk"]
+            assert walks == [round(p.t1 - p.t0, 6) for p in plain._pieces if p.kind == "walk"], name  # same walks
+    stand = B.stand((0, 0, 2), camera=CAMERA, library=lib, rng=1)
+    assert stand.period is None  # standing people keep their loops
+
+
+def test_positions_are_where_the_states_put_people(behaviours):
+    times = np.linspace(-20.0, 200.0, 701)
+    for name, group in behaviours.items():
+        for kind, behaviour in group:
+            track = behaviour.positions(times)
+            for t, (x, z) in zip(times, track):
+                state = behaviour(t)
+                if state.visible:
+                    assert (x, z) == pytest.approx((state.position[0], state.position[2]), abs=1e-12), (name, kind)
+                else:
+                    assert np.isnan(x) and np.isnan(z), (name, kind)
 
 
 # -- cost ---------------------------------------------------------------------------------------------------
