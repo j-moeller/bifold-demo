@@ -22,4 +22,6 @@ people/*
 !people/README.md
 faces/*
 !faces/README.md
+created/*
+!created/README.md
 .DS_Store
