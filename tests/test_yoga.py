@@ -187,6 +187,31 @@ def test_cow_hollows_the_back_on_hands_and_knees(body):
     assert np.isclose(cow.left_arm.target[1], table.left_arm.target[1])
 
 
+def _bend(glob, a, b, c) -> float:
+    """How far the joint at ``b`` is bent (0 = straight), degrees."""
+    u, w = glob[a, :3, 3] - glob[b, :3, 3], glob[c, :3, 3] - glob[b, :3, 3]
+    return 180.0 - math.degrees(math.acos(np.clip(u @ w / np.linalg.norm(u) / np.linalg.norm(w), -1, 1)))
+
+
+def test_warrior_1_lunges_with_the_arms_overhead(body):
+    spec = yoga.POSES["warrior_1"]
+    pose = yoga.settle(body, spec.steps(body)[spec.main].pose)
+    _, glob = yoga.solve(body, pose)
+    left, right = body.sides["left"], body.sides["right"]
+    assert 75.0 < _bend(glob, left["thigh"], left["calf"], left["foot"]) < 105.0  # the front knee at a right angle
+    assert _bend(glob, right["thigh"], right["calf"], right["foot"]) < 25.0  # the back leg straight
+    front, back = glob[left["foot"], :3, 3], glob[right["foot"], :3, 3]
+    assert front[2] - back[2] > 1.1 * body.leg  # a long stance
+    assert abs(glob[left["calf"], 2, 3] - front[2]) < 0.1  # the knee over the ankle
+    toes = glob[right["foot"], :3, :3] @ right["foot_forward"]
+    assert 30.0 < math.degrees(math.atan2(-toes[0], toes[2])) < 60.0  # the back foot turned out
+    head = glob[body.head, 1, 3]
+    for s in (left, right):
+        assert glob[s["hand"], 1, 3] > head + 0.25  # the hands high overhead ...
+        assert _bend(glob, s["upper"], s["fore"], s["hand"]) < 15.0  # ... on straight arms
+    assert pose.pelvis[1] == 0.0  # the hips square to the front
+
+
 def test_yogi_squat_is_deep_with_wide_knees_and_palms_together(body):
     pose = yoga.settle(body, yoga.POSES["yogi_squat"].steps(body)[1].pose)
     _, glob = yoga.solve(body, pose)

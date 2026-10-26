@@ -36,3 +36,5 @@ work goes on. The people are avatars from the
   back.
 - `yoga_cow.jpg`: the Cow Pose (Bitilasana) clip: down from standing to hands
   and knees, the back hollowing with the chest and gaze lifting, and back up.
+- `yoga_warrior_1.jpg`: the Warrior 1 (Virabhadrasana I) clip: a long lunge,
+  the back foot turned out with the heel down, the arms overhead.

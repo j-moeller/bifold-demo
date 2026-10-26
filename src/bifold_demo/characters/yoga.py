@@ -749,7 +749,64 @@ def _cow_steps(body: Body) -> list[Step]:
     return down + [Step(cow, seconds=2.5, hold=9.0), Step(table, seconds=2.5, hold=1.0, breathe=False)] + _up_from(down)
 
 
+ARM_STRAIGHT = 0.995  # an arm held out straight reaches this share of its length (the elbow barely bent)
+
+
+def _arms_out(body: Body, pose: BodyPose, lift: float = 0.0) -> dict:
+    """Both arms straight out to the sides at shoulder height (raised by ``lift`` degrees), palms down."""
+    _, glob = solve(body, pose)
+    chest = glob[body.spine[2], :3, :3] @ body.rest_rot[body.spine[2]].T
+    up, forward = chest @ (0.0, 1.0, 0.0), chest @ (0.0, 0.0, 1.0)
+    arms = {}
+    for side, s in body.sides.items():
+        out = chest @ (s["sign"] * 1.0, 0.0, 0.0)
+        direction = _unit(out * math.cos(math.radians(lift)) + up * math.sin(math.radians(lift)))
+        wrist = glob[s["upper"], :3, 3] + ARM_STRAIGHT * (s["upper_length"] + s["fore_length"]) * direction
+        arms[f"{side}_arm"] = Limb(tuple(wrist), tuple(-forward - 0.3 * up), tuple(direction), tuple(up))
+    return arms
+
+
+def _arms_up(body: Body, pose: BodyPose, apart: float = 1.0, shrug: float = 14.0) -> dict:
+    """Both arms straight overhead (as wide as the shoulders times ``apart``), palms facing each other."""
+    pose = replace(pose, left_arm=replace(pose.left_arm, shrug=shrug), right_arm=replace(pose.right_arm, shrug=shrug))
+    _, glob = solve(body, pose)
+    chest = glob[body.spine[2], :3, :3] @ body.rest_rot[body.spine[2]].T  # the chest's turn from standing
+    up, forward = chest @ (0.0, 1.0, 0.0), chest @ (0.0, 0.0, 1.0)
+    arms = {}
+    for side, s in body.sides.items():
+        shoulder = glob[s["upper"], :3, 3]
+        out = chest @ (s["sign"] * 1.0, 0.0, 0.0)
+        direction = _unit(up + 0.08 * (apart - 1.0) * out + 0.06 * forward)
+        wrist = shoulder + ARM_STRAIGHT * (s["upper_length"] + s["fore_length"]) * direction
+        arms[f"{side}_arm"] = Limb(tuple(wrist), tuple(out - 0.5 * forward), tuple(up), tuple(out), shrug=shrug)
+    return arms
+
+
+def _warrior1_steps(body: Body) -> list[Step]:
+    """Virabhadrasana I: a long lunge, the front (left) knee bent over its ankle, the back leg straight with the
+    foot turned out and the heel down, the hips square to the front, the arms raised overhead, the chest lifted."""
+    stand = mountain(body)
+    left, right = body.sides["left"], body.sides["right"]
+    front = stand.left_leg
+    knee_height = left["ankle_height"] + 0.97 * left["shin_length"]  # the front shin upright
+    hip_z = front.target[2] - 0.9 * left["thigh_length"]  # the front thigh about level
+    hip_height = knee_height + 0.12 * left["thigh_length"]
+    drop = hip_height - right["ankle_height"]
+    back_z = hip_z - math.sqrt(max((0.985 * (right["thigh_length"] + right["shin_length"])) ** 2 - drop ** 2, 0.0))
+    back = _foot(body, "right", right["sign"] * (0.5 * body.hip_width + 0.03), back_z, toe_out=45.0)
+    back = replace(back, pole=(right["sign"] * 0.4, 0.0, 1.0))
+    front = replace(front, pole=(0.15, 0.0, 1.0))
+    lunge = replace(stand, root=(0.0, hip_height + body.hip_drop, hip_z), left_leg=front, right_leg=back,
+                    pelvis=(4.0, 0.0, 0.0), spine=(-14.0, 0.0, 0.0), head=(-12.0, 0.0, 0.0))
+    warrior = replace(lunge, **_arms_up(body, lunge))
+    sweep = replace(lunge, **_arms_out(body, lunge, lift=10.0))  # the arms rise out to the sides, then overhead
+    step_back = {"right_leg": 0.08}
+    return [Step(stand, hold=1.5, breathe=False), Step(sweep, seconds=2.2, lift=step_back), Step(warrior, seconds=1.3, hold=9.0),
+            Step(sweep, seconds=1.3), Step(stand, seconds=2.2, lift=step_back)]
+
+
 POSES: dict[str, PoseSpec] = {
     "yogi_squat": PoseSpec("Yogi Squat (Malasana)", _yogi_squat_steps, main=1, view=0.0),
     "cow": PoseSpec("Cow Pose (Bitilasana)", _cow_steps, main=5, view=90.0),
+    "warrior_1": PoseSpec("Warrior 1 (Virabhadrasana I)", _warrior1_steps, main=2, view=90.0),
 }
