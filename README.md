@@ -394,6 +394,54 @@ on the skinned mesh). Every clip starts and ends standing, so they can follow
 one another. Long skirts, dresses and robes are skinned to the legs: they pass
 through the floor when the person kneels.
 
+## Face recognition
+
+[`recognition/`](src/bifold_demo/recognition) tells who the people in the
+picture are. It works like the face recognition of today's phones and photo
+apps, in two steps:
+
+1. **Find the faces.** [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)
+   finds each face and five landmarks on it (the eyes, the nose tip and the
+   mouth corners).
+2. **Fingerprint them.** The face is turned upright and scaled by its
+   landmarks, and [SFace](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface)
+   turns it into an *embedding*: 128 numbers, trained so that photos of the
+   same person give nearly the same numbers and other people's faces give
+   different ones (99.6 % on the LFW benchmark). Two faces are compared by the
+   cosine similarity of their embeddings: about 0.6 to 1.0 for the same person,
+   below about 0.3 for strangers. A face is the known person with the most
+   similar photo, if that reaches 0.363 (OpenCV's recommended cut); else it is
+   unknown.
+
+The known people are the photos in [`faces/`](faces/README.md), a folder per
+person with as many photos as you like (several photos taken on different days
+make it surer):
+
+```bash
+bifold-faces add "Ada Lovelace" portrait.jpg holiday.png   # copies them to faces/Ada Lovelace/
+bifold-faces list                                          # who is known, and photos without a face
+bifold-faces who group_photo.jpg                           # who is in a photo
+```
+
+The models (YuNet 0.2 MB, SFace 39 MB) are downloaded into `models/` the first
+time (or with `bifold-faces fetch`); OpenCV runs them itself, on the CPU
+(about 40 ms to find the faces in a 1280x720 picture, 10 ms per face). The
+embeddings of the photos are kept in `faces/.embeddings.npz`, so only new
+photos are looked at again. Both models are from the OpenCV Zoo and free to use
+(MIT and Apache 2.0). Stronger recognisers exist (ArcFace and AdaFace
+ResNet-100s trained on Glint360K), but their common pretrained weights
+(InsightFace's `buffalo_l`, `antelopev2`) are for non-commercial research only.
+
+```python
+from bifold_demo.recognition import FaceEngine, Gallery
+
+engine = FaceEngine()                  # finds and fingerprints faces
+gallery = Gallery("faces", engine)     # the known people
+gallery.refresh()
+for face, embedding in engine.faces(image):
+    match = gallery.match(embedding)   # match.name (None: unknown), match.score
+```
+
 ## Generating 2D people
 
 The 2D alternative, used when no 3D people are prepared: `bifold-people`
@@ -642,6 +690,8 @@ src/bifold_demo/
                faces.py (funny faces with the face bones),
                rocketbox.py + library.py + cli.py (bifold-characters),
                rocketbox_catalog.json (avatar labels)                   ← 3D people
+  recognition/ engine.py (find and fingerprint faces), gallery.py (known people),
+               models.py, cli.py (bifold-faces)                          ← face recognition
   people/      prompts.py, generator.py (text-to-image), cutout.py,
                library.py, defaults.py, cli.py (bifold-people)          ← 2D people generator
   app.py       main loop and command line; loader.py loads and reloads scene files;
@@ -650,6 +700,7 @@ src/bifold_demo/
 examples/      example scenes
 uploads/       drop textures here while the demo runs
 people/        2D cut-outs (used by the fair scene when no 3D people are prepared)
+faces/         photos of the people the face recognition knows (a folder per person)
 tests/         pytest suite
 ```
 

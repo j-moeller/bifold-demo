@@ -20,4 +20,6 @@ uploads/*
 !uploads/README.md
 people/*
 !people/README.md
+faces/*
+!faces/README.md
 .DS_Store
