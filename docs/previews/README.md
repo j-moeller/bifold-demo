@@ -50,6 +50,10 @@ work goes on. The people are avatars from the
 - `yoga_chair.jpg`: the Chair Pose (Utkatasana) clip: the arms sweep up
   overhead, then the knees bend deep with the heels down and the hips sitting
   back, the long back leaning forward with the arms in line with it.
+- `yoga_goddess.jpg`: the Goddess Pose (Utkata Konasana) clip: the feet step
+  out wide and turn out, the arms open to the sides, then the knees bend out
+  over the toes with the thighs close to level and the arms bend into cactus,
+  palms forward.
 - `selection.jpg`: selection mode in the fair: three of the audience doing Cow
   Pose, Downward Facing Dog and Upward Facing Dog (keys 2, 4 and 6), each at a
   spot they walked to where the camera sees the whole pose; the selected one is

@@ -309,6 +309,33 @@ def test_chair_sits_back_with_the_arms_in_line_with_the_back(body):
     assert pose.left_leg.contact and pose.right_leg.contact
 
 
+def test_goddess_squats_wide_with_the_knees_over_the_toes_and_cactus_arms(body):
+    spec = yoga.POSES["goddess"]
+    pose = yoga.settle(body, spec.steps(body)[spec.main].pose)
+    _, glob = yoga.solve(body, pose)
+    left, right = body.sides["left"], body.sides["right"]
+    feet = [glob[s["foot"], :3, 3] for s in (left, right)]
+    assert 1.0 * body.leg < feet[0][0] - feet[1][0] < 1.2 * body.leg and abs(feet[0][2] - feet[1][2]) < 0.05  # wide
+    back = 0.5 * (glob[left["upper"], :3, 3] + glob[right["upper"], :3, 3]) - glob[body.root, :3, 3]
+    assert abs(math.degrees(math.atan2(back[2], back[1]))) < 8.0  # the torso upright
+    for s, ankle in zip((left, right), feet):
+        toes = glob[s["foot"], :3, :3] @ body.rest_rot[s["foot"]].T @ s["foot_forward"]
+        assert 35.0 < math.degrees(math.atan2(s["sign"] * toes[0], toes[2])) < 55.0  # the toes turned out
+        hip, knee = glob[s["thigh"], :3, 3], glob[s["calf"], :3, 3]
+        assert 70.0 < _bend(glob, s["thigh"], s["calf"], s["foot"]) < 100.0  # the knees bent ...
+        assert np.linalg.norm((knee - ankle)[[0, 2]]) < 0.05  # ... right above the ankles, over the feet
+        assert abs(knee[0]) > abs(ankle[0]) - 0.02  # (not falling in)
+        assert hip[1] - knee[1] < 0.3 * s["thigh_length"]  # the thighs close to level
+        shoulder, elbow, wrist = glob[s["upper"], :3, 3], glob[s["fore"], :3, 3], glob[s["hand"], :3, 3]
+        assert abs(elbow[1] - shoulder[1]) < 0.04 and s["sign"] * (elbow[0] - shoulder[0]) > 0.9 * s["upper_length"]
+        assert 80.0 < _bend(glob, s["upper"], s["fore"], s["hand"]) < 100.0  # cactus: the elbows at right angles,
+        assert wrist[1] - elbow[1] > 0.95 * s["fore_length"]  # the forearms upright ...
+        palm = glob[s["hand"], :3, :3] @ body.rest_rot[s["hand"]].T @ s["hand_back"]
+        assert palm[2] < -0.8  # ... the palms facing forward
+    gaze = glob[body.head, :3, :3] @ body.rest_rot[body.head].T @ (0.0, 0.0, 1.0)
+    assert gaze[2] > 0.95  # looking ahead
+
+
 # -- every pose on real avatars --------------------------------------------------------------------------------
 
 

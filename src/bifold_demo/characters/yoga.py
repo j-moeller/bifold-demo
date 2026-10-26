@@ -1030,6 +1030,86 @@ def _chair_steps(body: Body) -> list[Step]:
             Step(stand, seconds=1.5)]
 
 
+def _cactus_arms(body: Body, pose: BodyPose) -> dict:
+    """Both arms in 'cactus': the upper arms straight out to the sides at shoulder height, the elbows bent at a
+    right angle, the forearms upright, the palms facing forward."""
+    _, glob = solve(body, pose)
+    chest = glob[body.spine[2], :3, :3] @ body.rest_rot[body.spine[2]].T
+    up, forward = chest @ (0.0, 1.0, 0.0), chest @ (0.0, 0.0, 1.0)
+    arms = {}
+    for side, s in body.sides.items():
+        out = chest @ (s["sign"] * 1.0, 0.0, 0.0)
+        elbow = glob[s["upper"], :3, 3] + s["upper_length"] * out
+        wrist = elbow + s["fore_length"] * up
+        arms[f"{side}_arm"] = Limb(tuple(wrist), tuple(out - up), tuple(up), tuple(-forward))
+    return arms
+
+
+def _wide_feet(body: Body, width: float, toe_out: float, sides=("left", "right")) -> dict:
+    """The feet of ``sides`` flat ``width`` metres apart (ankle to ankle), turned out by ``toe_out`` degrees; the
+    other feet where they stand."""
+    stand = mountain(body)
+    feet = {}
+    for side, s in body.sides.items():
+        if side in sides:
+            toes = axis_rotation((0, 1, 0), s["sign"] * toe_out) @ (0.0, 0.0, 1.0)
+            feet[f"{side}_leg"] = replace(_foot(body, side, s["sign"] * 0.5 * width, stand.left_leg.target[2]),
+                                          forward=tuple(toes), pole=tuple(toes))
+        else:
+            feet[f"{side}_leg"] = getattr(stand, f"{side}_leg")
+    return feet
+
+
+def _straddle(body: Body, feet: dict, pose: BodyPose) -> BodyPose:
+    """``pose`` standing on ``feet`` with the legs long (the knees soft), the hips centred between the ankles."""
+    left, right = feet["left_leg"].target, feet["right_leg"].target
+    centre = 0.5 * (left[0] + right[0])
+    across = 0.5 * (left[0] - right[0]) - 0.5 * body.hip_width
+    reach = 0.985 * body.leg
+    height = left[1] + math.sqrt(max(reach ** 2 - across ** 2, 0.0))
+    moved = _hips_at(body, replace(pose, **feet), (centre, height, 0.5 * (left[2] + right[2])))
+    shift = np.asarray(moved.root) - np.asarray(pose.root)  # the hands go along with the hips
+    arms = {name: replace(getattr(pose, name), target=tuple(np.asarray(getattr(pose, name).target) + shift))
+            for name in ("left_arm", "right_arm")}
+    return replace(moved, **arms)
+
+
+def goddess(body: Body, width: float = 1.05, toe_out: float = 50.0, thigh_down: float = 10.0) -> BodyPose:
+    """Utkata Konasana: the feet ``width`` leg lengths apart and turned out ``toe_out`` degrees, the knees bent out
+    over the toes with the shins upright, the thighs ``thigh_down`` degrees from level, the torso upright, the arms
+    in cactus, the gaze forward."""
+    feet = _wide_feet(body, width * body.leg, toe_out)
+    hips, legs = [], {}
+    for side, s in body.sides.items():
+        foot = feet[f"{side}_leg"]
+        knee = np.asarray(foot.target, float) + np.array([0.0, s["shin_length"], 0.0])  # right above the ankle
+        hip_x = s["sign"] * 0.5 * body.hip_width
+        level = s["thigh_length"] * math.cos(math.radians(thigh_down))  # the thigh's reach along the floor
+        back = math.sqrt(max(level ** 2 - (knee[0] - hip_x) ** 2, 0.0))  # the hips sit back between the heels
+        hip = np.array([hip_x, knee[1] + s["thigh_length"] * math.sin(math.radians(thigh_down)), knee[2] - back])
+        hips.append(hip)
+        legs[f"{side}_leg"] = replace(foot, pole=tuple(knee - hip))  # the knee points the way the thigh goes
+    pose = replace(mountain(body), spine=(-4.0, 0.0, 0.0), head=(-2.0, 0.0, 0.0), **legs)
+    pose = replace(pose, pelvis=(_pitch_for_lean(body, pose, 2.0), 0.0, 0.0))  # upright over the hips
+    pose = _hips_at(body, pose, 0.5 * (hips[0] + hips[1]))
+    return replace(pose, **_cactus_arms(body, pose))
+
+
+def _goddess_steps(body: Body) -> list[Step]:
+    """From standing the left foot steps out wide and turns out, then the right one while the arms rise out to the
+    sides, then the knees bend out over the toes and the elbows bend into cactus; back the same way."""
+    stand = mountain(body)
+    width, toe_out = 1.05 * body.leg, 50.0
+    half = _straddle(body, _wide_feet(body, width, toe_out, sides=("left",)), stand)
+    wide = _straddle(body, _wide_feet(body, width, toe_out), stand)
+    wide = replace(wide, **_arms_out(body, wide))
+    pose = goddess(body, width=width / body.leg, toe_out=toe_out)
+    return [Step(stand, hold=1.5, breathe=False), Step(half, seconds=1.3, lift={"left_leg": 0.08}),
+            Step(wide, seconds=1.6, lift={"right_leg": 0.08}), Step(pose, seconds=2.5, hold=9.0),
+            Step(wide, seconds=2.5), Step(half, seconds=1.6, lift={"right_leg": 0.08}),
+            Step(stand, seconds=1.3, lift={"left_leg": 0.08})]
+
+
 POSES: dict[str, PoseSpec] = {
     "yogi_squat": PoseSpec("Yogi Squat (Malasana)", _yogi_squat_steps, main=1, view=0.0),
     "cow": PoseSpec("Cow Pose (Bitilasana)", _cow_steps, main=5, view=90.0),
@@ -1038,4 +1118,5 @@ POSES: dict[str, PoseSpec] = {
     "warrior_2": PoseSpec("Warrior 2 (Virabhadrasana II)", _warrior2_steps, main=1, view=0.0),
     "upward_dog": PoseSpec("Upward Facing Dog (Urdhva Mukha Svanasana)", _upward_dog_steps, main=6, view=90.0),
     "chair": PoseSpec("Chair Pose (Utkatasana)", _chair_steps, main=3, view=90.0),
+    "goddess": PoseSpec("Goddess Pose (Utkata Konasana)", _goddess_steps, main=3, view=0.0),
 }
