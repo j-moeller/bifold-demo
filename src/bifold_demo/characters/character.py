@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import weakref
 
 import numpy as np
 
@@ -11,7 +12,7 @@ from ..scene.geometry import Mesh
 from ..scene.scene import SceneObject
 from ..scene.textures import parse_color
 from ..scene.transforms import vec3
-from .model import CharacterModel, CharacterState, Layer, Poser, quat_nlerp
+from .model import AnimationClip, CharacterModel, CharacterState, Layer, Poser
 
 NECK_SHARE = 0.4  # part of a head turn done by the neck; the head does the rest
 
@@ -27,6 +28,8 @@ class Character(SceneObject):
         shadow: draw a soft blob shadow on the floor under the character.
         head_bones: ``(neck, head)`` bone names used for ``head_yaw`` / ``head_pitch``; looked up as
             ``"Neck"`` and ``"Head"`` when omitted. Without a head bone the look offsets are ignored.
+            Other children of the neck (a Biped parents the clavicles to it) keep their pose, so looking
+            around never swings the arms.
 
     Every :meth:`update` evaluates the behaviour and stores ``state``, ``current_position``,
     ``current_rotation = (0, heading, 0)``, ``current_visible``, ``pose`` (character-space bone transforms),
@@ -42,16 +45,10 @@ class Character(SceneObject):
         self.shadow = shadow
         self.state: CharacterState | None = None
         skeleton = model.skeleton
-        neck_name, head_name = head_bones if head_bones is not None else ("Neck", "Head")
-        neck = skeleton.find(neck_name) if neck_name else None
-        head = skeleton.find(head_name) if head_name else None
-        if head is not None and neck is not None and head not in skeleton.descendants(neck):
-            neck = None
-        self._look_bones = [] if head is None else [(head, 1.0)] if neck is None else \
-            [(neck, NECK_SHARE), (head, 1.0 - NECK_SHARE)]
-        self._look_subtrees = [skeleton.descendants(bone) for bone, _share in self._look_bones]
-        self._rest_pose = skeleton.rest_global
+        self._look = _look_bones(skeleton, *(head_bones if head_bones is not None else ("Neck", "Head")))
+        self._rest_pose = skeleton.rest_global.copy()
         self._rest_palette = model.skinning_matrices(skeleton.rest_global).astype(np.float32)
+        self._rest_pose.flags.writeable = self._rest_palette.flags.writeable = False  # shared by every rest frame
         centre_bone = skeleton.find("Pelvis", "Hips")
         self._centre_bone = 0 if centre_bone is None else centre_bone
         cx, cz, rx, rz = _footprint(model)
@@ -73,8 +70,13 @@ class Character(SceneObject):
 
     def update(self, t: float) -> None:
         """Evaluate the behaviour at time ``t`` and pose the skeleton (skipped while invisible)."""
-        self.current_color = parse_color(resolve(self.color, t))
-        self.current_scale = vec3(resolve(self.scale, t), "scale")
+        color, scale = self.color, self.scale
+        if callable(color) or color is not self.__dict__.get("_color_spec"):  # constants are parsed once
+            self.current_color = parse_color(resolve(color, t))
+            self._color_spec = None if callable(color) else color
+        if callable(scale) or scale is not self.__dict__.get("_scale_spec"):
+            self.current_scale = vec3(resolve(scale, t), "scale")
+            self._scale_spec = None if callable(scale) else scale
         state = self.behaviour(t) if self.behaviour is not None else None
         self.state = state
         if state is None:
@@ -90,30 +92,28 @@ class Character(SceneObject):
             self._pose(state)
 
     def _pose(self, state: CharacterState | None) -> None:
-        look = state is not None and self._look_bones and (state.head_yaw or state.head_pitch)
+        look = state is not None and self._look and (state.head_yaw or state.head_pitch)
         if state is None or (not state.layers and not look):
             pose, palette = self._rest_pose, self._rest_palette
         else:
             pose = self.poser.global_pose(state.layers)
             if look:
-                self._look(pose, float(state.head_yaw), float(state.head_pitch))
+                self._turn_head(pose, float(state.head_yaw), float(state.head_pitch))
             palette = self.skinned_model.skinning_matrices(pose).astype(np.float32)
         self.pose, self.skin_palette = pose, palette
-        cx, cz = pose[self._centre_bone, [0, 2], 3] + self._shadow_offset
-        self.shadow_ellipse = (cx, cz, *self._shadow_radii)
+        centre = pose[self._centre_bone]
+        dx, dz = self._shadow_offset
+        self.shadow_ellipse = (float(centre[0, 3]) + dx, float(centre[2, 3]) + dz, *self._shadow_radii)
 
-    def _look(self, pose: np.ndarray, yaw: float, pitch: float) -> None:
-        """Turn the neck and head subtrees about their joints, in character space (edits ``pose`` in place).
+    def _turn_head(self, pose: np.ndarray, yaw: float, pitch: float) -> None:
+        """Turn the head by ``yaw`` / ``pitch`` degrees in character space, editing the global ``pose`` in place.
 
-        Same result as :meth:`Poser.rotate_in_character_space` on the neck and then the head followed by forward
-        kinematics, without re-running forward kinematics for every bone.
+        The neck turns by 40 % about its joint, then the head by the remaining 60 % about its own joint: the same
+        result as :meth:`Poser.rotate_in_character_space` on the neck and then the head before forward kinematics,
+        except that the neck's children outside the head chain stay where they are.
         """
-        for (bone, share), subtree in zip(self._look_bones, self._look_subtrees):
-            m = np.eye(4)
-            m[:3, :3] = _yaw_pitch(yaw * share, pitch * share)
-            pivot = pose[bone, :3, 3]
-            m[:3, 3] = pivot - m[:3, :3] @ pivot
-            pose[subtree] = m @ pose[subtree]
+        for bone, share, bones in self._look:
+            pose[bones] = _pivot_rotation(yaw * share, pitch * share, pose[bone, :3, 3]) @ pose[bones]
 
     def matrices(self, camera_position=None) -> tuple[np.ndarray, np.ndarray]:
         """Model and normal matrix: ``translation(position) @ rotation_y(heading) @ scaling(scale)``."""
@@ -147,11 +147,38 @@ def skin_vertices(model: CharacterModel, palette: np.ndarray) -> list[np.ndarray
     return out
 
 
-def _yaw_pitch(yaw: float, pitch: float) -> np.ndarray:
-    """Pitch about the character's right axis (positive = looking down), then yaw about +Y (positive = left)."""
+def _look_bones(skeleton, neck_name: str | None, head_name: str | None) -> list[tuple[int, float, np.ndarray]]:
+    """``(pivot bone, share of the turn, bones it moves)`` for the neck (if any) and the head."""
+    head = skeleton.find(head_name) if head_name else None
+    if head is None:
+        return []
+    head_bones = skeleton.descendants(head)
+    neck = skeleton.find(neck_name) if neck_name else None
+    if neck is None or neck == head or head not in skeleton.descendants(neck):
+        return [(head, 1.0, head_bones)]
+    chain = [neck]
+    bone = int(skeleton.parents[head])
+    while bone != neck:
+        chain.insert(1, bone)
+        bone = int(skeleton.parents[bone])
+    return [(neck, NECK_SHARE, np.concatenate([chain, head_bones])), (head, 1.0 - NECK_SHARE, head_bones)]
+
+
+def _pivot_rotation(yaw: float, pitch: float, pivot: np.ndarray) -> np.ndarray:
+    """4x4 rotation about ``pivot``: pitch about the right axis (positive = down), then yaw about +Y (positive = left).
+
+    The character faces +Z, so its right is -X and a positive pitch is a positive rotation about +X.
+    """
     cy, sy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
     cp, sp = math.cos(math.radians(pitch)), math.sin(math.radians(pitch))
-    return np.array([[cy, sy * sp, sy * cp], [0.0, cp, -sp], [-sy, cy * sp, cy * cp]])
+    r0, r1, r2 = (cy, sy * sp, sy * cp), (0.0, cp, -sp), (-sy, cy * sp, cy * cp)
+    px, py, pz = pivot.tolist()
+    return np.array([
+        [*r0, px - r0[0] * px - r0[1] * py - r0[2] * pz],
+        [*r1, py - r1[0] * px - r1[1] * py - r1[2] * pz],
+        [*r2, pz - r2[0] * px - r2[1] * py - r2[2] * pz],
+        [0.0, 0.0, 0.0, 1.0],
+    ])
 
 
 def _footprint(model: CharacterModel) -> tuple[float, float, float, float]:
@@ -168,46 +195,94 @@ def _footprint(model: CharacterModel) -> tuple[float, float, float, float]:
 
 
 # -- faster posing ---------------------------------------------------------------------------------
-
-_SKEW = np.zeros((3, 9))  # (x, y, z) @ _SKEW = the cross-product matrix [v]x, flattened row by row
-_SKEW[[2, 1, 2, 0, 1, 0], [1, 2, 3, 5, 6, 7]] = [-1, 1, 1, -1, -1, 1]
-_DIAGONAL = np.arange(3)
+# The Poser in model.py is the reference; these produce the same poses (to ~1e-15) with far fewer numpy calls,
+# because dozens of characters with ~80 bones are posed every frame.
 
 
-def _compose(rotations: np.ndarray, translations: np.ndarray) -> np.ndarray:
-    """Same as :func:`model.compose` with fewer numpy calls: ``R = (1 - 2|v|^2) I + 2 v v^T + 2 w [v]x``."""
-    n = len(rotations)
-    q = rotations / np.sqrt(np.einsum("ij,ij->i", rotations, rotations))[:, None]
-    v, w = q[:, :3], q[:, 3:]
-    m = np.zeros((n, 4, 4))
-    r = m[:, :3, :3]
-    np.multiply(v[:, :, None], 2.0 * v[:, None, :], out=r)
-    r += ((2.0 * w * v) @ _SKEW).reshape(n, 3, 3)
-    r[:, _DIAGONAL, _DIAGONAL] += (1.0 - 2.0 * np.einsum("ij,ij->i", v, v))[:, None]
-    m[:, :3, 3] = translations
-    m[:, 3, 3] = 1.0
+def _quat_matrix_map() -> np.ndarray:
+    """``(16, 16)`` map from a quaternion's flattened outer product ``q q^T`` to ``|q|^2 *`` its 4x4 rotation."""
+    x, y, z, w = range(4)
+    terms = {
+        (0, 0): [(1, w, w), (1, x, x), (-1, y, y), (-1, z, z)], (1, 1): [(1, w, w), (-1, x, x), (1, y, y), (-1, z, z)],
+        (2, 2): [(1, w, w), (-1, x, x), (-1, y, y), (1, z, z)], (3, 3): [(1, w, w), (1, x, x), (1, y, y), (1, z, z)],
+        (0, 1): [(2, x, y), (-2, z, w)], (1, 0): [(2, x, y), (2, z, w)],
+        (0, 2): [(2, x, z), (2, y, w)], (2, 0): [(2, x, z), (-2, y, w)],
+        (1, 2): [(2, y, z), (-2, x, w)], (2, 1): [(2, y, z), (2, x, w)],
+    }
+    m = np.zeros((16, 16))
+    for (row, col), products in terms.items():
+        for coefficient, a, b in products:
+            m[a * 4 + b, row * 4 + col] += coefficient
     return m
 
 
-class _FastPoser(Poser):
-    """A :class:`Poser` giving the same poses with fewer numpy calls (dozens of characters are posed per frame).
+_QUAT_MATRIX = _quat_matrix_map()
 
-    Forward kinematics runs on bones sorted by depth, so each level is one gather and one in-place matmul.
+
+def _compose(rotations: np.ndarray, translations: np.ndarray) -> np.ndarray:
+    """Same as :func:`model.compose` (quaternions need not be unit length)."""
+    n = len(rotations)
+    m = (rotations[:, :, None] * rotations[:, None, :]).reshape(n, 16) @ _QUAT_MATRIX
+    m /= m[:, 15:]
+    m = m.reshape(n, 4, 4)
+    m[:, :3, 3] = translations
+    return m
+
+
+_next_frames: dict[int, tuple] = {}  # id(clip) -> (weakref to clip, its rotations, next frame on the same hemisphere)
+
+
+def _aligned_next(clip: AnimationClip) -> np.ndarray:
+    """``(F, K, 4)``: each frame's successor (the last frame itself), sign-flipped onto the shorter arc."""
+    entry = _next_frames.get(id(clip))
+    if entry is not None and entry[0]() is clip and entry[1] is clip.rotations:
+        return entry[2]
+    rotations = np.asarray(clip.rotations, dtype=np.float64)
+    nxt = np.concatenate([rotations[1:], rotations[-1:]])
+    nxt = np.where(np.sum(rotations * nxt, axis=-1, keepdims=True) < 0, -nxt, nxt)
+    for key in [k for k, e in _next_frames.items() if e[0]() is None]:
+        del _next_frames[key]
+    _next_frames[id(clip)] = (weakref.ref(clip), clip.rotations, nxt)
+    return nxt
+
+
+def _nlerp(a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:
+    """:func:`model.quat_nlerp` for ``(K, 4)`` arrays and a scalar ``t``."""
+    q = a * (1 - t) + b * np.where(np.einsum("ij,ij->i", a, b) < 0, -t, t)[:, None]
+    return q / np.sqrt(np.einsum("ij,ij->i", q, q))[:, None]
+
+
+def _sample(clip: AnimationClip, t: float, root_k: int | None) -> tuple[np.ndarray, np.ndarray | None]:
+    """:meth:`AnimationClip.sample`, but returns only the translation of bone ``root_k``."""
+    if clip.frames == 1:
+        return clip.rotations[0], None if root_k is None else clip.translations[0, root_k]
+    f = t * clip.fps
+    last = clip.frames - 1
+    f = f % last if clip.loop else min(max(f, 0.0), float(last))
+    i = int(f)
+    a = f - i
+    q = clip.rotations[i] * (1 - a) + _aligned_next(clip)[i] * a
+    q /= np.sqrt(np.einsum("ij,ij->i", q, q))[:, None]
+    if root_k is None:
+        return q, None
+    return q, clip.translations[i, root_k] * (1 - a) + clip.translations[min(i + 1, last), root_k] * a
+
+
+class _FastPoser(Poser):
+    """A :class:`Poser` giving the same poses with fewer numpy calls.
+
+    Forward kinematics uses pointer jumping: after step ``k`` every bone holds the product of the local transforms
+    of itself and its ``2**k - 1`` nearest ancestors, so a skeleton of depth ``d`` needs ``ceil(log2(d))`` steps.
     """
 
     def __init__(self, model: CharacterModel):
         super().__init__(model)
-        skeleton = self.skeleton
-        order = np.concatenate(skeleton._levels) if len(skeleton) else np.zeros(0, dtype=np.int64)
-        rank = np.empty_like(order)
-        rank[order] = np.arange(len(order))
-        self._order, self._rank = order, rank
-        self._spans = []
-        start = 0
-        for level, bones in enumerate(skeleton._levels):
-            end = start + len(bones)
-            self._spans.append((start, end, rank[skeleton.parents[bones]] if level else None))
-            start = end
+        n = len(self.skeleton)
+        ancestors = np.append(np.where(self.skeleton.parents < 0, n, self.skeleton.parents), n)  # n = identity
+        self._jumps = []
+        while np.any(ancestors[:n] < n):
+            self._jumps.append(ancestors[:n].copy())
+            ancestors = ancestors[ancestors]
 
     def local_pose(self, layers: list[Layer]) -> np.ndarray:
         rotations = self.rest_rotations.copy()
@@ -217,11 +292,11 @@ class _FastPoser(Poser):
             if layer.weight <= 0:
                 continue
             clip_idx, skel_idx, root, root_k, scale = self._map(layer.clip)
-            q, tr = layer.clip.sample(layer.time)
+            q, root_translation = _sample(layer.clip, layer.time, root_k if root is not None else None)
             share = layer.weight / (total + layer.weight)
-            rotations[skel_idx] = quat_nlerp(rotations[skel_idx], q[clip_idx], share) if total else q[clip_idx]
-            if root is not None and root_k is not None:
-                target = tr[root_k] * scale
+            rotations[skel_idx] = _nlerp(rotations[skel_idx], q[clip_idx], share) if total else q[clip_idx]
+            if root_translation is not None:
+                target = root_translation * scale
                 translations[root] = translations[root] * (1 - share) + target * share if total else target
             total += layer.weight
         return _compose(rotations, translations)
@@ -234,11 +309,11 @@ class _FastPoser(Poser):
 
     def forward_kinematics(self, local: np.ndarray) -> np.ndarray:
         """Same as ``skeleton.global_transforms(local)``."""
-        ordered = local[self._order]
-        out = np.empty_like(ordered)
-        for start, end, parents in self._spans:
-            if parents is None:
-                out[start:end] = ordered[start:end]
-            else:
-                np.matmul(out[parents], ordered[start:end], out=out[start:end])
-        return out[self._rank]
+        n = len(local)
+        a, b = np.empty((n + 1, 4, 4)), np.empty((n + 1, 4, 4))
+        a[n] = b[n] = np.eye(4)
+        a[:n] = local
+        for ancestors in self._jumps:
+            np.matmul(a[ancestors], a[:n], out=b[:n])
+            a, b = b, a
+        return a[:n]

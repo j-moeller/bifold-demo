@@ -62,12 +62,12 @@ def _behaviour(heading=0.0, layers=(), **look):
     return lambda t: CharacterState((0.0, 0.0, 0.0), heading, list(layers), **look)
 
 
-def _scene(character, floor=False, camera=None):
-    scene = Scene(background=(0, 0, 0))
+def _scene(character, floor=False, camera=None, lit=False):
+    scene = Scene(background=(0, 0, 0), light_direction=(-0.5, -0.4, -1.0))
     scene.camera = camera or Camera(position=(0, 1.0, 4.0), target=(0, 0.9, 0), fov=45)
     if floor:
         scene.add(Plane(size=(8, 8), texture="#c8c8c8", lit=False), name="floor")
-    character.lit = False
+    character.lit = lit
     scene.add(character, name="person")
     return scene
 
@@ -113,25 +113,28 @@ def test_rotating_a_bone_moves_its_pixels(render):
     assert np.array_equal(_mask(rest, RED)[60:], _mask(bent, RED)[60:])  # the lower body stays put
 
 
-def test_gpu_skinning_matches_cpu_reference(render):
+@pytest.mark.parametrize("lit", [False, True])
+def test_gpu_skinning_matches_cpu_reference(render, lit):
     layers = [Layer(_clip("Neck", [1, 0, 1], 80), 0.0), Layer(_clip("Head", [0, 1, 0], -70), 0.0)]
     character = Character(_model(blend=True), _behaviour(heading=25.0, layers=layers, head_pitch=15))
     camera = Camera(position=(1.0, 1.5, 2.2), target=(0, 1.1, 0), fov=45)
-    gpu = render(_scene(character, camera=camera))
+    gpu = render(_scene(character, camera=camera, lit=lit))
 
-    reference = Scene(background=(0, 0, 0))
-    reference.camera = camera
-    points = skin_vertices(character.skinned_model, character.skin_palette)
+    reference = _scene(SceneObject(Mesh([[0, 0, 0]] * 3, [[0, 1, 2]])), camera=camera, lit=lit)
+    palette = character.skin_palette.astype(np.float64)
+    points = skin_vertices(character.skinned_model, palette)
     for i, (prim, p) in enumerate(zip(character.skinned_model.primitives, points)):
-        mesh = Mesh(p, prim.indices, uvs=prim.uvs, normals=prim.normals)
+        blended = np.einsum("nk,nkij->nij", prim.weights, palette[prim.joints])[:, :3, :3]
+        normals = np.einsum("nij,nj->ni", blended, prim.normals)
+        mesh = Mesh(p, prim.indices, uvs=prim.uvs, normals=normals)
         reference.add(SceneObject(mesh, texture=Texture.from_array(prim.texture, order="rgb"), rotation=(0, 25.0, 0),
-                                  lit=False), name=f"part{i}")
+                                  lit=lit), name=f"part{i}")
     cpu = render(reference)
     different = np.any(np.abs(gpu.astype(int) - cpu.astype(int)) > 8, axis=-1)
     assert different.mean() < 0.001  # ignoring the second joint weight already differs in ~0.4 % of the pixels
-    assert _mask(gpu, GREEN).sum() > 5
-    assert not np.array_equal(_mask(gpu, RED), _mask(render(_scene(Character(_model(), _behaviour(heading=25.0)),
-                                                                    camera=camera)), RED))  # the body bends
+    assert _mask(gpu, GREEN).sum() > 5 or lit
+    unbent = render(_scene(Character(_model(), _behaviour(heading=25.0)), camera=camera, lit=lit))
+    assert np.abs(gpu.astype(int) - unbent.astype(int)).max() > 100  # the pose really changed the picture
 
 
 def test_heading_turns_the_character(render):
@@ -150,6 +153,18 @@ def test_head_yaw_turns_only_the_head(render):
     assert np.array_equal(_mask(a, RED)[60:], _mask(b, RED)[60:])
     np.testing.assert_allclose(looking.skin_palette[0], np.eye(4), atol=1e-6)  # body bone untouched
     assert not np.allclose(looking.skin_palette[2], np.eye(4), atol=1e-3)
+
+
+def test_looking_around_keeps_the_arms_in_place():
+    model = _model()
+    skeleton = model.skeleton
+    rest = np.concatenate([skeleton.rest_local, np.eye(4)[None]])
+    rest[3, :3, 3] = (0.2, -0.05, 0.0)  # a clavicle parented to the neck, as in a 3ds Max Biped
+    model.skeleton = Skeleton([*skeleton.names, "L Clavicle"], [-1, 0, 1, 1], rest)
+    model.inverse_bind = np.linalg.inv(model.skeleton.rest_global)
+    character = Character(model, _behaviour(head_yaw=60.0, head_pitch=20.0))
+    np.testing.assert_allclose(character.pose[3], model.skeleton.rest_global[3], atol=1e-12)
+    assert not np.allclose(character.pose[1], model.skeleton.rest_global[1])  # the neck itself turns
 
 
 def test_head_look_matches_rotate_in_character_space():

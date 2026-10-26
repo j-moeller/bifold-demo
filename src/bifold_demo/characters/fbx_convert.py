@@ -43,6 +43,10 @@ def load_character(fbx_path, texture_dir=None, lod="auto", max_texture_size=1024
         lod: ``"auto"`` (the most detailed level with roughly 4k-12k triangles, else the one closest to
             that range) or a level name such as ``"hipoly"`` / ``"lowpoly"`` / ``"lod1"`` or a mesh name.
         max_texture_size: textures are downscaled so that their longer side is at most this.
+
+    Bones keep their FBX names except that Biped prefixes are unified (``Bip02 Head`` -> ``Bip01 Head``)
+    so that every clip fits every avatar. Raises ``ValueError`` for an unknown ``lod`` (the message lists
+    the levels found).
     """
     fbx_path = Path(fbx_path)
     scene = _Scene(read_fbx(fbx_path))
@@ -108,7 +112,9 @@ def load_clip(fbx_path, name=None) -> AnimationClip:
     The root bone's horizontal travel is measured (``metadata["speed"]`` for walk clips) and removed,
     the clip is rotated about +Y so that the travel direction (walk) or the initial facing (other clips)
     is +Z, and turn clips report their total yaw in ``metadata["turn"]`` (degrees, positive = left).
-    ``metadata["kind"]`` comes from the file name: walk, turn, idle or gesture.
+    ``metadata["kind"]`` comes from the file name: walk, turn, idle or gesture (talk, listen, phone,
+    look around); ``metadata["root_height"]`` is the clip's mean root height in metres (``speed`` is
+    measured at that size). Only bones with animation curves are included; turn clips do not loop.
     """
     fbx_path = Path(fbx_path)
     name = name or fbx_path.name.split(".")[0]
@@ -134,27 +140,8 @@ def load_clip(fbx_path, name=None) -> AnimationClip:
     root = _root_bone(scene, bones, parents)
     kind = _clip_kind(name)
     names = [scene.bone_name(n) for n in bones]
-    global_ = _forward_kinematics(local, parents)
-    heading = _facing_headings(global_, names, root)
-    travel = global_[:, root, :3, 3]
-    duration = max(len(times) - 1, 1) / fps
-    delta = travel[-1] - travel[0]
-    speed = float(math.hypot(delta[0], delta[2]) / duration) if kind == "walk" else 0.0
-    if kind == "walk" and math.hypot(delta[0], delta[2]) > 1e-6:
-        align = math.degrees(math.atan2(delta[0], delta[2]))
-    else:
-        align = float(heading[0])
-    turn = float(np.degrees(np.unwrap(np.radians(heading)))[-1] - heading[0]) if kind == "turn" else 0.0
-
-    yaw = _rotation_y(-align)
-    local[:, root] = yaw @ local[:, root]
-    xz = local[:, root, :3, 3][:, [0, 2]]
-    ramp = np.linspace(0.0, 1.0, len(times))[:, None]
-    xz = xz - xz[0] - (xz[-1] - xz[0]) * ramp
+    speed, turn = _make_in_place(local, parents, root, kind, fps, names)
     loop = kind != "turn"
-    if loop:
-        xz -= xz.mean(axis=0)
-    local[:, root, 0, 3], local[:, root, 2, 3] = xz[:, 0], xz[:, 1]
 
     keep = animated.copy()
     keep[root] = True
@@ -162,7 +149,8 @@ def load_clip(fbx_path, name=None) -> AnimationClip:
     kept = local[:, keep_idx]
     rotations = _quaternions(kept[..., :3, :3])
     translations = kept[..., :3, 3].copy()
-    metadata = {"kind": kind, "speed": speed, "turn": turn, "source": str(fbx_path)}
+    metadata = {"kind": kind, "speed": speed, "turn": turn, "source": str(fbx_path),
+                "root_height": float(_forward_kinematics(local, parents)[:, root, 1, 3].mean())}
     return AnimationClip(name, fps, [names[i] for i in keep_idx], rotations, translations, loop=loop,
                          root=names[root], metadata=metadata)
 
@@ -203,6 +191,9 @@ class _Scene:
             self.targets_of.setdefault(c.props[1], []).append((c.props[2], prop))
         self.settings = _properties(root.find("GlobalSettings"))
         self._props: dict[int, dict] = {}
+        stacks = [i for i, o in self.objects.items() if o.name == "AnimationStack"]
+        layers = self.sources(stacks[0], "AnimationLayer") if stacks else []
+        self._curve_nodes = set(self.sources(layers[0], "AnimationCurveNode")) if layers else None  # base layer
 
     # objects and connections
 
@@ -237,9 +228,6 @@ class _Scene:
         return [s for s, p in self.sources_of.get(node_id, ())
                 if s in self.objects and (kind is None or self.objects[s].name == kind) and (prop is None or p == prop)]
 
-    def source_props(self, node_id: int, kind: str) -> list[tuple[int, str | None]]:
-        return [(s, p) for s, p in self.sources_of.get(node_id, ()) if s in self.objects and self.objects[s].name == kind]
-
     def parent(self, node_id: int) -> int:
         """Parent model of a model (0 = the scene root)."""
         for target, prop in self.targets_of.get(node_id, ()):
@@ -248,7 +236,8 @@ class _Scene:
         return 0
 
     def models(self, subtype: str | None = None) -> list[int]:
-        return [i for i, o in self.objects.items() if o.name == "Model" and (subtype is None or self.subtype(i) == subtype)]
+        return [i for i, o in self.objects.items()
+                if o.name == "Model" and (subtype is None or self.subtype(i) == subtype)]
 
     def skeleton_nodes(self) -> list[int]:
         """Skeleton models sorted parents-first: bones, their ancestors and non-leaf helpers below them."""
@@ -260,7 +249,7 @@ class _Scene:
                 keep.add(p)
                 p = self.parent(p)
         for i in self.models():
-            if i not in keep and self.subtype(i) != "Mesh" and self.parent(i) in keep and self._has_bone_below(i, bones):
+            if i not in keep and self.subtype(i) != "Mesh" and self.parent(i) in keep and self._bone_below(i, bones):
                 keep.add(i)
         order: list[int] = []
 
@@ -278,8 +267,8 @@ class _Scene:
                 visit(i)
         return order
 
-    def _has_bone_below(self, node_id: int, bones: set[int]) -> bool:
-        return any(c in bones or self._has_bone_below(c, bones) for c in self.sources(node_id, "Model"))
+    def _bone_below(self, node_id: int, bones: set[int]) -> bool:
+        return any(c in bones or self._bone_below(c, bones) for c in self.sources(node_id, "Model"))
 
     # transforms
 
@@ -310,9 +299,11 @@ class _Scene:
             values = np.tile(np.asarray(self.prop(node_id, key, default), dtype=np.float64), (frames, 1))
             if times is not None:
                 for curve_node in self.sources(node_id, "AnimationCurveNode", key):
+                    if self._curve_nodes is not None and curve_node not in self._curve_nodes:
+                        continue
                     node_props = self.props(curve_node)
                     for axis, channel in enumerate(("d|X", "d|Y", "d|Z")):
-                        if channel in node_props and node_props[channel]:
+                        if node_props.get(channel):
                             values[:, axis] = float(node_props[channel][0])
                         for curve in self.sources(curve_node, "AnimationCurve", channel):
                             values[:, axis] = _sample_curve(self.objects[curve], times, values[0, axis])
@@ -349,14 +340,17 @@ class _Scene:
     def conversion(self) -> np.ndarray:
         """File space -> character space: axis change times unit scale (to metres) as a 4x4 matrix."""
         s = self.settings
-        get = lambda key, default: int(s[key][0]) if s.get(key) else default  # noqa: E731
+
+        def get(key: str, default: int) -> int:
+            return int(s[key][0]) if s.get(key) else default
+
         m = np.zeros((3, 3))
         m[0, get("CoordAxis", 0)] = get("CoordAxisSign", 1)
         m[1, get("UpAxis", 1)] = get("UpAxisSign", 1)
         m[2, get("FrontAxis", 2)] = get("FrontAxisSign", 1)
         if abs(np.linalg.det(m)) < 0.5:
             m = np.eye(3)
-        if np.linalg.det(m) < 0:  # left-handed file: mirror X
+        if np.linalg.det(m) < 0:  # left-handed axis system (rare): mirrored on X to stay a rotation
             m[0] = -m[0]
         unit = float(s["UnitScaleFactor"][0]) if s.get("UnitScaleFactor") else 1.0
         out = np.eye(4)
@@ -384,7 +378,7 @@ class _Scene:
         if fps <= 0:
             steps = [np.diff(k).min() for k in keys if len(k) > 1]
             fps = KTIME_PER_SECOND / float(min(steps)) if steps else 30.0
-        count = int(round((stop - start) * fps / KTIME_PER_SECOND)) + 1
+        count = round((stop - start) * fps / KTIME_PER_SECOND) + 1
         return fps, start + np.arange(max(count, 1)) * (KTIME_PER_SECOND / fps)
 
     # meshes
@@ -444,7 +438,7 @@ def _matrix(values) -> np.ndarray:
 
 
 def _euler_matrix(degrees: np.ndarray, order: str) -> np.ndarray:
-    """``(F, 3)`` Euler angles (degrees about X, Y, Z) to ``(F, 3, 3)``; ``order`` lists the axes applied first to last."""
+    """``(F, 3)`` Euler angles (degrees about X, Y, Z) to ``(F, 3, 3)``; ``order`` lists axes from first applied."""
     a = np.radians(np.asarray(degrees, dtype=np.float64))
     c, s = np.cos(a), np.sin(a)
     n = len(a)
@@ -584,6 +578,35 @@ def _facing_headings(global_: np.ndarray, names: list[str], root: int) -> np.nda
     return np.degrees(np.arctan2(forward[:, 0], forward[:, 2]))
 
 
+def _make_in_place(local: np.ndarray, parents: np.ndarray, root: int, kind: str, fps: float,
+                   names: list[str]) -> tuple[float, float]:
+    """Rotate the clip to face +Z and remove the root's horizontal travel (edits ``local``); returns (speed, turn)."""
+    global_ = _forward_kinematics(local, parents)
+    heading = _facing_headings(global_, names, root)
+    travel = global_[:, root, :3, 3]
+    delta = travel[-1] - travel[0]
+    distance = math.hypot(delta[0], delta[2])
+    speed = distance / (max(len(local) - 1, 1) / fps) if kind == "walk" else 0.0
+    align = math.degrees(math.atan2(delta[0], delta[2])) if kind == "walk" and distance > 1e-6 else float(heading[0])
+    turn = float(np.degrees(np.unwrap(np.radians(heading)))[-1] - heading[0]) if kind == "turn" else 0.0
+
+    top = parents < 0
+    local[:, top] = _rotation_y(-align) @ local[:, top]
+    position = _forward_kinematics(local, parents)[:, root, :3, 3]
+    xz = position[:, [0, 2]]
+    ramp = np.linspace(0.0, 1.0, len(local))[:, None]
+    target = xz - xz[0] - (xz[-1] - xz[0]) * ramp  # drift removed, sway kept
+    if kind != "turn":
+        target -= target.mean(axis=0)
+    shift = np.zeros_like(position)
+    shift[:, [0, 2]] = target - xz
+    if parents[root] >= 0:  # express the global shift in the parent's frame
+        parent = _forward_kinematics(local, parents)[:, parents[root], :3, :3]
+        shift = np.einsum("fji,fj->fi", parent, shift)
+    local[:, root, :3, 3] += shift
+    return float(speed), turn
+
+
 def _root_bone(scene: _Scene, bones: list[int], parents: np.ndarray) -> int:
     names = [scene.bone_name(b).lower() for b in bones]
     if "bip01" in names:
@@ -697,10 +720,14 @@ def _mesh_primitives(scene: _Scene, mesh_id: int, clusters: list, bone_index: di
     bind = _mesh_bind_matrix(scene, mesh_id, clusters) @ scene.geometric_matrix(mesh_id)
     to_char = conversion @ bind
     positions = vertices @ to_char[:3, :3].T + to_char[:3, 3]
-    if normals is None:
-        normals = np.zeros((len(pvi), 3))
-    normal_matrix = np.linalg.inv(to_char[:3, :3]).T
-    normals = normals @ normal_matrix.T
+    if normals is None:  # smooth normals from the faces
+        a, b, c = (positions[control[triangles[:, k]]] for k in range(3))
+        smooth = np.zeros_like(positions)
+        for k in range(3):
+            np.add.at(smooth, control[triangles[:, k]], np.cross(b - a, c - a))
+        normals = smooth[control]
+    else:
+        normals = normals @ np.linalg.inv(to_char[:3, :3])  # inverse transpose, row vectors
     normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
     if uvs is None:
         uvs = np.zeros((len(pvi), 2))

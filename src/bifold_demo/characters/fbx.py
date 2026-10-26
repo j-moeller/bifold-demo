@@ -23,7 +23,7 @@ _ARRAYS = {b"f": np.dtype("<f4"), b"d": np.dtype("<f8"), b"l": np.dtype("<i8"), 
 class FBXNode:
     """One FBX record: ``name``, ``props`` (scalars, strings, bytes or numpy arrays) and ``children``."""
 
-    __slots__ = ("name", "props", "children")
+    __slots__ = ("children", "name", "props")
 
     def __init__(self, name: str, props: list | None = None, children: list[FBXNode] | None = None):
         self.name = name
@@ -46,7 +46,7 @@ class FBXNode:
 
 
 def read_fbx(path) -> FBXNode:
-    """Parse a binary FBX file into a root :class:`FBXNode` (named ``""``) holding the top-level records."""
+    """Parse a binary FBX file into a root :class:`FBXNode` (name ``""``, props ``[version]``) of the top-level records."""
     data = Path(path).read_bytes()
     return parse_fbx(data)
 

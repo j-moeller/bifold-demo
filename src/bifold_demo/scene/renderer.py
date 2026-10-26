@@ -96,15 +96,17 @@ void main() {
 }
 """
 
-# Soft blob shadow: a unit square on the floor (x, z in -1..1), stretched to the ellipse by u_mvp.
+# Soft blob shadows: one rectangle per character on the floor (scene space), in_offset runs from -1 to 1 across it.
 _SHADOW_VS = """
 #version 330 core
-uniform mat4 u_mvp;
+uniform mat4 u_view_proj;
+in vec3 in_position;
+in vec2 in_offset;
 out vec2 v_offset;
 out float v_depth;
 void main() {
-    v_offset = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1)) * 2.0 - 1.0;
-    gl_Position = u_mvp * vec4(v_offset.x, 0.0, v_offset.y, 1.0);
+    v_offset = in_offset;
+    gl_Position = u_view_proj * vec4(in_position, 1.0);
     v_depth = gl_Position.w;
 }
 """
@@ -122,6 +124,7 @@ void main() {
 
 SHADOW_STRENGTH = 0.45  # darkening at the centre of a blob shadow (0-1)
 SHADOW_LIFT = 0.01  # metres above the floor, so a blob shadow never fights the floor for depth
+_SHADOW_CORNERS = np.array([(-1, -1), (1, -1), (1, 1), (-1, -1), (1, 1), (-1, 1)], dtype=np.float64)
 _UNSET = object()
 
 _BACKGROUND_VS = """
@@ -148,6 +151,9 @@ void main() {
 
 class Renderer:
     """Renders scenes off-screen at a fixed resolution.
+
+    Objects with a ``skinned_model`` (:class:`bifold_demo.characters.character.Character`) are skinned on the
+    GPU with their ``skin_palette`` and get a soft blob shadow on the floor.
 
     The OpenGL context belongs to the thread that created the renderer; call
     :meth:`render` from that thread only.
@@ -183,6 +189,7 @@ class Renderer:
         self._meshes: dict[int, tuple] = {}  # id(mesh) -> (weakref, vao, vbo, ibo)
         self._textures: dict[int, list] = {}  # texture.id -> [weakref, gl texture, version]
         self._skinned_program = self._shadow_program = None  # compiled when the first character shows up
+        self._shadow_vbo = self._shadow_vao = None
         self._primitives: dict[int, list] = {}  # id(primitive) -> [weakref, vao, vbo, ibo, texture spec, Texture]
         self._joints: dict[int, tuple] = {}  # id(character) -> (weakref, joint-palette texture)
         self.info = self.ctx.info.get("GL_RENDERER", "OpenGL")
@@ -271,25 +278,38 @@ class Renderer:
             self._draw_shadows(shadows, view_proj, camera_position, uniforms)
 
     def _draw_shadows(self, characters, view_proj, camera_position, uniforms: dict) -> None:
-        """Soft dark ellipses on the floor: depth-tested, blended, without writing depth."""
+        """Soft dark ellipses on the floor in one draw call: depth-tested, blended, without writing depth."""
         mgl, ctx, fbo = self._moderngl, self.ctx, self._draw_fbo
+        n = len(characters)
+        models = np.array([obj.matrices(camera_position)[0][:3] for obj in characters])
+        cx, cz, rx, rz = np.array([obj.shadow_ellipse for obj in characters], dtype=np.float64).T[:, :, None]
+        local = np.ones((n, 6, 4))  # character-space corners of each ellipse's rectangle
+        local[..., 0] = cx + _SHADOW_CORNERS[:, 0] * rx
+        local[..., 1] = SHADOW_LIFT
+        local[..., 2] = cz + _SHADOW_CORNERS[:, 1] * rz
+        vertices = np.empty((n, 6, 5), dtype="f4")
+        vertices[..., :3] = np.einsum("nij,nkj->nki", models, local)
+        vertices[..., 3:] = _SHADOW_CORNERS
+        data = vertices.tobytes()
         if self._shadow_program is None:
             self._shadow_program = ctx.program(vertex_shader=_SHADOW_VS, fragment_shader=_SHADOW_FS)
-            self._shadow_vao = ctx.vertex_array(self._shadow_program, [])
+            self._shadow_program["u_strength"].value = SHADOW_STRENGTH
+        if self._shadow_vbo is None or self._shadow_vbo.size < len(data):
+            if self._shadow_vbo is not None:
+                self._shadow_vao.release()
+                self._shadow_vbo.release()
+            self._shadow_vbo = ctx.buffer(reserve=max(2 * len(data), 4096), dynamic=True)
+            self._shadow_vao = ctx.vertex_array(self._shadow_program,
+                                                [(self._shadow_vbo, "3f 2f", "in_position", "in_offset")])
+        self._shadow_vbo.write(data)
         prog = self._shadow_program
         _set_uniforms(prog, uniforms)
-        prog["u_strength"].value = SHADOW_STRENGTH
-        mvp = prog["u_mvp"]
+        prog["u_view_proj"].write(gl_bytes(view_proj))
         ctx.enable(mgl.BLEND)
         ctx.blend_func = mgl.SRC_ALPHA, mgl.ONE_MINUS_SRC_ALPHA
         fbo.depth_mask = False
         try:
-            for obj in characters:
-                cx, cz, rx, rz = obj.shadow_ellipse
-                ellipse = np.array([[rx, 0.0, 0.0, cx], [0.0, 1.0, 0.0, SHADOW_LIFT], [0.0, 0.0, rz, cz],
-                                    [0.0, 0.0, 0.0, 1.0]])
-                mvp.write(gl_bytes(view_proj @ obj.matrices(camera_position)[0] @ ellipse))
-                self._shadow_vao.render(mgl.TRIANGLE_STRIP, vertices=4)
+            self._shadow_vao.render(mgl.TRIANGLES, vertices=6 * n)
         finally:
             fbo.depth_mask = True
             ctx.disable(mgl.BLEND)
@@ -411,6 +431,10 @@ class Renderer:
         for _ref, gl_tex in self._joints.values():
             gl_tex.release()
         self._joints.clear()
+        if self._shadow_vbo is not None:
+            self._shadow_vao.release()
+            self._shadow_vbo.release()
+            self._shadow_vbo = self._shadow_vao = None
         for _ref, gl_tex, _version in self._textures.values():
             gl_tex.release()
         self._textures.clear()
