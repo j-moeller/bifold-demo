@@ -46,7 +46,7 @@ def _as_random(rng) -> random.Random:
 
 
 def age_group(entry: dict, older_from_age: float = OLDER_FROM_AGE) -> str:
-    """``"child"``, ``"adult"`` or ``"older"``: the label, except that an estimated ``age >= older_from_age`` is older."""
+    """``"child"``, ``"adult"`` or ``"older"``: the label, but an estimated ``age >= older_from_age`` is older."""
     group = str(entry.get("age_group") or "adult").lower()
     if group not in AGE_SHARES:
         group = "adult"

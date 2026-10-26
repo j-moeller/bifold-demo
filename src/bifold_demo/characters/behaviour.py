@@ -59,7 +59,7 @@ import numpy as np
 
 from .character import NECK_SHARE
 from .model import AnimationClip, CharacterModel, CharacterState, Layer, quat_from_axis_angle, quat_multiply, \
-    quat_to_matrix
+    quat_nlerp, quat_to_matrix
 
 ROLES = ("walk", "walk_slow", "stroll", "idle", "look_around", "talk", "listen", "phone",
          "turn_left_90", "turn_right_90", "turn_left_180", "turn_right_180")
@@ -217,6 +217,19 @@ def _chain(clip: AnimationClip) -> list[int]:
     return chain
 
 
+def _chain_quaternions(clip: AnimationClip, chain: list[int], times) -> np.ndarray:
+    """``(T, len(chain), 4)`` rotations of the chain bones at clip ``times``, interpolated like ``clip.sample``."""
+    rotations = np.asarray(clip.rotations, dtype=np.float64)
+    if clip.frames == 1:
+        return np.repeat(rotations[:1, chain], len(times), axis=0)
+    last = clip.frames - 1
+    f = np.asarray(times, dtype=np.float64) * clip.fps
+    f = f % last if clip.loop else np.clip(f, 0.0, last)
+    i = np.minimum(f.astype(np.int64), last)
+    j = np.minimum(i + 1, last)
+    return quat_nlerp(rotations[i][:, chain], rotations[j][:, chain], (f - i)[:, None])
+
+
 def _chain_rotation(clip: AnimationClip, chain: list[int], frames=slice(None)) -> np.ndarray:
     matrices = quat_to_matrix(np.asarray(clip.rotations, dtype=np.float64)[frames][:, chain])
     out = matrices[:, 0]
@@ -299,7 +312,7 @@ class MotionLibrary:
         return next((role for role in ROLES if clip.name in self._roles[role]), None)
 
     def head_yaw(self, clip: AnimationClip) -> list[float]:
-        """Per-frame yaw (degrees, unwrapped) of the head the clip produces, in character space (0 = facing +Z)."""
+        """Per-frame yaw (degrees, unwrapped, averaging within +-180) of the clip's head in character space (0 = +Z)."""
         return self._head(clip)[0]
 
     def head_elevation(self, clip: AnimationClip) -> list[float]:
@@ -319,11 +332,30 @@ class MotionLibrary:
         else:
             directions = np.tile([0.0, 0.0, 1.0], (clip.frames, 1))
         yaw = np.degrees(np.unwrap(np.arctan2(directions[:, 0], directions[:, 2])))
-        yaw -= 360.0 * np.round(yaw[0] / 360.0)
+        yaw -= 360.0 * np.round(np.mean(yaw) / 360.0)
         norm = np.maximum(np.linalg.norm(directions, axis=1), 1e-12)
         elevation = np.degrees(np.arcsin(np.clip(-directions[:, 1] / norm, -1.0, 1.0)))
         self._yaw[id(clip)] = (clip, ([float(v) for v in yaw], [float(v) for v in elevation]))
         return self._yaw[id(clip)][1]
+
+    def blended_head(self, first: AnimationClip, first_times, second: AnimationClip, second_times,
+                     weights) -> tuple[np.ndarray, np.ndarray] | None:
+        """Head yaw and elevation (degrees) while ``first`` crossfades into ``second`` (``weights`` of ``second``),
+        with the chain bones blended as the :class:`Poser` blends them; ``None`` if the clips' head chains differ."""
+        chain_a, chain_b = _chain(first), _chain(second)
+        if not chain_a or [first.bone_names[k] for k in chain_a] != [second.bone_names[k] for k in chain_b]:
+            return None
+        weights = np.asarray(weights, dtype=np.float64)[:, None]
+        q = quat_nlerp(_chain_quaternions(first, chain_a, first_times),
+                       _chain_quaternions(second, chain_b, second_times), weights)
+        matrices = quat_to_matrix(q)
+        rotation = matrices[:, 0]
+        for k in range(1, matrices.shape[1]):
+            rotation = rotation @ matrices[:, k]
+        d = rotation @ self.head_forward
+        yaw = np.degrees(np.arctan2(d[:, 0], d[:, 2]))
+        elevation = np.degrees(np.arcsin(np.clip(-d[:, 1] / np.linalg.norm(d, axis=1), -1.0, 1.0)))
+        return yaw, elevation
 
     def after_turn(self, clip: AnimationClip) -> AnimationClip:
         """``clip`` with its root yawed back by its ``turn``: its pose once the heading has taken the turn."""
@@ -476,15 +508,15 @@ class _Entry:
     """One clip on the clip track; ``sample(tl)`` gives ``(clip, clip time, head yaw, head elevation)`` of the
     clip (also past ``t1``)."""
 
-    __slots__ = ("t0", "t1", "clip", "after", "head", "after_head", "walk", "phase", "scale", "role", "fade", "fps",
-                 "last", "loop")
+    __slots__ = ("t0", "t1", "clip", "after", "head", "after_head", "walk", "phase", "scale", "role", "fade", "fix",
+                 "fps", "last", "loop")
 
     def __init__(self, t0, t1, clip, head=None, role=None, walk=None, phase=0.0, scale=1.0, after=None,
                  after_head=None):
         self.t0, self.t1, self.clip, self.head, self.role = t0, t1, clip, head, role
         self.walk, self.phase, self.scale = walk, phase, scale
         self.after, self.after_head = after, after_head
-        self.fade = 0.0
+        self.fade, self.fix = 0.0, None  # crossfade length; corrections of the linearly blended head yaw / elevation
         if clip is not None:
             self.fps, self.last, self.loop = clip.fps, clip.frames - 1, clip.loop
 
@@ -1025,11 +1057,44 @@ class Behaviour:
             before = self._entries[j - 1]
             pclip, ptime, pyaw, pelevation = before.sample(tl if j else tl + self.duration)
             pyaw += 360.0 * round((yaw - pyaw) / 360.0)
-            return x, z, heading, piece, entry, [Layer(pclip, ptime, 1.0 - w), Layer(clip, time, w)], \
-                pyaw + (yaw - pyaw) * w, pelevation + (elevation - pelevation) * w
+            yaw, elevation = pyaw + (yaw - pyaw) * w, pelevation + (elevation - pelevation) * w
+            if entry.fix is not None:
+                fix_yaw, fix_elevation = entry.fix
+                u = (tl - entry.t0) / entry.fade * (len(fix_yaw) - 1)
+                k = min(int(u), len(fix_yaw) - 2)
+                a = u - k
+                yaw += fix_yaw[k] + (fix_yaw[k + 1] - fix_yaw[k]) * a
+                elevation += fix_elevation[k] + (fix_elevation[k + 1] - fix_elevation[k]) * a
+            return x, z, heading, piece, entry, [Layer(pclip, ptime, 1.0 - w), Layer(clip, time, w)], yaw, elevation
         return x, z, heading, piece, entry, [Layer(clip, time, 1.0)], yaw, elevation
 
+    def _fix_fades(self) -> None:
+        """Correct the linearly blended head yaw / elevation of every crossfade to the Poser's blend of the bones."""
+        if self.library is None:
+            return
+        for j, entry in enumerate(self._entries):
+            before = self._entries[j - 1]
+            if not entry.fade or entry.clip is None or before.clip is None:
+                continue
+            steps = max(4, int(math.ceil(entry.fade / 0.05)))
+            times = entry.t0 + entry.fade * np.arange(steps + 1) / steps
+            shift = 0.0 if j else self.duration
+            first = [before.sample(tl + shift) for tl in times]
+            second = [entry.sample(tl) for tl in times]
+            weights = [_smooth(k / steps) for k in range(steps + 1)]
+            exact = self.library.blended_head(first[0][0], [s[1] for s in first], second[0][0], [s[1] for s in second],
+                                              weights)
+            if exact is None:
+                continue
+            fix_yaw, fix_elevation = [], []
+            for (_, _, ya, ea), (_, _, yb, eb), w, ye, ee in zip(first, second, weights, *exact):
+                ya += 360.0 * round((yb - ya) / 360.0)
+                fix_yaw.append(_wrap(ye - (ya + (yb - ya) * w)))
+                fix_elevation.append(ee - (ea + (eb - ea) * w))
+            entry.fix = (fix_yaw, fix_elevation)
+
     def _plan_head(self) -> None:
+        self._fix_fades()
         n = max(8, int(math.ceil(self.duration / _PLAN_DT)))
         self._dt = dt = self.duration / n
         body = [self._body(i * dt) for i in range(n)]
