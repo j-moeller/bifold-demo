@@ -12,20 +12,24 @@ how those were made (the outfit recipe, whose face it is). Everything is kept in
 
 The textures are stored ready to draw, so loading a character needs no generator or face model. The folder is looked
 at again at most once a second (:meth:`CharacterBook.refresh`), so a character saved by the creator, copied in by
-hand or deleted shows up in, or leaves, the scene a moment later. Face photos and the textures made from them are
-personal data: the folder stays on this computer (it is ignored by git) and :meth:`CharacterBook.delete` removes
-everything of a character.
+hand or deleted shows up in, or leaves, the scene a moment later. That look is quick: the book reads a character's
+images only when they are first used (:class:`Textures`), on the thread that makes its 3D person. Face photos and
+the textures made from them are personal data: the folder stays on this computer (it is ignored by git) and
+:meth:`CharacterBook.delete` removes everything of a character.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import os
 import re
 import shutil
+import threading
 import time
-from dataclasses import asdict, dataclass, field
+from collections.abc import MutableMapping
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 import cv2
@@ -84,7 +88,8 @@ def save(character: CreatedCharacter, folder) -> Path:
         if not cv2.imwrite(str(tmp / name), bgr):
             raise OSError(f"cannot write {tmp / name}")
         files[primitive] = name
-    data = {k: v for k, v in asdict(character).items() if k not in ("textures", "folder")}
+    data = {f.name: copy.deepcopy(getattr(character, f.name)) for f in fields(character)
+            if f.name not in ("textures", "folder")}
     data.update(format=FORMAT, textures=files, created=character.created or now, updated=now)
     (tmp / FILE).write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     old = target.with_name(f".{target.name}.{os.getpid()}.old")
@@ -97,18 +102,62 @@ def save(character: CreatedCharacter, folder) -> Path:
     return target
 
 
-def load(path) -> CreatedCharacter:
-    """The character saved in the folder ``path``."""
+class Textures(MutableMapping):
+    """A saved character's images by primitive name, each read from its file the first time it is looked at (then
+    kept), so that looking through a folder of characters is quick and the images are decoded where they are needed.
+    Safe to use from several threads."""
+
+    def __init__(self, files=None):
+        self._files: dict[str, Path | None] = {k: Path(v) for k, v in dict(files or {}).items()}
+        self._images: dict[str, np.ndarray] = {}
+        self._lock = threading.Lock()
+
+    def __getitem__(self, primitive: str) -> np.ndarray:
+        with self._lock:
+            image = self._images.get(primitive)
+            if image is None:
+                image = self._images[primitive] = _read(self._files[primitive])
+            return image
+
+    def __setitem__(self, primitive: str, image) -> None:
+        with self._lock:
+            self._files[primitive] = None
+            self._images[primitive] = image
+
+    def __delitem__(self, primitive: str) -> None:
+        with self._lock:
+            del self._files[primitive]
+            self._images.pop(primitive, None)
+
+    def __iter__(self):
+        return iter(list(self._files))
+
+    def __len__(self) -> int:
+        return len(self._files)
+
+    def __repr__(self) -> str:
+        return f"Textures({', '.join(self._files)})"
+
+
+def _read(path: Path) -> np.ndarray:
+    image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    if image is None:
+        raise OSError(f"cannot read {path}")
+    return cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA if image.shape[-1] == 4 else cv2.COLOR_BGR2RGB)
+
+
+def load(path, lazy: bool = False) -> CreatedCharacter:
+    """The character saved in the folder ``path``; ``lazy``: its images are read when first used (:class:`Textures`;
+    only whether their files are there is checked now)."""
     path = Path(path)
     data = json.loads((path / FILE).read_text(encoding="utf-8"))
     if int(data.get("format", 1)) > FORMAT:
         raise ValueError(f"{path} was saved by a newer version (format {data['format']})")
-    textures = {}
-    for primitive, name in (data.get("textures") or {}).items():
-        image = cv2.imread(str(path / name), cv2.IMREAD_UNCHANGED)
-        if image is None:
-            raise OSError(f"cannot read {path / name}")
-        textures[primitive] = cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA if image.shape[-1] == 4 else cv2.COLOR_BGR2RGB)
+    files = {primitive: path / name for primitive, name in (data.get("textures") or {}).items()}
+    for file in files.values():
+        if not file.is_file():
+            raise OSError(f"cannot read {file}")
+    textures = Textures(files) if lazy else {primitive: _read(file) for primitive, file in files.items()}
     return CreatedCharacter(str(data["name"]), str(data["avatar"]), data.get("face"), dict(data.get("outfit") or {}),
                             dict(data.get("items") or {}), textures, float(data.get("created", 0.0)),
                             float(data.get("updated", 0.0)), path)
@@ -144,7 +193,7 @@ class CharacterBook:
                     found[path.name] = old
                     continue
                 try:
-                    found[path.name] = (stamp, load(path))
+                    found[path.name] = (stamp, load(path, lazy=True))
                 except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
                     problems[path.name] = f"{type(exc).__name__}: {exc}"
         changed = {k: v[0] for k, v in found.items()} != {k: v[0] for k, v in self._known.items()}
@@ -186,17 +235,25 @@ def textures_of(character, primitives=None) -> dict[str, np.ndarray]:
     return out
 
 
-def apply_looks(person, created: CreatedCharacter) -> None:
+def apply_looks(person, created: CreatedCharacter, wardrobe=None, t: float | None = None) -> None:
     """Give the scene character ``person`` (made from ``created.avatar``) the looks of ``created``: its textures and
-    accessories."""
+    accessories, instead of what it wore before. An item's look is a look name of ``wardrobe`` (an
+    :class:`~.accessories.Wardrobe`; the built-in looks without one), a colour, or an image file, found in the
+    character's folder when it is there. ``t``: the scene time it happens (a sign is lifted from then on)."""
     from ..scene.textures import Texture
     from . import accessories
 
     names = {p.name for p in person.skinned_model.primitives}
     person.texture_overrides = {name: Texture.from_array(image, order="rgb", name=f"{created.name} {name}")
                                 for name, image in created.textures.items() if name in names}
+    if not accessories.supports(person.skinned_model):
+        return
+    for item in accessories.wearing(person):
+        accessories.dress(person, item, None, t=t)
     for item, look in created.items.items():
+        if isinstance(look, str) and created.folder is not None and (created.folder / look).is_file():
+            look = str(created.folder / look)
         try:
-            accessories.dress(person, item, look)
+            accessories.dress(person, item, look, wardrobe, t=t)
         except (KeyError, ValueError, OSError):
             continue  # an accessory this avatar cannot wear, or a file gone: the rest still applies

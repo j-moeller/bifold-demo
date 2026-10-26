@@ -86,3 +86,40 @@ def test_looks_are_applied_to_a_3d_person_and_read_back():
     assert list(accessories.wearing(person)) == ["hat"]
     back = textures_of(person)
     assert set(back) == {first} and tuple(back[first][0, 0, :3]) == (255, 0, 0)
+
+
+def test_new_looks_replace_the_old_ones(tmp_path):
+    import cv2
+
+    from bifold_demo.characters import accessories
+
+    model = synthetic_biped()
+    person = Character(model, lambda t: CharacterState((0.0, 0.0, 0.0), 0.0, []), name="p")
+    apply_looks(person, CreatedCharacter("Eve", model.name, items={"hat": "red", "glasses": "sunglasses"}))
+    assert sorted(accessories.wearing(person)) == ["glasses", "hat"]
+    folder = tmp_path / "Eve"
+    folder.mkdir()
+    cv2.imwrite(str(folder / "my_sign.png"), np.full((20, 30, 3), (0, 200, 0), np.uint8))
+    again = CreatedCharacter("Eve", model.name, items={"sign": "my_sign.png"}, folder=folder)  # a file of its own
+    apply_looks(person, again)
+    worn = accessories.wearing(person)
+    assert list(worn) == ["sign"] and worn["sign"].look == str(folder / "my_sign.png")
+
+
+def test_the_book_reads_images_only_when_they_are_used(tmp_path):
+    from bifold_demo.characters.created import Textures
+
+    save(CreatedCharacter("Ada", "Female_Adult_01", textures={"f001_body": _image((1, 2, 3))}), tmp_path)
+    book = CharacterBook(tmp_path)
+    book.refresh(force=True)
+    ada = book.get("Ada")
+    assert isinstance(ada.textures, Textures) and list(ada.textures) == ["f001_body"] and not ada.textures._images
+    assert tuple(ada.textures["f001_body"][0, 0, :3]) == (1, 2, 3) and len(ada.textures._images) == 1
+    ada.textures["f001_head"] = _image((4, 5, 6))  # edited and saved again, by the creator
+    book.save(ada)
+    again = load(tmp_path / "Ada")
+    assert isinstance(again.textures, dict) and tuple(again.textures["f001_head"][0, 0, :3]) == (4, 5, 6)
+    assert tuple(again.textures["f001_body"][0, 0, :3]) == (1, 2, 3)
+    (tmp_path / "Ada" / "f001_head.png").unlink()
+    with pytest.raises(OSError, match="cannot read"):
+        load(tmp_path / "Ada", lazy=True)  # a missing image is found at once, a broken one when it is read
