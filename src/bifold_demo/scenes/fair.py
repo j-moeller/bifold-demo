@@ -1,10 +1,12 @@
 """Trade-fair hall with exhibitor booths and a keynote stage, seen by a fixed camera, full of people.
 
 People are animated 3D characters (Microsoft Rocketbox avatars, prepared once with
-``bifold-characters fetch --set conference``): some walk down the aisle towards the camera, stop and
-turn around, others walk by along the cross aisles or wander about, small groups chat, exhibitors
-stand behind their counters talking to visitors, and a speaker is on the stage. Nobody looks at
-the camera. The crowd mixes women and men, skin tones and ages (see ``characters.crowd``).
+``bifold-characters fetch --set conference``). The camera is our own exhibit: an audience stands
+in a half circle in front of it, watching it, always at least three people, while visitors walk up
+the aisle to join them for a while, turn around and leave. Others walk by along the cross aisles or
+wander about, small groups chat, exhibitors stand behind their counters talking to visitors, and a
+speaker is on the stage. Apart from the audience, nobody looks at the camera. The crowd mixes women
+and men, skin tones and ages (see ``characters.crowd``).
 
 Until the characters are prepared, 2D cut-out people stand in: from the ``people/`` folder
 (``bifold-people generate -n 30``) or cut out of the Ultralytics sample photos.
@@ -26,7 +28,7 @@ from functools import partial
 import cv2
 import numpy as np
 
-from bifold_demo.characters.behaviour import approach, chat, fits_period, stand, walk_by, wander
+from bifold_demo.characters.behaviour import approach, chat, fits_period, stand, walk_by, wander, watch
 from bifold_demo.characters.crowd import age_group, describe_crowd, populate, sample_crowd
 from bifold_demo.characters.library import CharacterLibrary, fetch_command
 from bifold_demo.people import people_for_scene
@@ -200,9 +202,14 @@ def add_walkers(scene: Scene, people: Crowd, rng: random.Random) -> None:
 
 PEOPLE_3D = True  # False: always use the 2D cut-outs
 CROWD_SEED = 5  # change for a different crowd and different timings
-# walk from far away towards the camera, stop (3.5-5 m from it, so the feet stay in the picture), turn around,
-# walk back: (start, stop) on the floor
-APPROACHES = [((-0.8, -16.0), (-1.7, 2.4)), ((1.4, -23.5), (1.6, 1.2)), ((0.3, -12.5), (0.6, 2.0))]
+# Our exhibit is where the camera is. Its audience stands in a half circle in front of it, AUDIENCE_RADIUS metres
+# away (nearer, the feet leave the picture), facing it and watching it. AUDIENCE: (degrees from straight ahead, left
+# to right; who stands there): "stays" = someone all the time, so at least three people watch at any moment;
+# "visits" = visitors who walk up the aisle from VISITORS_FROM (in turn), watch for a while, turn around and leave.
+AUDIENCE_RADIUS = 3.9
+AUDIENCE = [(-36, "stays"), (-22, "visits"), (-7, "stays"), (7, "visits"), (22, "stays"), (36, "visits")]
+VISITORS_FROM = [(-1.4, -16.0), (0.5, -23.5), (2.0, -12.5)]  # straight lanes, at least 0.8 m from the audience
+VISIT = (15.0, 30.0)  # seconds a visitor watches
 # walk across the hall: (z, direction); people vanish at the side walls where the camera cannot see the wall,
 # elsewhere they turn around there and walk back
 CROSSINGS = [(-7.0, 1), (-6.2, -1), (-7.8, 1), (-20.5, -1), (-19.8, 1), (-21.3, -1), (-34.0, 1)]
@@ -211,7 +218,7 @@ CHAT_GROUPS = [((4.6, -2.4), 2), ((3.8, -12.5), 3), ((-3.6, -15.6), 2)]  # (cent
 MIN_DISTANCE = 0.6  # metres people keep from each other (walk timings are shifted until they do)
 LOOP_PERIOD = 360.0  # seconds; moving people's loops are stretched to fit it, so the hall repeats every 6 min
 FRAME_ASPECT = 16 / 9  # the widest picture the camera is used with (for the "out of view" checks)
-MOVING = ("approach", "walker", "wanderer")  # kinds of people whose timings keep_apart may shift
+MOVING = ("approach", "walker", "wanderer")  # kinds of people whose timings keep_apart may shift (visitors approach)
 
 
 def shared_library():
@@ -299,6 +306,13 @@ def _raised(make, height: float):
     return lambda **kwargs: Raised(make(**kwargs), height)
 
 
+def audience_spots() -> list[tuple[float, float, str]]:
+    """``(x, z, who)`` of the places in the half circle in front of the camera (see ``AUDIENCE``)."""
+    cx, _, cz = CAMERA_POSITION
+    return [(cx + AUDIENCE_RADIUS * math.sin(math.radians(a)), cz - AUDIENCE_RADIUS * math.cos(math.radians(a)), who)
+            for a, who in AUDIENCE]
+
+
 def people_slots():
     """``(kind, behaviour factory, child allowed, prefers business clothes)`` for everyone in the hall."""
     cam = CAMERA_POSITION
@@ -306,9 +320,14 @@ def people_slots():
     booth_points = [(o[0], 1.5, o[2]) for _, o, _ in booths]
     slots = []
     moving = {"camera": cam, "look_at": booth_points, "period": LOOP_PERIOD}  # all loops fit LOOP_PERIOD
-    for (x0, z0), (x1, z1) in APPROACHES:  # straight, in separate lanes (their timings cannot keep them apart)
-        slots.append(("approach", partial(approach, (x0, 0.0, z0), (x1, 0.0, z1), stop_distance=(3.5, 5.0), bow=0.0,
-                                          **moving), False, False))
+    visitors = iter(VISITORS_FROM)
+    for k, (x, z, who) in enumerate(audience_spots()):
+        if who == "stays":  # the middle one may be a child (with grown-ups next to them)
+            slots.append(("audience", partial(watch, (x, 0.0, z), cam, camera=cam), k == 2, False))
+        else:  # straight, in separate lanes (their timings cannot keep them apart)
+            x0, z0 = next(visitors)
+            slots.append(("approach", partial(approach, (x0, 0.0, z0), (x, 0.0, z), stop_distance=(3.5, 5.0), bow=0.0,
+                                              watch=cam, idle=VISIT, **moving), False, False))
     half = HALL_WIDTH / 2 - 1.0
     for z, direction in CROSSINGS:
         if in_view((-half, z)) or in_view((half, z)):  # they would be seen vanishing: turn round earlier instead

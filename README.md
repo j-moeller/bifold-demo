@@ -76,11 +76,12 @@ It contains:
   and a plant.
 - **Stage**: a keynote stage at the back, with an LED wall, trusses and a
   welcome banner.
-- **33 animated people** (see [3D people](#3d-people)):
+- **36 animated people** (see [3D people](#3d-people)):
 
 | Who | What they do | Configured by |
 |-----|--------------|---------------|
-| 3 approaching | walk down the aisle towards the camera, stop 3.5–5 m from it, idle, turn around, walk back | `APPROACHES` |
+| 3 in the audience | stand in a half circle 3.9 m in front of the camera (our exhibit), facing it and watching it, always there | `AUDIENCE` |
+| 3 visitors | walk down the aisle towards the camera, join the audience, watch for 15–30 s, turn around, walk back | `AUDIENCE`, `VISITORS_FROM` |
 | 7 walkers | walk across the hall along the cross aisles, both directions; on the near aisle they come and go at the side walls, out of view, on the far aisles they turn round near the walls | `CROSSINGS` |
 | 3 wanderers | stroll between random points in an area, pausing | `WANDER_AREAS` |
 | 3 groups (7 people) | stand and chat, alternating talking and listening, with small shifts | `CHAT_GROUPS` |
@@ -88,8 +89,11 @@ It contains:
 | 4 visitors | talk to exhibitors at the left-hand booths | |
 | 1 speaker | talks on the stage | |
 
-The behaviours guarantee that nobody's face points at the camera. While
-someone approaches or stands close by, the head stays turned aside or lowered.
+The camera is our own exhibit, so at any moment at least three people watch it:
+the audience always, and the visitors while they stand with them. Everyone
+else never looks at the camera: the behaviours guarantee that their faces
+point at least 35° away from it. While someone walks towards the camera or
+stands close by, the head stays turned aside or lowered.
 The crowd is sampled from the prepared avatars with conference demographics:
 about 5% children, 80% adults and 15% older people (as far as the avatars
 allow, see below), half women and half men, and every skin-tone band
@@ -108,7 +112,7 @@ False` brings back the 2D cut-outs. If setting up the 3D people fails, for
 example because of a damaged file in the character cache, the hall falls back
 to the 2D cut-outs and the terminal says why. Save the file while the demo runs and the
 scene reloads. The terminal prints the crowd's make-up, for example
-`33 animated people: 16 female, 17 male; 1 child, 30 adult, 2 older; skin band 20 1-3, 10 4-6, 3 7-10`.
+`36 animated people: 18 female, 18 male; 1 child, 33 adult, 2 older; skin band 21 1-3, 11 4-6, 4 7-10`.
 
 **Without prepared 3D people**, the hall shows 2D cut-outs instead: from the
 `people/` folder (see [Generating 2D people](#generating-2d-people)) or, until
@@ -136,12 +140,15 @@ into animated people. It has five parts:
 3. **Rendering** (`character.py`). A `Character` is a scene object. It poses
    its skeleton every frame and is skinned on the GPU (4 bone weights per
    vertex). It adds head turns on top of the clip and a soft contact shadow.
-4. **Behaviours** (`behaviour.py`). `approach`, `walk_by`, `wander`, `chat`
-   and `stand` build looping timelines of walking, turning (with turn clips)
-   and idling (idle, look-around, talk, listen, phone clips), with crossfades.
+4. **Behaviours** (`behaviour.py`). `approach`, `walk_by`, `wander`, `chat`,
+   `stand` and `watch` build looping timelines of walking, turning (with turn
+   clips) and idling (idle, look-around, talk, listen, phone clips), with
+   crossfades.
    - Walk clips play at the speed people move, so feet never slide, and
      walks start and stop in the stride that best matches the standing pose.
-   - The head plan keeps the face at least 35° away from the camera.
+   - The head plan keeps the face at least 35° away from the camera, except
+     for people who watch something (`watch`, or `approach(..., watch=...)`):
+     their head turns to the point and follows it.
    - `period=` stretches the pauses so that the loop lasts a whole fraction
      of it, so people built with the same period repeat together.
    - A behaviour is a pure function of time, so pausing (`Space`) and

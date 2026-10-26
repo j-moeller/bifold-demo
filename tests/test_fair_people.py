@@ -72,7 +72,7 @@ def test_the_hall_fills_with_animated_people(hall):
     scene, people = hall
     assert len(people) == len(fair.people_slots())
     kinds = {_kind(p.name) for p in people}
-    assert {"approach", "walker", "wanderer", "chat", "staff", "guest", "speaker"} <= kinds
+    assert {"audience", "approach", "walker", "wanderer", "chat", "staff", "guest", "speaker"} <= kinds
     assert "visitor1" not in scene  # no 2D cut-outs
     for t in (0.0, 7.5, 31.0):
         scene.update(t, 0.1)
@@ -165,7 +165,7 @@ def test_nobody_talks_to_their_double(hall):
 def test_children_join_groups_and_business_people_staff_the_booths(hall):
     _, people = hall
     kids = [p for p in people if CATALOG[_avatar(p)]["age_group"] == "child"]
-    assert kids and all(_kind(p.name) in ("wanderer", "chat") for p in kids)
+    assert kids and all(_kind(p.name) in ("wanderer", "chat", "audience") for p in kids)
     groups = len(fair.CHAT_GROUPS)
     assert sum(_kind(p.name) == "chat" for p in kids) == min(len(kids), groups)  # with grown-ups, not alone
     staff = [p for p in people if _kind(p.name) in ("staff", "speaker")]
@@ -175,6 +175,32 @@ def test_children_join_groups_and_business_people_staff_the_booths(hall):
 
 def _avatar(person):
     return next(n for n, m in MODELS.items() if m is person.skinned_model)
+
+
+def _watchers(people, t, cam=fair.CAMERA_POSITION):
+    """People in the half circle in front of the camera at ``t``, facing it and looking at it."""
+    found = []
+    for p in people:
+        b = p.behaviour
+        state = b(t)
+        x, _, z = state.position
+        bearing = math.degrees(math.atan2(cam[0] - x, cam[2] - z))
+        near = abs(math.hypot(cam[0] - x, cam[2] - z) - fair.AUDIENCE_RADIUS) < 0.3
+        if state.visible and near and abs((b.face_heading(t) - bearing + 180) % 360 - 180) < 10.0 and \
+                abs((state.heading - bearing + 180) % 360 - 180) < 25.0:
+            found.append(p.name)
+    return found
+
+
+def test_at_least_three_people_always_watch_our_exhibit(hall):
+    _, people = hall
+    counts = [len(_watchers(people, t)) for t in np.arange(0.0, fair.LOOP_PERIOD, 0.5)]
+    assert min(counts) >= 3
+    assert max(counts) > 3  # visitors come and join them
+    spots = fair.audience_spots()
+    assert sum(who == "stays" for *_, who in spots) >= 3
+    assert all(fair.in_view((x, z), margin=0.3) for x, z, _ in spots)  # the whole half circle is in the picture
+    assert all(math.dist(a[:2], b[:2]) > 0.9 for a, b in zip(spots, spots[1:]))
 
 
 def test_nobody_in_the_hall_looks_at_the_camera(hall):
@@ -189,7 +215,7 @@ def test_nobody_in_the_hall_looks_at_the_camera(hall):
             t = k * 0.1
             state = behaviour(t)
             dx, dz = cx - state.position[0], cz - state.position[2]
-            if not state.visible or math.hypot(dx, dz) < 0.75:
+            if not state.visible or math.hypot(dx, dz) < 0.75 or behaviour.watching(t):  # the audience may
                 continue
             off = abs((behaviour.face_heading(t) - math.degrees(math.atan2(dx, dz)) + 180) % 360 - 180)
             worst = min(worst, off)

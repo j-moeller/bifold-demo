@@ -565,6 +565,45 @@ def test_positions_are_where_the_states_put_people(behaviours):
                     assert np.isnan(x) and np.isnan(z), (name, kind)
 
 
+# -- watching -----------------------------------------------------------------------------------------------
+
+
+def _face_error(behaviour, t, point):
+    x, _, z = behaviour(t).position
+    return abs(B._wrap(behaviour.face_heading(t) - math.degrees(math.atan2(point[0] - x, point[2] - z))))
+
+
+@pytest.mark.parametrize("lib_name", ["sparse", "full"])
+def test_watchers_look_at_the_point(sparse, full, lib_name):
+    lib = {"sparse": sparse, "full": full}[lib_name]
+    camera = (0.0, 1.6, 6.0)
+    for seed in range(3):
+        watcher = B.watch((1.0, 0, 2.2), camera, library=lib, camera=camera, rng=seed)
+        times = np.arange(0.0, watcher.duration, 0.05)
+        assert all(watcher.watching(t) for t in times)
+        assert max(_face_error(watcher, t, camera) for t in times) < 5.0  # at the camera, sway included
+        assert all(abs(watcher(t).head_yaw) <= B.HEAD_YAW_LIMIT for t in times)
+    child = B.watch((1.0, 0, 2.2), camera, library=lib, camera=camera, rng=1, style={"age_group": "child"})
+    assert child(1.0).head_pitch < watcher(1.0).head_pitch - 3.0  # a child looks up to the camera
+
+
+def test_visitors_watch_from_their_stop_and_avoid_the_camera_otherwise(full):
+    camera = (0.0, 1.6, 6.0)
+    for seed in range(4):
+        visitor = B.approach((-1.5, 0, -16), (-1.5, 0, 2.4), camera=camera, library=full, rng=seed, bow=0.0,
+                             watch=camera, idle=(10.0, 12.0))
+        assert visitor.look_feasible
+        times = np.arange(0.0, visitor.duration, 0.05) - visitor.offset
+        watching = [t for t in times if visitor.watching(t)]
+        assert 10.0 <= watching[-1] - watching[0] <= 12.0 + 2 * B.WATCH_EASE + 0.1
+        middle = [t for t in watching if watching[0] + 2.0 < t < watching[-1] - 2.0]
+        assert max(_face_error(visitor, t, camera) for t in middle) < 10.0
+        assert visitor(middle[0]).position[2] == pytest.approx(2.4, abs=1e-6)  # standing at the stop
+        for t in times:
+            if visitor(t).visible and not visitor.watching(t):
+                assert _face_error(visitor, t, camera) >= B.MIN_ANGLE - 1e-6
+
+
 # -- cost ---------------------------------------------------------------------------------------------------
 
 

@@ -28,3 +28,6 @@ work goes on. The people are avatars from the
   towards the camera on the red carpet with their feet in frame and on the
   floor, walkers on the blue aisle carpet with their blob shadows, a chat group
   with a child, wanderers.
+- `fair_audience.jpg`: the audience of our exhibit (at 0, 20, 40 and 60 s):
+  people standing in a half circle in front of the camera, facing it and
+  looking at it, always at least three, with visitors joining and leaving.

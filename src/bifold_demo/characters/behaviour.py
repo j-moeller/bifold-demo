@@ -3,9 +3,9 @@
 A behaviour is a callable ``t -> CharacterState`` built from a looping timeline of segments: :class:`Walk`,
 :class:`Idle`, :class:`Turn` and :class:`Hide`. Everything is precomputed when it is built (about 20 ms), so evaluating
 a time is a pure, cheap (about 10 microseconds) function of ``t``: pausing, rewinding and seeking just work. The
-factories :func:`walk_by`, :func:`approach`, :func:`wander`, :func:`chat` and :func:`stand` build typical trade-fair
-behaviours from a ``style`` dict (avatar metadata: ``sex``, ``age_group``, optional ``stride_scale`` / ``speed``) and
-a seed; the same arguments give the same behaviour.
+factories :func:`walk_by`, :func:`approach`, :func:`wander`, :func:`chat`, :func:`stand` and :func:`watch` build
+typical trade-fair behaviours from a ``style`` dict (avatar metadata: ``sex``, ``age_group``, optional
+``stride_scale`` / ``speed``) and a seed; the same arguments give the same behaviour.
 
 Locomotion. Walks follow a polyline with rounded corners, parametrised by arc length; the heading follows the
 tangent and blends in from the previous heading. Speed eases in and out at both ends. People walk at their walk
@@ -52,6 +52,12 @@ talks to), small glances while idling, a lowered head when looking at a phone or
 angle between ``heading + head_yaw`` and the camera direction (ignoring the clips) is kept above ``min_angle`` too
 when that costs little, but that is not guaranteed (clips that turn the head may need it to point elsewhere).
 
+Watching. An :class:`Idle` with ``watch`` (a point, for example the camera) looks at that point all along: the face
+heading points at it and the head pitches towards its height. That is the one exception to the camera rule: it does
+not hold while watching, nor for ``WATCH_EASE`` seconds before and after, while the head turns to the point and
+back (:meth:`Behaviour.watching` tells when). :func:`watch` builds people who watch something for good, and
+:func:`approach` can have visitors watch the camera from where they stop.
+
 Loop lengths. How long a loop takes depends on the avatar's walking speed. With ``period`` (in the factories that
 walk), pauses marked ``stretch`` are lengthened so that the loop lasts :func:`loop_length` seconds, a whole fraction
 of ``period`` (or a multiple, when the loop is longer): people whose loops fit the same ``period``
@@ -97,6 +103,9 @@ _MARGIN = 5.0  # extra degrees the head plan keeps from the camera (blending and
 _PLAN_DT = 0.1  # head plan time step, seconds
 _BIN = 2.5  # head plan yaw resolution, degrees
 _HEAD_SPEED = 170.0  # fastest head turn the plan may use, degrees per second
+WATCH_EASE = 0.8  # seconds around a watching idle in which the head may turn to the watched point and back
+_WATCH_BLEND = 0.5  # seconds at both ends of a watching idle over which the exact look blends in and out
+_EYE_HEIGHT = 1.55  # metres, times stride_scale: where people look from (for the head pitch while watching)
 _FADE_SPEED = 200.0  # crossfades last long enough that the clips' head yaw difference moves at most this fast
 _MAX_FADE = 1.0
 _WALK_TURN = 20.0  # walks starting more than this off the current heading turn in place first
@@ -125,6 +134,16 @@ def _xz(p) -> tuple[float, float]:
         return p[0], p[1]
     if len(p) == 3:
         return p[0], p[2]
+    raise ValueError(f"expected an (x, z) or (x, y, z) point, got {p}")
+
+
+def _xyz(p, height: float = 1.6) -> tuple[float, float, float]:
+    """A point from ``(x, y, z)``, or ``(x, z)`` at ``height``."""
+    p = [float(v) for v in np.asarray(p, dtype=np.float64).ravel()]
+    if len(p) == 2:
+        return p[0], height, p[1]
+    if len(p) == 3:
+        return p[0], p[1], p[2]
     raise ValueError(f"expected an (x, z) or (x, y, z) point, got {p}")
 
 
@@ -526,11 +545,12 @@ class Walk:
 @dataclass
 class Idle:
     """Stand for ``duration`` seconds, cycling through clips of ``roles``; ``stretch``: may last longer to make the
-    loop fit its ``period``."""
+    loop fit its ``period``; ``watch``: an ``(x, y, z)`` point (e.g. the camera) to look at all along (module docs)."""
 
     duration: float
     roles: tuple = ("idle", "look_around")
     stretch: bool = False
+    watch: tuple | None = None
 
 
 @dataclass
@@ -571,13 +591,15 @@ def fits_period(duration: float, period: float) -> bool:
 class _Stand:
     """Standing (idle, turning or hidden) at a fixed spot; heading ``h0 + dh * smooth((t - t0) / span)``."""
 
-    __slots__ = ("t0", "t1", "x", "z", "h0", "dh", "span", "visible", "kind", "turn")
+    __slots__ = ("t0", "t1", "x", "z", "h0", "dh", "span", "visible", "kind", "turn", "watch", "run")
 
-    def __init__(self, t0, duration, x, z, h0, dh=0.0, span=None, visible=True, kind="idle", turn=0.0):
+    def __init__(self, t0, duration, x, z, h0, dh=0.0, span=None, visible=True, kind="idle", turn=0.0, watch=None):
         self.t0, self.t1 = t0, t0 + duration
         self.x, self.z, self.h0, self.dh = x, z, h0, dh
         self.span = span or duration
         self.visible, self.kind, self.turn = visible, kind, turn
+        self.watch = watch  # (x, y, z) the person looks at, or None
+        self.run = None  # while watching: (start, end) of the whole stretch of watching pieces, in this piece's time
 
     def state(self, tl: float) -> tuple[float, float, float]:
         if self.dh:
@@ -590,6 +612,7 @@ class _WalkPiece:
 
     __slots__ = ("t0", "t1", "s", "px", "pz", "ph", "length", "speed", "ease", "blend", "blend_time", "visible",
                  "kind", "turn")
+    watch = None  # walkers watch nothing
 
     def __init__(self, t0, samples, speed, blend):
         self.s, self.px, self.pz, self.ph = samples
@@ -820,6 +843,29 @@ class Behaviour:
 
     # -- building ------------------------------------------------------------------------------------
 
+    def _mark_watch_runs(self) -> None:
+        """Give each watching piece the start and end of its stretch of consecutive watching pieces (round the loop)."""
+        pieces = self._pieces
+        if not any(p.watch is not None for p in pieces):
+            return
+        if all(p.watch is not None for p in pieces):
+            for p in pieces:
+                p.run = (-math.inf, math.inf)
+            return
+        n, first = len(pieces), next(k for k, p in enumerate(pieces) if p.watch is None)
+        run: list[tuple[_Stand, float]] = []  # (piece, offset that unwraps its times)
+        for step in range(1, n + 1):
+            k = (first + step) % n
+            piece, offset = pieces[k], self.duration if first + step >= n else 0.0
+            if piece.watch is not None:
+                run.append((piece, offset))
+                continue
+            if run:
+                start, end = run[0][0].t0 + run[0][1], run[-1][0].t1 + run[-1][1]
+                for member, member_offset in run:
+                    member.run = (start - member_offset, end - member_offset)
+                run = []
+
     def _fit(self, segments: list, flips: set[int], windows: dict[int, float], state) -> None:
         """:meth:`_build` from rng ``state``, with the ``stretch`` pauses lengthened so that the loop fits ``period``
         (an extra pause can change later clip choices, so this takes a few tries when it does)."""
@@ -864,6 +910,8 @@ class Behaviour:
                 self._add_hide(segment)
         self._close_loop()
         self.duration = self._t
+        self._watching = [(p.t0 - WATCH_EASE, p.t1 + WATCH_EASE) for p in self._pieces if p.watch is not None]
+        self._mark_watch_runs()
         self._time_walks()
         self._piece_starts = [p.t0 for p in self._pieces]
         self._entry_starts = [e.t0 for e in self._entries]
@@ -1209,7 +1257,7 @@ class Behaviour:
             self._add_idle_entry(t, t1, clip, role)
             previous = clip
             t = t1
-        piece = _Stand(self._t, duration, x, z, self._heading)
+        piece = _Stand(self._t, duration, x, z, self._heading, watch=_xyz(idle.watch) if idle.watch is not None else None)
         self._pieces.append(piece)
         self._idles.append((index, piece, window))
         self._t = end
@@ -1309,7 +1357,8 @@ class Behaviour:
             dx, dz = cam[0] - x, cam[1] - z
             distance = np.hypot(dx, dz)
             bearing = np.degrees(np.arctan2(dx, dz))
-            constrained = visible & (distance >= MIN_CAMERA_DISTANCE)
+            free = np.array([self._free(i * dt) for i in range(n)], dtype=bool)  # watching: the camera rule is lifted
+            constrained = visible & (distance >= MIN_CAMERA_DISTANCE) & ~free
             face_centre = bearing - heading - clip_yaw  # head yaw that would face the camera
             plain_centre = bearing - heading
             if self.camera.radius > 0.0:
@@ -1343,7 +1392,7 @@ class Behaviour:
             path = _plan(deviation, dt)
         yaw = _periodic_smooth(bins[path], 0.15 / dt)
         near = []
-        if cam is not None and self.look_feasible:
+        if cam is not None and self.look_feasible and constrained.any():
             d = _wrap_array(face[np.arange(n), path] - face_centre)
             low = np.where(constrained & (d >= 0), bins[path] - (d - width), -HEAD_YAW_LIMIT)
             high = np.where(constrained & (d < 0), bins[path] - d - width, HEAD_YAW_LIMIT)
@@ -1362,6 +1411,8 @@ class Behaviour:
         cam = self.camera.nominal
         for i in steps:
             tl = (i + 0.5) * self._dt
+            if self._free(tl):
+                continue
             state, clip_yaw, elevation = self._state(tl, tl)
             x, _, z = state.position
             if not state.visible or (cam[0] - x) ** 2 + (cam[1] - z) ** 2 < MIN_CAMERA_DISTANCE ** 2:
@@ -1387,6 +1438,9 @@ class Behaviour:
                 piece_seen, glance_end = piece, -1.0
                 next_glance = t + rng.uniform(0.5, 2.5)
             role = entry.role
+            if piece.watch is not None:  # straight at the point (refined on evaluation, see _watch_look)
+                yaw[i], pitch[i] = self._watch_look(piece, t, x, z, heading, clip_yaw, 0.0)
+                continue
             if piece.kind == "walk":
                 ahead = piece.at(min(piece.length, piece.distance(t - piece.t0) + 2.0))[2]
                 base = float(np.clip(0.7 * (ahead - heading), -45.0, 45.0))
@@ -1449,9 +1503,27 @@ class Behaviour:
         yaw = gy[i] + (gy[i + 1] - gy[i]) * a
         pitch = gp[i] + (gp[i + 1] - gp[i]) * a
         visible = piece.visible
-        if visible and self.camera.nominal is not None:
+        if piece.watch is not None:  # the plan is smoothed: follow fast head motion of the clips exactly
+            start, end = piece.run
+            w = _smooth(min(1.0, min(tl - start, end - tl) / _WATCH_BLEND))
+            if w > 0.0:
+                exact_yaw, exact_pitch = self._watch_look(piece, tl, x, z, heading, clip_yaw, elevation)
+                yaw, pitch = yaw + (exact_yaw - yaw) * w, pitch + (exact_pitch - pitch) * w
+        if visible and self.camera.nominal is not None and not (self._watching and self._free(tl)):
             yaw = self._avoid_camera(t, x, z, heading, clip_yaw, elevation, yaw, pitch)
         return CharacterState((x, 0.0, z), heading, layers, yaw, pitch, visible), clip_yaw, elevation
+
+    def _watch_look(self, piece, tl: float, x: float, z: float, heading: float, clip_yaw: float,
+                    elevation: float) -> tuple[float, float]:
+        """``(head_yaw, head_pitch)`` that point the face at ``piece.watch`` (with a slight, slow sway)."""
+        wx, wy, wz = piece.watch
+        eye = _EYE_HEIGHT * self.style.stride
+        pitch = -math.degrees(math.atan2(wy - eye, max(math.hypot(wx - x, wz - z), 0.3)))
+        want = _wrap(_bearing(x, z, wx, wz) - heading - clip_yaw) + 1.5 * math.sin(0.7 * tl + piece.t0)
+        yaw = want
+        for _ in range(2):  # the pitch turns the face a little sideways when the clip holds the head turned
+            yaw = want - pitch_shift(clip_yaw, elevation, yaw, pitch)
+        return min(max(yaw, -HEAD_YAW_LIMIT), HEAD_YAW_LIMIT), pitch
 
     def _avoid_camera(self, t: float, x: float, z: float, heading: float, clip_yaw: float, elevation: float,
                       yaw: float, pitch: float) -> float:
@@ -1492,6 +1564,18 @@ class Behaviour:
         state, clip_yaw, _ = self._evaluate(t)
         return state.heading + clip_yaw
 
+    def watching(self, t: float) -> bool:
+        """Whether the person watches something at ``t`` (or turns the head to it or back): then the face may point
+        at the camera (module docs)."""
+        return self._free((float(t) + self.offset) % self.duration)
+
+    def _free(self, tl: float) -> bool:
+        """Whether loop time ``tl`` lies in a watching window (``WATCH_EASE`` included; windows wrap round)."""
+        for a, b in self._watching:
+            if a <= tl <= b or a <= tl + self.duration <= b or a <= tl - self.duration <= b:
+                return True
+        return False
+
     def teleports(self) -> list[tuple[float, float]]:
         """Loop-time intervals ``(start, end)`` during which the person is hidden (and may jump)."""
         return [(p.t0, p.t1) for p in self._pieces if not p.visible]
@@ -1528,12 +1612,19 @@ def _periodic_smooth(values: np.ndarray, sigma: float) -> np.ndarray:
 def _plan(cost: np.ndarray, dt: float) -> np.ndarray | None:
     """Cheapest periodic path through ``cost`` (``(N, bins)``, ``inf`` = forbidden) moving a few bins per step.
 
-    Starts and ends in the same bin at the least constrained step; returns bin indices per step, or ``None``.
+    Starts and ends in the same bin at the least constrained step, in the middle of the longest stretch of such
+    steps (so the path has room to come back to that bin); returns bin indices per step, or ``None``.
     """
     n, bins = cost.shape
     reach = max(1, int(math.ceil(_HEAD_SPEED * dt / _BIN)))
     finite = np.isfinite(cost)
-    start = int(np.argmax(finite.sum(axis=1)))
+    free = finite.sum(axis=1)
+    tighter = np.nonzero(free < free.max())[0]
+    if len(tighter):  # the step farthest (round the loop) from any more constrained one
+        gap = np.abs(np.arange(n)[:, None] - tighter[None, :])
+        start = int(np.argmax(np.minimum(gap, n - gap).min(axis=1)))
+    else:
+        start = 0
     if not finite[start].any():
         return None
     order = (start + np.arange(n + 1)) % n
@@ -1637,13 +1728,14 @@ def walk_by(points, speed: float | None = None, *, library: MotionLibrary | None
 def approach(start, stop_point=None, camera=None, *, library: MotionLibrary | None, stop_distance=(2.5, 5.0),
              idle=(3.0, 8.0), far_pause=(0.5, 3.0), bow: float | None = None, speed: float | None = None, style=None,
              rng=0, look_at=(), min_angle: float = MIN_ANGLE, offset: float | None = None,
-             period: float | None = None) -> Behaviour:
+             period: float | None = None, watch=None) -> Behaviour:
     """Walk from ``start`` towards the camera, stop, idle (phone, looking around), turn around, walk back, repeat.
 
     ``stop_point`` defaults to a point on the way to the camera ``stop_distance`` metres (random in the range)
     from it, and is moved back if it is nearer than ``stop_distance[0]``. ``bow`` bends the path sideways by that
     many metres at its middle (random up to 0.8 m when ``None``; 0 walks straight at the camera). ``period``: the
-    pause far away is lengthened so that the loop fits it (:func:`loop_length`).
+    pause far away is lengthened so that the loop fits it (:func:`loop_length`). ``watch``: a point (e.g. the
+    camera's position) the visitor looks at while standing at the stop, facing it, instead of idling.
     """
     rng = _as_random(rng)
     if camera is None:
@@ -1672,8 +1764,15 @@ def approach(start, stop_point=None, camera=None, *, library: MotionLibrary | No
     heading = _bearing(*path[0], *path[1])
     at_stop, at_start = _turns_around(stop_point, _bearing(*path[-2], *path[-1]), start, _bearing(*path[1], *path[0]),
                                       camera, rng)
-    segments = [Walk(path[1:], speed), Idle(rng.uniform(*idle), ("phone", "look_around", "idle")),
-                Turn(at_stop, True), Walk(path[::-1][1:], speed),
+    at_stop_idle = Idle(rng.uniform(*idle), ("phone", "look_around", "idle"))
+    segments = [Walk(path[1:], speed)]
+    if watch is not None:  # turn to face the point, watch it, turn back to where the walk came from
+        face = _bearing(*stop_point, *_xz(watch)) - _bearing(*path[-2], *path[-1])
+        at_stop_idle = Idle(at_stop_idle.duration, ("idle", "listen"), watch=_xyz(watch))
+        if abs(_wrap(face)) > 2.0:
+            segments.append(Turn(_wrap(face)))
+            at_stop -= _wrap(face)  # the same way round as before, from the new heading
+    segments += [at_stop_idle, Turn(at_stop, True), Walk(path[::-1][1:], speed),
                 Idle(rng.uniform(*far_pause), ("look_around", "idle", "phone"), True), Turn(at_start, True)]
     behaviour = Behaviour(segments, library, start=start, heading=heading, style=style, camera=camera, rng=rng,
                           look_at=look_at, min_angle=min_angle, period=period)
@@ -1778,6 +1877,25 @@ def chat(position, face_point, partners=(), roles=("talk", "listen"), *, library
     heading = _bearing(*position, *_xz(face_point))
     return _standing(position, heading, roles, rng, duration, sway, library, style, _Camera(camera), look_at, partners,
                      min_angle, offset)
+
+
+def watch(position, target, roles=("idle", "listen"), *, library: MotionLibrary | None, duration=(30.0, 50.0),
+          camera=None, style=None, rng=0, look_at=(), min_angle: float = MIN_ANGLE,
+          offset: float | None = None) -> Behaviour:
+    """Stand at ``position`` facing ``target`` (an ``(x, y, z)`` point, e.g. the camera of an exhibit) and watch it:
+    the head keeps looking at it (the camera rule is lifted, see the module docs), the clips shift the weight."""
+    rng = _as_random(rng)
+    position, target = _xz(position), _xyz(target)
+    heading = _bearing(*position, target[0], target[2])
+    segments, total, wanted = [], 0.0, rng.uniform(*duration)
+    while total < wanted:
+        length = rng.uniform(5.0, 10.0)
+        segments.append(Idle(length, tuple(roles), watch=target))
+        total += length
+    behaviour = Behaviour(segments, library, start=position, heading=heading, style=style, camera=camera, rng=rng,
+                          look_at=look_at, min_angle=min_angle)
+    behaviour.offset = rng.uniform(0.0, behaviour.duration) if offset is None else float(offset)
+    return behaviour
 
 
 def stand(position, heading: float = 0.0, roles=("idle", "look_around", "phone"), *, library: MotionLibrary | None,
