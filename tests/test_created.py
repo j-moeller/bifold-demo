@@ -106,6 +106,39 @@ def test_new_looks_replace_the_old_ones(tmp_path):
     assert list(worn) == ["sign"] and worn["sign"].look == str(folder / "my_sign.png")
 
 
+def test_an_item_that_cannot_be_worn_is_left_out():
+    from bifold_demo.characters import accessories
+
+    model = synthetic_biped()
+    person = Character(model, lambda t: CharacterState((0.0, 0.0, 0.0), 0.0, []), name="p")
+    left_out = apply_looks(person, CreatedCharacter("Eve", model.name, items={"hat": 5, "glasses": "sunglasses",
+                                                                             "scarf": "blue"}))
+    assert list(accessories.wearing(person)) == ["glasses"]
+    assert [p.split(":")[0] for p in left_out] == ["hat", "scarf"] and "unknown item 'scarf'" in left_out[1]
+
+
+def test_a_saved_look_of_the_wrong_kind_is_a_problem_of_the_book(tmp_path):
+    for look in ("navy", True, False, None, [20, 40, 200], [20, 40, 200, 255]):
+        assert created_module._a_look(look), look
+    for look in (5, {"colour": "navy"}, [1, 2], [0, 0, 300], ["a", "b", "c"], [True, 0, 0]):
+        assert not created_module._a_look(look), look
+    path = save(CreatedCharacter("Ada", "Female_Adult_01", items={"hat": "navy"}), tmp_path)
+    data = json.loads((path / "character.json").read_text())
+    data["items"] = {"hat": 5}  # written by hand, or by a creator with a bug
+    (path / "character.json").write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="the look of the hat"):
+        load(path)
+    book = CharacterBook(tmp_path)
+    book.refresh(force=True)
+    assert book.characters() == [] and "the look of the hat" in book.problems["Ada"]
+    # saving such a look fails at once (the creator hears of it), and what was saved stays
+    with pytest.raises(ValueError, match="the look of the glasses"):
+        save(CreatedCharacter("Ben", "Male_Adult_01", items={"glasses": {"colour": "navy"}}), tmp_path)
+    with pytest.raises(ValueError, match="the look of the hat"):
+        book.save(CreatedCharacter("Ada", "Female_Adult_01", items={"hat": 5}))
+    assert not (tmp_path / "Ben").exists() and json.loads((path / "character.json").read_text())["items"] == {"hat": 5}
+
+
 def test_the_book_reads_images_only_when_they_are_used(tmp_path):
     from bifold_demo.characters.created import Textures
 

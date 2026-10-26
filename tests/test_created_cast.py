@@ -4,17 +4,20 @@ Synthetic avatars, clips and plain colour textures (no real faces); the tests on
 without ``BIFOLD_CHARACTERS_TEST_DIR``.
 """
 
-import math
+import json
 import os
 import random
+import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from test_behaviour import synthetic_clips, synthetic_model
 from test_yoga import synthetic_biped
 
+from bifold_demo import pacing
 from bifold_demo.characters import accessories, created
 from bifold_demo.characters import behaviour as B
 from bifold_demo.characters import camera_play as cp
@@ -240,6 +243,22 @@ def test_a_character_unlike_its_place_gets_a_behaviour_made_for_it(scene, tmp_pa
     assert np.nanmedian(np.hypot(*(new - old).T)) < 0.5
 
 
+@pytest.mark.parametrize("cost, after", [(1.0, created_cast.LINE_UP), (9.0, 2 * created_cast.LINE_UP)])
+def test_without_an_unseen_moment_it_takes_less_later(scene, tmp_path, monkeypatch, cost, after):
+    """No moment nobody sees for ``LINE_UP`` seconds: then a short jump (or someone appearing) will do, and after
+    twice that anything, so a character always comes in."""
+    monkeypatch.setattr(created_cast, "swap_cost", lambda *args: cost)
+    cast = _cast(tmp_path, _character("Ada", "Tall_Woman"))  # another stride: a behaviour of her own
+    t, messages = 10.0, []
+    scene.update(t, 0.0)
+    while not messages and t < 10.0 + 3 * created_cast.LINE_UP:
+        messages = cast.update(scene, now=t - 10.0)
+        t += 0.5
+        scene.update(t, 0.5)
+    assert messages == ["Ada joined the fair"]
+    assert after <= t - 10.0 <= after + 1.0
+
+
 def test_fit_in_keeps_people_apart_and_follows_the_old_timing():
     motions = LIBRARY.motions()
     cam = fair.CAMERA_POSITION
@@ -271,6 +290,90 @@ def test_never_a_childs_place_and_more_characters_wait(scene, tmp_path):
     messages = cast.update(scene, now=2.0, wait=True)
     assert messages[0] == "P4 left the fair" and messages[1].startswith("cannot put Zed in the fair: the avatar")
     assert cast.status().endswith("1 cannot be shown") and cast.update(scene, now=3.0) == []  # said once
+
+
+def test_a_place_freed_by_a_character_that_cannot_be_made_goes_to_one_who_waits(built, scene, tmp_path):
+    zed = _character("Zed", "Woman_2")
+    zed.avatar = "Unknown_Avatar"  # not prepared: it cannot be made, but takes a place while it is tried
+    cast = _cast(tmp_path, *[_character(f"P{k}", "Woman_2") for k in range(1)], zed,
+                 *[_character(f"P{k}", "Woman_2") for k in range(1, 4)])
+    messages = cast.update(scene, now=0.0)
+    assert "P3 waits for a free place in the fair" in messages and any(m.startswith("cannot put Zed") for m in messages)
+    assert cast.update(scene, now=0.1) == ["P3 joined the fair"]  # the next frame: Zed's place is P3's
+    assert sorted(cast.placed) == ["P0", "P1", "P2", "P3"] and not cast.waiting
+    assert cast.status() == "created: P0, P1, P2, P3 in the fair; 1 cannot be shown"
+    scene.objects = dict(built[1])  # the fair as it was
+    again = _cast(tmp_path / "again", _character("P0", "Woman_2"), zed, *[_character(f"P{k}", "Woman_2")
+                                                                         for k in range(1, 4)])
+    messages = again.update(scene, now=0.0, wait=True)  # all at once (a scene nobody has seen yet)
+    assert "P3 joined the fair" in messages and sorted(again.placed) == ["P0", "P1", "P2", "P3"]
+
+
+def test_looks_it_cannot_use_leave_the_character_as_it_was(scene, tmp_path, monkeypatch):
+    ada = _character("Ada", "Woman_2", items={"hat": "#204080"})
+    cast = _cast(tmp_path, ada)
+    cast.update(scene, now=0.0)
+    person, head = scene["approach1"], MODELS["Woman_2"].primitives[0].name
+    real = created_cast.apply_looks
+
+    def broken(person, created, wardrobe=None, t=None, textures=None):  # e.g. a creator's bug, on the main thread
+        if textures is not None:
+            raise TypeError("cannot use int as a texture: 5")
+        return real(person, created, wardrobe, t=t)
+
+    monkeypatch.setattr(created_cast, "apply_looks", broken)
+    ada.textures = {head: _plain((30, 30, 220))}
+    cast.book.save(ada)
+    assert cast.update(scene, now=0.5) == ["cannot give Ada the new looks: TypeError: cannot use int as a texture: 5"]
+    assert scene["approach1"] is person and cast.status() == "created: Ada in the fair"  # still in, as before
+    assert tuple(person.texture_overrides[head].rgba[0, 0, :3]) == (200, 40, 40)
+    assert cast.update(scene, now=2.0) == []  # not tried again until it changes
+    monkeypatch.setattr(created_cast, "apply_looks", real)
+    cast.book.save(ada)
+    assert cast.update(scene, now=3.5) == ["Ada has new looks"]
+    assert tuple(person.texture_overrides[head].rgba[0, 0, :3]) == (30, 30, 220)
+    # a look of the wrong kind written by hand: the book cannot read the character, and says so (no crash)
+    file = ada.folder / created.FILE
+    data = json.loads(file.read_text())
+    data["items"], data["updated"] = {"hat": 5}, data["updated"] + 1.0
+    file.write_text(json.dumps(data))
+    os.utime(file, ns=(time.time_ns(), time.time_ns() + 10**9))
+    messages = cast.update(scene, now=5.0)
+    assert messages[0].startswith("cannot read the created character Ada: ValueError: the look of the hat")
+    assert messages[1:] == ["Ada left the fair"] and scene["approach1"].created is None
+
+
+def test_notices_put_the_characters_who_join_together():
+    notice = created_cast.notice
+    assert notice(["Ada joined the fair"]) == "Ada joined the fair"
+    assert notice(["Ada joined the fair", "Ben joined the fair"]) == "Ada and Ben joined the fair"
+    assert notice(["P9 waits for a free place in the fair"] + [f"P{k} joined the fair" for k in range(6)]) == \
+        "P9 waits for a free place in the fair; P0, P1, P2 and 3 more joined the fair"
+    assert notice(["Ada left the fair", "Cleo joined the fair", "Ben left the fair", "cannot put Zed in the fair: x"]) \
+        == "Ada and Ben left the fair; Cleo joined the fair; cannot put Zed in the fair: x"
+
+
+def test_a_newcomer_who_cannot_be_kept_apart_is_reported(scene, monkeypatch, capsys):
+    monkeypatch.setattr(fair, "fit_in", lambda *args, **kwargs: 2)
+    person = created_cast.stand_in(scene["walker1"], _character("Ada", "Man_2"), LIBRARY, _people(scene))
+    assert person.created.name == "Ada"
+    assert "Ada in walker1 comes nearer than 0.6 m to 2 other(s)" in capsys.readouterr().out
+
+
+def test_the_camera_play_of_a_newcomer_looks_at_the_others_as_planned(scene, monkeypatch):
+    from bifold_demo.characters.performer import Performer
+
+    walker = scene["walker2"]
+    base = walker.behaviour
+    walker.behaviour = Performer(base)  # doing yoga in selection mode (on the main thread, while the worker plans)
+    seen = {}
+    monkeypatch.setattr(cp, "join", lambda person, camera, **kwargs: seen.update(kwargs))
+    try:
+        fair.join_camera_play(scene["approach1"], _people(scene))
+    finally:
+        walker.behaviour = base
+    assert base in seen["others"] and all(not isinstance(b, Performer) for b in seen["others"])
+    assert {p.name for p in seen["players"]} == {"audience1", "audience2", "approach2"}
 
 
 def test_a_scene_without_places_says_so(tmp_path):
@@ -332,6 +435,14 @@ def test_threads_make_the_3d_people_and_swap_when_ready(scene, tmp_path):
     book.save(_character("Ada", "Tall_Woman"))  # another stride: a behaviour is made for her, on the worker
     cast = CreatedCast(book, library=LIBRARY)
     replaced = scene["approach1"]
+    workers = []
+    real = created_cast.stand_in
+
+    def stand_in(*args, **kwargs):
+        workers.append((threading.current_thread(), getattr(pacing._local, "pacer", None)))
+        return real(*args, **kwargs)
+
+    created_cast.stand_in = stand_in
     try:
         messages, t = cast.update(scene, now=0.0), 20.0
         deadline = time.time() + 60
@@ -341,13 +452,69 @@ def test_threads_make_the_3d_people_and_swap_when_ready(scene, tmp_path):
             scene.update(t, 0.25)
             messages = cast.update(scene, now=0.1)
         assert messages == ["Ada joined the fair"] and scene["approach1"].created.name == "Ada"
-        # swapped in where the visitor she replaces was: no jump
+        # made on the worker thread, paced (it leaves the main thread the GIL most of the time)
+        assert len(workers) == 1 and workers[0][0] is not threading.main_thread() and workers[0][1] is not None
+        # swapped in where the visitor she replaces was, or where neither is seen: no jump
         assert t - 20.0 <= created_cast.LINE_UP
         ada = scene["approach1"]
-        ada.update(t)
-        assert math.dist(ada.current_position, replaced.current_position) <= created_cast.JUMP + 1e-9
+        assert created_cast.swap_cost(scene, replaced, ada, t) <= created_cast.JUMP
     finally:
+        created_cast.stand_in = real
         cast.close()
+
+
+def test_the_swap_cost_is_what_a_viewer_sees(scene):
+    def standing(x, z, visible=True):
+        return lambda t: SimpleNamespace(position=(x, 0.0, z), visible=visible)
+
+    occupant = SimpleNamespace(current_position=np.array([0.0, 0.0, -5.0]), current_visible=True,
+                               behaviour=standing(0.0, -5.0))
+    newcomer = SimpleNamespace(behaviour=standing(0.0, -5.0))
+    cost = created_cast.swap_cost
+    assert cost(scene, occupant, newcomer, 0.0) == 0.0  # the same spot
+    newcomer.behaviour = standing(1.5, -5.0)
+    assert cost(scene, occupant, newcomer, 0.0) == pytest.approx(1.5)  # a jump in view
+    occupant.current_visible = False  # the one in the place is hidden (coming back to the start of the walk) ...
+    assert cost(scene, occupant, newcomer, 0.0) == created_cast.POP  # ... but the newcomer would pop up in view
+    newcomer.behaviour = standing(1.5, -5.0, visible=False)
+    assert cost(scene, occupant, newcomer, 0.0) == 0.0  # both hidden
+    newcomer.behaviour = standing(0.0, 12.0)  # behind the camera: out of view
+    assert cost(scene, occupant, newcomer, 0.0) == 0.0
+    occupant.current_visible = True
+    assert cost(scene, occupant, newcomer, 0.0) == created_cast.POP  # the one in the place would vanish in view
+    occupant.current_position = np.array([-1.0, 0.0, 15.0])
+    assert cost(scene, occupant, newcomer, 0.0) == 0.0  # both out of view, metres apart
+    newcomer.behaviour = occupant.behaviour  # the same behaviour: never a jump
+    assert cost(scene, occupant, newcomer, 0.0) == 0.0
+
+
+def test_a_loop_of_another_length_is_swapped_in_unseen(scene, tmp_path):
+    """A child's avatar in a grown-up's walker place: her loop is longer than the place's, so the two drift apart.
+    She comes in when nobody sees it (where the walker is, or both out of the picture): not when the walker hides
+    at the end of the aisle while she is in the middle of it (she would appear out of thin air)."""
+    occupant, people = scene["walker1"], _people(scene)
+    slot = created_cast.slot_behaviour(occupant)
+    probe = created_cast.stand_in(occupant, _character("Gail", "Girl"), LIBRARY, people)  # what she will do
+    assert probe.recipe.style["age_group"] == "child" and slot.teleports()
+    assert probe.behaviour.duration > slot.duration + 1.0
+    times = np.arange(0.0, fair.LOOP_PERIOD, 0.1)
+    old, new = slot.positions(times), probe.behaviour.positions(times)
+    trap = next(float(t) for t, a, b in zip(times, old, new)  # the walker hides, she is in view
+                if np.isnan(a[0]) and not np.isnan(b[0]) and fair.in_view(tuple(b)))
+    t = trap - 0.2
+    scene.update(t, 0.0)
+    cast = _cast(tmp_path, _character("Ada", "Woman_2"), _character("Ben", "Man_2"), _character("Gail", "Girl"))
+    assert cast.update(scene, now=0.0) == ["Ada joined the fair", "Ben joined the fair"]
+    assert list(cast._jobs) == ["Gail"]
+    gail, start, messages = cast._jobs["Gail"].future.result(), t, []
+    assert np.allclose(gail.behaviour.positions(times), new, equal_nan=True)
+    while t < start + 3 * created_cast.LINE_UP and not messages:
+        t += 0.1
+        scene.update(t, 0.1)
+        messages = cast.update(scene, now=0.5)
+    assert messages == ["Gail joined the fair"] and scene["walker1"] is gail
+    cost = created_cast.swap_cost(scene, occupant, gail, t)
+    assert t > trap + 0.05 and cost <= (created_cast.JUMP if t - start < created_cast.LINE_UP else created_cast.POP)
 
 
 def test_selection_mode_works_on_them(scene, tmp_path):
@@ -399,6 +566,26 @@ def test_a_character_saved_while_the_demo_runs_joins_it(gl, tmp_path, monkeypatc
     assert "created: Ada in the fair" in seen["status"]
     assert DemoConfig().created == "created"
 
+
+def test_characters_who_join_together_get_one_notice(gl, tmp_path, monkeypatch, capsys):
+    from bifold_demo.app import DemoApp, DemoConfig
+
+    monkeypatch.chdir(tmp_path)
+    for name, avatar in (("Ada", "Woman_2"), ("Ben", "Man_2")):  # saved before the demo starts
+        save(_character(name, avatar), tmp_path / "created")
+        time.sleep(0.002)
+    scene = small_fair()
+    app = DemoApp(DemoConfig(headless=True, frames=1, width=160, height=90, detect=False, uploads=None,
+                             created=str(tmp_path / "created")), scene=scene)
+    app.created._library = LIBRARY
+    shown = []
+    real = app.notify
+    app.notify = lambda message, *args, **kwargs: (shown.append(message), real(message, *args, **kwargs))
+    app.run()
+    assert "Ada and Ben joined the fair" in shown and not any(m == "Ada joined the fair" for m in shown)
+    out = capsys.readouterr().out
+    assert "[demo] Ada joined the fair" in out and "[demo] Ben joined the fair" in out  # each in the console
+    assert "[demo] Ada and Ben joined the fair" not in out
 
 # -- real avatars ----------------------------------------------------------------------------------------------------
 
@@ -461,9 +648,8 @@ def test_real_created_characters_walk_up_to_the_camera(real_fair, tmp_path):
             sex = person.recipe.style["sex"][0]
             assert {e.clip.name[:2] for e in inner._entries if e.clip is not None} == {f"{sex}_"}
             old = created_cast.planned_behaviour(original)
-            times = np.arange(0.0, fair.LOOP_PERIOD, 0.5)
             assert inner.duration == pytest.approx(old.duration)
-            assert np.nanmedian(np.hypot(*(inner.positions(times) - old.positions(times)).T)) < 0.2
+            assert _in_step(inner, old) > 0.35
         for entry in inner._entries:  # the feet do not slide
             if entry.walk is not None and entry.clip is not None:
                 stride = stride_scale(person.skinned_model, entry.clip)
@@ -475,6 +661,55 @@ def test_real_created_characters_walk_up_to_the_camera(real_fair, tmp_path):
     for name, person in before.items():  # nobody else changed
         if all(p.original is not person for p in cast.placed.values()):
             assert scene[name] is person
+
+
+def _in_step(behaviour, old, step: float = 0.1) -> float:
+    """The share of the loop (while both are seen) ``behaviour`` is within half a metre of ``old``."""
+    times = np.arange(0.0, fair.LOOP_PERIOD, step)
+    d = np.hypot(*(behaviour.positions(times) - old.positions(times)).T)
+    return float(np.mean(d[~np.isnan(d)] <= 0.5))
+
+
+def test_real_visitors_made_again_follow_each_place(real_fair):
+    """In every visitor's place, an avatar of the other sex (a behaviour made again): its feet keep up with its
+    walk, it watches the camera where the place's person did and plays then, nobody walks through anybody, it is in
+    step with the place's person for a good part of the visit (not all of it: its turns and clips differ), and from
+    any moment on a swap nobody sees comes within ``LINE_UP``."""
+    library, scene, objects = real_fair
+    scene.objects = dict(objects)
+    women, men = _adults(library, "female"), _adults(library, "male")
+    if not women or not men:
+        pytest.skip("the prepared characters lack grown-ups")
+    people = _people(scene)
+    times = np.arange(0.0, fair.LOOP_PERIOD, 0.1)
+
+    def seen(track):
+        return np.array([not np.isnan(x) and fair.in_view((x, z)) for x, z in track])
+
+    visitors = [p for p in people if p.kind == "approach"]
+    assert len(visitors) >= 3
+    for original in visitors:
+        avatar = women[0] if original.recipe.style["sex"] == "male" else men[0]
+        person = created_cast.stand_in(original, CreatedCharacter("X", avatar), library, people)
+        play, old = cp.find_play(person.behaviour), created_cast.planned_behaviour(original)
+        assert play is not None and play.inner is not old and play.inner.duration == pytest.approx(old.duration)
+        for entry in play.inner._entries:
+            if entry.walk is not None and entry.clip is not None:
+                stride = stride_scale(person.skinned_model, entry.clip)
+                assert abs(entry.scale * entry.clip.metadata["speed"] * stride - 1.0) <= B.STRIDE_STRETCH + 1e-9
+        windows = cp.watch_windows(play.inner, fair.LOOP_PERIOD)
+        assert all(any(a - 1e-6 <= m.start and m.end <= b + 1e-6 for a, b in windows) for m in play.moves)
+        crowd = [person if p is original else p for p in people]
+        assert fair.keep_apart([created_cast.planned_behaviour(p) for p in crowd], [p.kind for p in crowd],
+                               random.Random(1), rounds=0) == 0, original.name
+        assert _in_step(play.inner, old) > 0.35, original.name
+        a, b = original.behaviour.positions(times), person.behaviour.positions(times)
+        sa, sb = seen(a), seen(b)
+        unseen = (~sa & ~sb) | (sa & sb & (np.hypot(*(a - b).T) <= created_cast.JUMP))
+        moments = np.flatnonzero(unseen)
+        assert len(moments), original.name
+        gaps = np.diff(np.r_[moments, moments[0] + len(times)]) * 0.1
+        assert gaps.max() <= created_cast.LINE_UP, (original.name, gaps.max())
 
 
 def test_real_created_characters_are_drawn_in_their_looks(gl, real_fair, tmp_path):

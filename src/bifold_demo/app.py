@@ -193,10 +193,17 @@ class DemoApp:
             self.selection.cast = self.cast
 
     def _update_created(self, wait: bool = False) -> None:
-        """Keep the created characters in the scene (new, changed and deleted ones; see scenes.created_cast)."""
+        """Keep the created characters in the scene (new, changed and deleted ones; see scenes.created_cast), and say
+        what changed in one notice (several often join at once)."""
         if self.created is not None:
-            for note in self.created.update(self.scene_source.scene, wait=wait):
-                self.notify(note, 3.0, error=note.startswith("cannot"))
+            from .scenes.created_cast import notice
+
+            notes = self.created.update(self.scene_source.scene, wait=wait)
+            for note in notes:  # every one in the console; on the screen together
+                print(f"[demo] {note}")
+            if notes:
+                self.notify(notice(notes), 3.0 + 0.5 * min(len(notes) - 1, 4),
+                            error=any(note.startswith("cannot") for note in notes), echo=False)
 
     def _faces_for(self, frame: Frame):
         """The recognised faces of ``frame`` (or of a frame just before it), or ``None``; kept for the status panel."""
@@ -217,8 +224,10 @@ class DemoApp:
             return None
         return result
 
-    def notify(self, message: str, seconds: float = 2.5, error: bool = False) -> None:
-        print(f"[demo] {message}")
+    def notify(self, message: str, seconds: float = 2.5, error: bool = False, echo: bool = True) -> None:
+        """Show ``message`` on the screen for ``seconds`` (and, with ``echo``, in the console)."""
+        if echo:
+            print(f"[demo] {message}")
         self._message = (message, time.perf_counter() + seconds, error)
 
     # -- main loop --------------------------------------------------------------------

@@ -35,6 +35,8 @@ from bifold_demo.characters import camera_play
 from bifold_demo.characters.behaviour import approach, chat, fits_period, stand, walk_by, wander, watch
 from bifold_demo.characters.crowd import age_group, describe_crowd, populate, sample_crowd
 from bifold_demo.characters.library import CharacterLibrary, fetch_command
+from bifold_demo.characters.performer import Performer
+from bifold_demo.pacing import pause
 from bifold_demo.people import people_for_scene
 from bifold_demo.scene import (
     Box,
@@ -267,12 +269,14 @@ def crowd_ready(library) -> bool:
     return bool(library.available()) and bool(roles.get("walk")) and bool(roles.get("idle"))
 
 
-def in_view(point, margin: float = 0.5, height: float = 1.9, aspect: float = FRAME_ASPECT) -> bool:
-    """Whether someone standing at ``point`` (``(x, z)`` on the floor) can show up in the fixed camera's picture.
+def in_view(point, margin: float = 0.5, height: float = 1.9, aspect: float = FRAME_ASPECT, camera=None) -> bool:
+    """Whether someone standing at ``point`` (``(x, z)`` on the floor) can show up in the fixed camera's picture
+    (or ``camera``'s, as it is now).
 
     ``margin``: how far the body reaches around the point (metres). Walls and booths in the way are ignored.
     """
-    camera = Camera(position=CAMERA_POSITION, target=CAMERA_TARGET, fov=CAMERA_FOV, near=0.1)
+    if camera is None:
+        camera = Camera(position=CAMERA_POSITION, target=CAMERA_TARGET, fov=CAMERA_FOV, near=0.1)
     clip_from_world = camera.projection_matrix(aspect) @ camera.view_matrix()
     x, z = point
     corners = np.array([(x + dx, y, z + dz, 1.0) for dx in (-margin, margin) for dz in (-margin, margin)
@@ -428,15 +432,27 @@ def play_with_camera(people, kinds) -> list:
                                   place=feet_in_view)
 
 
+def planned_behaviour(person):
+    """``person``'s behaviour (or ``person``, a behaviour) as :func:`keep_apart` planned it: without what selection
+    mode wraps around it for yoga poses (a Performer's ``base``) and without the camera play's moves (the camera play
+    keeps its own, smaller distances around everyone). Nothing changes it while the demo runs, so another thread may
+    look at it (selection mode changes its Performer's acts on the main thread)."""
+    behaviour = getattr(person, "behaviour", person)
+    if isinstance(behaviour, Performer):
+        behaviour = behaviour.base
+    play = camera_play.find_play(behaviour)
+    return play.inner if play is not None else behaviour
+
+
 def join_camera_play(person, people):
     """Let ``person``, who takes over the place of someone who played with the camera (with a behaviour of its own),
-    play too: its moves are planned clear of everyone else in ``people`` and of the moves of those who play
-    already, which stay as they are (:func:`~bifold_demo.characters.camera_play.join`). Returns the play, or
-    ``None`` when ``person`` cannot play."""
+    play too: its moves are planned clear of everyone else in ``people`` (as planned, :func:`planned_behaviour`) and
+    of the moves of those who play already, which stay as they are (:func:`~bifold_demo.characters.camera_play.join`).
+    Returns the play, or ``None`` when ``person`` cannot play. Can run on a worker thread."""
     others = [p for p in people if p is not person]
     players = [p for p in others if getattr(p, "kind", None) in PLAYERS
                and camera_play.find_play(getattr(p, "behaviour", None)) is not None]
-    rest = [p for p in others if all(p is not q for q in players)]
+    rest = [planned_behaviour(p) for p in others if all(p is not q for q in players)]
     return camera_play.join(person, CAMERA_POSITION, players=players, others=rest, period=LOOP_PERIOD,
                             rng=random.Random(f"camera play {CROWD_SEED} {person.name}"), moves=CAMERA_PLAY_MOVES,
                             place=feet_in_view)
@@ -593,8 +609,9 @@ def fit_in(behaviour, others, *, like=None, period: float = LOOP_PERIOD, step: f
 
     Of the timings that keep them apart, the one that follows ``like`` (the behaviour of the person whose place they
     take) most closely over the whole ``period`` is chosen: then what was planned around that person about holds for
-    them too, and taking the place over does not make them jump. Without ``like`` the timing changes as little as it
-    can. ``behaviour`` must loop in a whole fraction of ``period`` (:func:`fits_period`), else its timing stays.
+    them too, and they are often where that person is (a moment to take the place over without a jump). Without
+    ``like`` the timing changes as little as it can. ``behaviour`` must loop in a whole fraction of ``period``
+    (:func:`fits_period`), else its timing stays.
     Returns the number of others who still come too close (0 = none).
     """
     apart = MIN_DISTANCE + 0.05
@@ -602,7 +619,10 @@ def fit_in(behaviour, others, *, like=None, period: float = LOOP_PERIOD, step: f
     times = np.arange(samples) * step
     track = _track(behaviour, times)
     others = [b for b in others if b is not None]
-    theirs = np.stack([_track(b, times) for b in others]) if others else np.zeros((0, samples, 2))
+    theirs = np.zeros((len(others), samples, 2))
+    for j, other in enumerate(others):
+        pause()  # on a worker thread this rests now and then (see bifold_demo.pacing)
+        theirs[j] = _track(other, times)
     seen = ~np.isnan(track)
     if not seen.any():
         return 0
@@ -618,16 +638,18 @@ def fit_in(behaviour, others, *, like=None, period: float = LOOP_PERIOD, step: f
     if like is not None:  # how far from ``like`` each shifted track is, on average (hidden when it is not: 2 m)
         target = _track(like, times)
         cost = np.empty(len(shifts))
-        for k in range(0, len(shifts), 64):
-            rolled = track[(np.arange(samples)[None, :] + shifts[k:k + 64, None]) % samples]
+        for k in range(0, len(shifts), 16):
+            pause()
+            rolled = track[(np.arange(samples)[None, :] + shifts[k:k + 16, None]) % samples]
             d = np.hypot(rolled[..., 0] - target[:, 0], rolled[..., 1] - target[:, 1])
             gone = np.isnan(rolled[..., 0]), np.isnan(target[:, 0])[None]
-            cost[k:k + 64] = np.where(gone[0] & gone[1], 0.0, np.where(gone[0] | gone[1], 2.0, d)).mean(axis=1)
+            cost[k:k + 16] = np.where(gone[0] & gone[1], 0.0, np.where(gone[0] | gone[1], 2.0, d)).mean(axis=1)
         order = np.argsort(cost, kind="stable")
     else:  # the least change first, either way
         order = np.argsort(np.minimum(shifts, len(shifts) - shifts), kind="stable")
     best, best_key = 0, None
     for k in range(0, len(order), batch):
+        pause()
         chosen = shifts[order[k:k + batch]]
         rolled = track[(np.arange(samples)[None, :] + chosen[:, None]) % samples]
         closest = _closest(rolled[:, None], theirs[None]) if len(theirs) else np.full((len(chosen), 1), np.inf)

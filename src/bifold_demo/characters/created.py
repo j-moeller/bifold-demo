@@ -73,7 +73,9 @@ def slug(name: str) -> str:
 
 
 def save(character: CreatedCharacter, folder) -> Path:
-    """Write ``character`` into ``folder``/<its name>/ (replacing what was saved under that name); returns that path."""
+    """Write ``character`` into ``folder``/<its name>/ (replacing what was saved under that name); returns that path.
+    Raises ``ValueError`` (and writes nothing) for an item look that :func:`load` would not take."""
+    _check_items(character.items)
     target = Path(folder).expanduser() / slug(character.name)
     tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     if tmp.exists():
@@ -157,10 +159,29 @@ def load(path, lazy: bool = False) -> CreatedCharacter:
     for file in files.values():
         if not file.is_file():
             raise OSError(f"cannot read {file}")
+    items = _check_items(data.get("items"))
     textures = Textures(files) if lazy else {primitive: _read(file) for primitive, file in files.items()}
     return CreatedCharacter(str(data["name"]), str(data["avatar"]), data.get("face"), dict(data.get("outfit") or {}),
-                            dict(data.get("items") or {}), textures, float(data.get("created", 0.0)),
-                            float(data.get("updated", 0.0)), path)
+                            items, textures, float(data.get("created", 0.0)), float(data.get("updated", 0.0)), path)
+
+
+def _check_items(items) -> dict:
+    """``items`` (item -> look) as a dict; raises ``ValueError`` for a look that cannot be one (:func:`_a_look`)."""
+    items = dict(items or {})
+    for item, look in items.items():
+        if not _a_look(look):
+            raise ValueError(f"the look of the {item} is not a look name, colour or image file: {look!r}")
+    return items
+
+
+def _a_look(look) -> bool:
+    """Whether ``look`` (from a saved ``character.json``) can be an item's look: a look name, colour name or file
+    (a string), ``true`` (the item's first look), ``false`` or ``null`` (not worn), an RGB(A) colour (three or four
+    numbers 0-255)."""
+    if look is None or isinstance(look, (str, bool)):
+        return True
+    return isinstance(look, (list, tuple)) and len(look) in (3, 4) and \
+        all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 255 for v in look)
 
 
 class CharacterBook:
@@ -235,25 +256,38 @@ def textures_of(character, primitives=None) -> dict[str, np.ndarray]:
     return out
 
 
-def apply_looks(person, created: CreatedCharacter, wardrobe=None, t: float | None = None) -> None:
+def textures_for(created: CreatedCharacter, model) -> dict:
+    """The textures of ``created`` for the primitives of ``model`` (its avatar), ready to draw
+    (:class:`~bifold_demo.scene.textures.Texture`): the slow part of :func:`apply_looks` (reading and converting the
+    images), which can run on another thread. Raises ``OSError`` or ``ValueError`` for an image it cannot use."""
+    from ..scene.textures import Texture
+
+    names = {p.name for p in model.primitives}
+    return {name: Texture.from_array(image, order="rgb", name=f"{created.name} {name}")
+            for name, image in created.textures.items() if name in names}
+
+
+def apply_looks(person, created: CreatedCharacter, wardrobe=None, t: float | None = None, textures=None) -> list[str]:
     """Give the scene character ``person`` (made from ``created.avatar``) the looks of ``created``: its textures and
     accessories, instead of what it wore before. An item's look is a look name of ``wardrobe`` (an
     :class:`~.accessories.Wardrobe`; the built-in looks without one), a colour, or an image file, found in the
-    character's folder when it is there. ``t``: the scene time it happens (a sign is lifted from then on)."""
-    from ..scene.textures import Texture
+    character's folder when it is there. ``t``: the scene time it happens (a sign is lifted from then on);
+    ``textures``: :func:`textures_for` made already. An item that cannot be worn (this avatar has no such item, its
+    file is gone, a look of the wrong kind) is left out, and the rest still applies: returns what was left out and
+    why (``["hat: ..."]``). Raises when the textures cannot be made, before anything changes."""
     from . import accessories
 
-    names = {p.name for p in person.skinned_model.primitives}
-    person.texture_overrides = {name: Texture.from_array(image, order="rgb", name=f"{created.name} {name}")
-                                for name, image in created.textures.items() if name in names}
+    person.texture_overrides = textures_for(created, person.skinned_model) if textures is None else dict(textures)
     if not accessories.supports(person.skinned_model):
-        return
+        return [f"{item}: {person.skinned_model.name} cannot wear items" for item in created.items]
     for item in accessories.wearing(person):
         accessories.dress(person, item, None, t=t)
+    left_out = []
     for item, look in created.items.items():
         if isinstance(look, str) and created.folder is not None and (created.folder / look).is_file():
             look = str(created.folder / look)
         try:
             accessories.dress(person, item, look, wardrobe, t=t)
-        except (KeyError, ValueError, OSError):
-            continue  # an accessory this avatar cannot wear, or a file gone: the rest still applies
+        except Exception as exc:  # noqa: BLE001 - one item that cannot be worn: the rest still applies
+            left_out.append(f"{item}: {exc.args[0] if isinstance(exc, KeyError) and exc.args else exc}")
+    return left_out

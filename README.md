@@ -902,8 +902,17 @@ Elsewhere the behaviour is made again for the new avatar: the same path and
 pauses, but the avatar's own walk, turn and idle clips. It walks as fast as
 the person before when its clips can keep up (else at its own pace), its
 timing is fitted in so that it keeps 0.6 m from everyone, and its camera play
-is planned around the others'. It is swapped in at a moment when it stands
-where that person stands.
+is planned around the others'. It follows the old timing only roughly: in
+some places it is in step with the person before for most of the loop, in
+others (turns and pauses that fall differently, or a loop of another length,
+as for a child's avatar) metres apart for long stretches. So it is swapped in
+at a moment nobody sees it happen: when it stands where that person stands,
+or when neither of them is in the camera's picture (out of view, or hidden
+while walkers come back to the start of their aisle). Without such a moment
+for a minute of scene time, a short jump (up to 2 m) or one of them appearing
+or vanishing in view will do; after two minutes, whatever there is. For a
+grown-up in a visitor's place such a moment comes within half a minute, and
+in none of the fair's places did a swap have to wait the two minutes.
 
 The character wears its own textures and items. The known faces of
 [face recognition](#known-faces-on-the-3d-people) are never put on it: it
@@ -919,12 +928,29 @@ While the demo runs it looks at the folder once a second:
 - a deleted character gives the place back to the person who had it.
 
 The status panel lists who is in the fair (`created: Ada, Ben in the fair`)
-and how many wait for a free place. Making a character's 3D person (reading
-its images, about 30 ms each, loading the avatar, putting its looks on) takes
-0.05 to 0.1 s, and half a second when its behaviour is made again. That runs
-on a worker thread, so the video goes on meanwhile; the swap itself costs the
-main thread less than a millisecond. Restarting the scene (`R`) and reloading
-the scene file keep the characters in the fair.
+and how many wait for a free place; when several join at once there is one
+notice for them all ("Ada and Ben joined the fair"). Making a character's 3D
+person (reading its images, about 30 ms each, loading the avatar, putting its
+looks on) takes 0.05 to 0.1 s of work, and 0.2 to 0.7 s when its behaviour is
+made again. That runs on a worker thread, paced
+([`pacing`](src/bifold_demo/pacing.py)): Python runs one thread at a time,
+and a busy worker would take the main thread's turn for up to 5 ms every time
+it lets go, so the worker rests three quarters of the time. Its work then
+takes one to three seconds, and the video keeps its frame rate. Measured on
+the fair at 30 frames a second (updating the scene without drawing it, three
+characters joining, two of them made again, on four CPUs shared with other
+work): frames took 11 to 13 ms (median) without a character in the making
+and 13 to 18 ms while one was, with up to 3 frames in a hundred late (over
+33 ms; about one in two hundred without); not paced, they took 30 ms, and
+almost half of them came late. The swap itself costs the main thread at most
+2 to 3 ms. Restarting the scene (`R`) and reloading the scene file keep the
+characters in the fair.
+
+A character the demo cannot show is skipped and the others go on: its avatar
+not prepared ("cannot put Zed in the fair: ..."), its `character.json` not
+readable or with a look of the wrong kind (the status panel counts them), an
+item its avatar cannot wear (left out; the console says which). New looks
+that cannot be used leave the character as it was.
 
 **Privacy.** A created character can wear a real person's face, painted from
 their photos: that is personal data. `created/` stays on this computer, git
@@ -1208,7 +1234,8 @@ src/bifold_demo/
   people/      prompts.py, generator.py (text-to-image), cutout.py,
                library.py, defaults.py, cli.py (bifold-people)          ← 2D people generator
   app.py       main loop and command line; loader.py loads and reloads scene files;
-               selection.py (selection mode: people, their yoga poses and accessories)
+               selection.py (selection mode: people, their yoga poses and accessories);
+               pacing.py (background work that leaves the main thread its frames)
   scenes/      fair.py (default trade-fair hall), created_cast.py (created characters in it),
                fair3d.py (static 3D poses), basic.py
 examples/      example scenes

@@ -63,6 +63,7 @@ from typing import NamedTuple
 
 import numpy as np
 
+from ..pacing import pause
 from . import faces, yoga
 from .behaviour import _EYE_HEIGHT, HEAD_YAW_LIMIT, Behaviour, fits_period, pitch_shift
 from .character import NECK_SHARE, _FastPoser, _pivot_rotation
@@ -1018,7 +1019,10 @@ def plan_camera_play(players, camera, *, others=(), planned=(), period: float = 
     fixed = list(planned)
     times = np.arange(0.0, period, step)
     behaviours = [p.behaviour for p, _ in fixed] + [p.behaviour for p in players] + list(others)
-    tracks = np.stack([_track(b, times) for b in behaviours]) if players else np.zeros((0, len(times), 2))
+    tracks = np.zeros((len(behaviours) if players else 0, len(times), 2))
+    for j in range(len(tracks)):
+        pause()  # on a worker thread this rests now and then (see bifold_demo.pacing)
+        tracks[j] = _track(behaviours[j], times)
     cam = np.asarray(camera, float).ravel()
     room = _Room(times, step, tracks, np.full((len(fixed) + len(players), len(times), 5, 2), np.nan), place,
                  (cam[0], cam[2]))
@@ -1039,6 +1043,7 @@ def plan_camera_play(players, camera, *, others=(), planned=(), period: float = 
             t = start + (prng.uniform(1.0, 5.0) if visit else prng.uniform(0.0, 12.0))
             played = 0.0  # a visitor stops when they have played their share of the visit
             while budget > 0 and t < end - 2.0 and not (visit and played > mine * (end - start)):
+                pause()
                 kind = _pick(moves, done, last, playful, prng)
                 move = _fitting(kind, prng, person, player.behaviour, t, end, i, room, moves)
                 if move is None:
@@ -1051,6 +1056,7 @@ def plan_camera_play(players, camera, *, others=(), planned=(), period: float = 
                 last, budget, played = move.kind, budget - 1, played + move.duration
                 gap = 5.5 * (1.0 - mine) / mine
                 t = move.end + (prng.uniform(4.0, 9.0) if visit else max(2.5, gap * prng.uniform(0.4, 1.6)))
+        pause()
         _occupy(room, i, plan, person.fig)  # now the others keep clear of these moves
         plans.append(plan)
     return plans
@@ -1104,6 +1110,7 @@ def _fitting(kind, rng, person, behaviour, t, end, i, room: _Room, moves) -> Mov
     if still:
         tries.append((rng.choice(still), {}))
     for which, options in tries:
+        pause()
         move = _MAKERS[which](rng, person, **options)
         move.start, move.heading = t, heading
         if move.end <= end and _clear(move, i, room, person.fig):
@@ -1657,6 +1664,7 @@ def join(person, camera, *, players=(), others=(), period: float = 360.0, rng=0,
         return None
     planned, rest = [], []
     for other in players:
+        pause()  # on a worker thread this rests now and then (see bifold_demo.pacing)
         play = find_play(getattr(other, "behaviour", None))
         if play is None:
             rest.append(other)

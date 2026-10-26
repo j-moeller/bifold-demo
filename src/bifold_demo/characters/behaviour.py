@@ -75,6 +75,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
+from ..pacing import pause
 from .character import NECK_SHARE
 from .model import (
     AnimationClip,
@@ -683,6 +684,10 @@ class _Stand:
             return self.x, self.z, self.h0 + self.dh * _smooth((tl - self.t0) / self.span)
         return self.x, self.z, self.h0
 
+    def floor(self, tl: np.ndarray) -> np.ndarray:
+        """``(x, z)`` at each of the piece times ``tl`` (an array): :meth:`state` for many times at once."""
+        return np.broadcast_to((float(self.x), float(self.z)), (len(tl), 2))
+
 
 class _WalkPiece:
     """A walk along precomputed arc-length samples with eased speed."""
@@ -729,6 +734,22 @@ class _WalkPiece:
         if self.blend and local < self.blend_time:
             h += self.blend * (1.0 - _smooth(local / self.blend_time))
         return x, z, h
+
+    def floor(self, tl: np.ndarray) -> np.ndarray:
+        """``(x, z)`` at each of the piece times ``tl`` (an array): :meth:`state` for many times at once, the same
+        arithmetic (:meth:`distance`, then :meth:`at`), so the same numbers."""
+        v, e, length = self.speed, self.ease, self.length
+        local = tl - self.t0
+        duration = self.t1 - self.t0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            u_in, u_out = local / e, (duration - local) / e
+            d = np.select([local <= 0.0, local >= duration, local < e, local > duration - e],
+                          [0.0, length, v * e * (u_in ** 3 - u_in ** 4 / 2),
+                           length - v * e * (u_out ** 3 - u_out ** 4 / 2)], v * e / 2 + v * (local - e))
+        s, px, pz = (np.asarray(a, dtype=np.float64) for a in (self.s, self.px, self.pz))
+        k = np.clip(np.searchsorted(s, d, side="right") - 1, 0, len(s) - 2)
+        a = (d - s[k]) / (s[k + 1] - s[k])
+        return np.stack([px[k] + (px[k + 1] - px[k]) * a, pz[k] + (pz[k + 1] - pz[k]) * a], axis=-1)
 
 
 class _Entry:
@@ -976,6 +997,7 @@ class Behaviour:
         self._windows, self._idles = windows, []
         self._t, self._pos, self._heading = 0.0, self.start, self.start_heading
         for k, segment in enumerate(segments):
+            pause()  # a worker thread making a behaviour rests now and then (see bifold_demo.pacing)
             following = segments[k + 1] if k + 1 < len(segments) else None
             if isinstance(segment, Walk):
                 self._add_walk(segment)
@@ -986,13 +1008,17 @@ class Behaviour:
             else:
                 self._add_hide(segment)
         self._close_loop()
+        pause()
         self.duration = self._t
         self._watching = [(p.t0 - WATCH_EASE, p.t1 + WATCH_EASE) for p in self._pieces if p.watch is not None]
         self._mark_watch_runs()
         self._time_walks()
+        pause()
         self._piece_starts = [p.t0 for p in self._pieces]
         self._entry_starts = [e.t0 for e in self._entries]
         for j, entry in enumerate(self._entries):
+            if j % 16 == 15:
+                pause()
             before = self._entries[j - 1]
             if entry.clip is not None and before.clip is not None:
                 previous = before.sample(entry.t0 if j else entry.t0 + self.duration)[2]
@@ -1017,7 +1043,11 @@ class Behaviour:
             return None
         n = max(8, int(math.ceil(self.duration / _PLAN_DT)))
         times = np.arange(n) * (self.duration / n)
-        body = [self._body(tl) for tl in times]
+        body = []
+        for k, tl in enumerate(times):
+            if k % 256 == 0:
+                pause()
+            body.append(self._body(tl))
         dx = cam[0] - np.array([b[0] for b in body])
         dz = cam[1] - np.array([b[1] for b in body])
         distance = np.hypot(dx, dz)
@@ -1044,6 +1074,8 @@ class Behaviour:
             parts.append((None, 0.0, 0.0, float(psi[i:].min()), float(psi[i:].max())))
         best = None
         for mask in range(1 << len(flippable)):
+            if mask % 64 == 0:
+                pause()
             flips = {flippable[j] for j in range(len(flippable)) if mask >> j & 1}
             offset, lo, hi, turned = 0.0, math.inf, -math.inf, 0.0
             for k, a, b, seg_lo, seg_hi in parts:
@@ -1395,6 +1427,7 @@ class Behaviour:
         if self.library is None:
             return
         for j, entry in enumerate(self._entries):
+            pause()
             before = self._entries[j - 1]
             if not entry.fade or entry.clip is None or before.clip is None:
                 continue
@@ -1417,9 +1450,14 @@ class Behaviour:
 
     def _plan_head(self) -> None:
         self._fix_fades()
+        pause()
         n = max(8, int(math.ceil(self.duration / _PLAN_DT)))
         self._dt = dt = self.duration / n
-        body = [self._body(i * dt) for i in range(n)]
+        body = []
+        for i in range(n):
+            if i % 256 == 0:
+                pause()
+            body.append(self._body(i * dt))
         x = np.array([b[0] for b in body])
         z = np.array([b[1] for b in body])
         heading = np.array([b[2] for b in body])
@@ -1427,6 +1465,7 @@ class Behaviour:
         clip_elevation = np.array([b[7] for b in body])
         visible = np.array([b[3].visible for b in body])
         want_yaw, want_pitch = self._desired_looks(body, dt)
+        pause()
         bins = np.arange(-HEAD_YAW_LIMIT, HEAD_YAW_LIMIT + 1e-9, _BIN)
         cam = self.camera.nominal
         constrained = np.zeros(n, dtype=bool)
@@ -1435,6 +1474,7 @@ class Behaviour:
             distance = np.hypot(dx, dz)
             bearing = np.degrees(np.arctan2(dx, dz))
             free = np.array([self._free(i * dt) for i in range(n)], dtype=bool)  # watching: the camera rule is lifted
+            pause()
             constrained = visible & (distance >= MIN_CAMERA_DISTANCE) & ~free
             face_centre = bearing - heading - clip_yaw  # head yaw that would face the camera
             plain_centre = bearing - heading
@@ -1447,16 +1487,19 @@ class Behaviour:
             want_pitch = want_pitch + np.where(facing & walking, 12.0, 0.0)
         pitch = np.clip(_periodic_smooth(want_pitch, 0.4 / dt), -20.0, 40.0)
         deviation = ((bins[None, :] - want_yaw[:, None]) / 20.0) ** 2
+        pause()
         self.look_feasible = True
         path, width = None, np.zeros(n)
         if cam is not None and constrained.any():
             # where the face points (relative to heading + clip yaw) for every head yaw bin, pitch included
             face = bins[None, :] + pitch_shift(clip_yaw[:, None], clip_elevation[:, None], bins[None, :],
                                                pitch[:, None], vector=True)
+            pause()
             off_camera = np.abs(_wrap_array(face - face_centre[:, None]))
             plain = np.abs(_wrap_array(bins[None, :] - plain_centre[:, None])) < self.min_angle + _MARGIN
             soft = deviation + np.where(plain & constrained[:, None], 25.0, 0.0)
             for margin, use_spread in ((_MARGIN, True), (0.0, True), (0.0, False)):
+                pause()
                 width = self.min_angle + margin + (spread if use_spread else np.zeros(n))
                 blocked = (off_camera < width[:, None]) & constrained[:, None]
                 path = _plan(np.where(blocked, np.inf, soft), dt)
@@ -1486,7 +1529,9 @@ class Behaviour:
     def _verify(self, steps) -> bool:
         """Whether the face keeps ``min_angle`` from the (fixed) camera half way after the plan's ``steps`` too."""
         cam = self.camera.nominal
-        for i in steps:
+        for j, i in enumerate(steps):
+            if j % 64 == 0:
+                pause()
             tl = (i + 0.5) * self._dt
             if self._free(tl):
                 continue
@@ -1508,6 +1553,8 @@ class Behaviour:
         glance_end, next_glance, target, piece_seen = -1.0, rng.uniform(0.5, 3.0), None, None
         phone_yaw = {}
         for i, (x, z, heading, piece, entry, _, clip_yaw, _) in enumerate(body):
+            if i % 256 == 0:
+                pause()
             t = i * dt
             if not piece.visible:
                 continue
@@ -1668,14 +1715,16 @@ class Behaviour:
 
     def positions(self, times) -> np.ndarray:
         """``(x, z)`` on the floor at each of ``times`` (like ``self(t).position``), nan while hidden; much cheaper
-        than evaluating the states (no clips or head)."""
-        track = np.full((len(times), 2), np.nan)
-        pieces, starts = self._pieces, self._piece_starts
-        for k, t in enumerate(times):
-            tl = (float(t) + self.offset) % self.duration
-            piece = pieces[bisect.bisect_right(starts, tl) - 1]
+        than evaluating the states (no clips or head), and all of the times of a piece at once."""
+        tl = (np.asarray(times, dtype=np.float64).reshape(-1) + self.offset) % self.duration
+        track = np.full((len(tl), 2), np.nan)
+        which = np.searchsorted(self._piece_starts, tl, side="right") - 1
+        order = np.argsort(which, kind="stable")
+        bounds = np.flatnonzero(np.diff(which[order])) + 1
+        for chunk in np.split(order, bounds) if len(order) else ():
+            piece = self._pieces[which[chunk[0]]]
             if piece.visible:
-                track[k] = piece.state(tl)[:2]
+                track[chunk] = piece.floor(tl[chunk])
         return track
 
 
@@ -1711,6 +1760,7 @@ def _plan(cost: np.ndarray, dt: float) -> np.ndarray | None:
         start = int(np.argmax(np.minimum(gap, n - gap).min(axis=1)))
     else:
         start = 0
+    pause()
     if not finite[start].any():
         return None
     order = (start + np.arange(n + 1)) % n
@@ -1719,12 +1769,15 @@ def _plan(cost: np.ndarray, dt: float) -> np.ndarray | None:
     padded = np.full(bins + 2 * reach, np.inf)
     previous = padded[reach:reach + bins]
     windows = np.lib.stride_tricks.sliding_window_view(padded, 2 * reach + 1)  # a view: follows ``padded``
+    pause()
     first = int(np.argmin(cost[start]))
     previous[first] = 0.0
     back = np.empty((n, bins), dtype=np.int8)
     rows = np.arange(bins)
     options = np.empty((bins, 2 * reach + 1))
     for k in range(1, n + 1):
+        if k % 128 == 0:
+            pause()
         np.add(windows, step_cost, out=options)
         best = options.argmin(axis=1)
         previous[:] = options[rows, best] + cost[order[k]]
