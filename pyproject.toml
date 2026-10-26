@@ -23,6 +23,7 @@ dev = ["pytest>=7"]
 [project.scripts]
 bifold-demo = "bifold_demo.app:main"
 bifold-people = "bifold_demo.people.cli:main"
+bifold-characters = "bifold_demo.characters.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
