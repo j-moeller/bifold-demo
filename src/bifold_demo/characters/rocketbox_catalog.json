@@ -1,0 +1,1152 @@
+{
+ "Business_Female_01": {
+  "path": "Professions/Business_Female_01",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 6,
+  "outfit": "business",
+  "conference_fit": 3,
+  "notes": "Short dark bob, black pantsuit with white shirt, open-toe heels",
+  "confidence": 0.8
+ },
+ "Business_Female_02": {
+  "path": "Professions/Business_Female_02",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "business",
+  "conference_fit": 3,
+  "notes": "Blonde bob, rimless glasses, burgundy tweed blazer, striped turtleneck, dark trousers, black shoes; ~40s",
+  "confidence": 0.8
+ },
+ "Business_Female_03": {
+  "path": "Professions/Business_Female_03",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "business",
+  "conference_fit": 3,
+  "notes": "Dark layered short hair, taupe skirt suit with brown blouse, peep-toe heels; ~40s",
+  "confidence": 0.8
+ },
+ "Business_Female_04": {
+  "path": "Professions/Business_Female_04",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "business",
+  "conference_fit": 3,
+  "notes": "Dark brown hair pulled back, charcoal pinstripe pantsuit, white top, black shoes",
+  "confidence": 0.85
+ },
+ "Business_Male_01": {
+  "path": "Professions/Business_Male_01",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "business",
+  "conference_fit": 3,
+  "notes": "Dark brown side-parted hair, black suit, white shirt, red tie, black shoes",
+  "confidence": 0.9
+ },
+ "Business_Male_02": {
+  "path": "Professions/Business_Male_02",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "business",
+  "conference_fit": 3,
+  "notes": "East Asian appearance, short black hair, navy suit, white shirt, dark patterned tie",
+  "confidence": 0.85
+ },
+ "Business_Male_03": {
+  "path": "Professions/Business_Male_03",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "business",
+  "conference_fit": 3,
+  "notes": "Short dark hair, charcoal suit, white shirt, teal striped tie, black shoes",
+  "confidence": 0.85
+ },
+ "Business_Male_04": {
+  "path": "Professions/Business_Male_04",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "smart_casual",
+  "conference_fit": 3,
+  "notes": "Bald, ~40s-50s, grey shirt under dark waistcoat, dark trousers, black shoes, no tie",
+  "confidence": 0.75
+ },
+ "Business_Male_05": {
+  "path": "Professions/Business_Male_05",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 6,
+  "outfit": "business",
+  "conference_fit": 3,
+  "notes": "Short cropped hair, goatee, dark check suit, purple shirt, black skinny tie",
+  "confidence": 0.85
+ },
+ "Business_Male_06": {
+  "path": "Professions/Business_Male_06",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "smart_casual",
+  "conference_fit": 3,
+  "notes": "Short dark hair, white long-sleeve shirt, black trousers with belt, black shoes, no jacket",
+  "confidence": 0.8
+ },
+ "Business_Male_07": {
+  "path": "Professions/Business_Male_07",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "smart_casual",
+  "conference_fit": 3,
+  "notes": "Bald, heavier build, ~50s, white shirt with lilac striped tie, blue jeans, black shoes",
+  "confidence": 0.6
+ },
+ "Chef_Female_01": {
+  "path": "Professions/Chef_Female_01",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "East Asian appearance, black bob, white chef cap and jacket, long white apron, black trousers (catering staff)",
+  "confidence": 0.8
+ },
+ "Construction_Female_01": {
+  "path": "Professions/Construction_Female_01",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Short blonde hair, white hard hat, yellow hi-vis vest with radio, blue coveralls, work gloves, tan boots",
+  "confidence": 0.8
+ },
+ "Construction_Male_01": {
+  "path": "Professions/Construction_Male_01",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Forestry helmet with mesh face visor and ear defenders hiding face, stubble, blue plaid shirt, jeans, leather tool belt",
+  "confidence": 0.4
+ },
+ "Construction_Male_02": {
+  "path": "Professions/Construction_Male_02",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "~50s, white hard hat, blue work jacket over bib overalls, cream polo, beige work boots",
+  "confidence": 0.5
+ },
+ "Construction_Male_03": {
+  "path": "Professions/Construction_Male_03",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 8,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "White hard hat, blue zip coverall, leather tool belt with hammer and tools, tan work boots",
+  "confidence": 0.8
+ },
+ "Construction_Male_04": {
+  "path": "Professions/Construction_Male_04",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Young, short light hair, white hard hat, cream polo, blue bib overalls, tool belt, tan boots",
+  "confidence": 0.85
+ },
+ "Construction_Male_05": {
+  "path": "Professions/Construction_Male_05",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "~40s, white hard hat, blue work jacket and trousers, beige work boots",
+  "confidence": 0.75
+ },
+ "Construction_Male_06": {
+  "path": "Professions/Construction_Male_06",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Young, brown hair, white hard hat, blue zip coverall, tool belt with hammer, beige boots",
+  "confidence": 0.8
+ },
+ "Construction_Male_07": {
+  "path": "Professions/Construction_Male_07",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Orange hard hat, orange hi-vis vest, blue work shirt and trousers, black boots",
+  "confidence": 0.8
+ },
+ "Construction_Male_08": {
+  "path": "Professions/Construction_Male_08",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 5,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "White hard hat, yellow hi-vis vest with radio, blue coverall, work gloves, tan boots",
+  "confidence": 0.75
+ },
+ "Delivery_Male_01": {
+  "path": "Professions/Delivery_Male_01",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "casual",
+  "conference_fit": 2,
+  "notes": "Black beanie, full dark beard, dirt smudges on face, red plaid flannel shirt, rolled-up jeans, black lace-up boots",
+  "confidence": 0.75
+ },
+ "Female_Adult_01": {
+  "path": "Adults/Female_Adult_01",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "smart_casual",
+  "conference_fit": 3,
+  "notes": "Blonde hair in ponytail; pink button-up blouse with rolled sleeves, blue jeans, dark brown shoes",
+  "confidence": 0.9
+ },
+ "Female_Adult_02": {
+  "path": "Adults/Female_Adult_02",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "smart_casual",
+  "conference_fit": 3,
+  "notes": "Middle-aged; dark brown hair in ponytail; white knit V-neck sweater over light blue collared shirt, pearl necklace, denim knee-length skirt, black heels",
+  "confidence": 0.8
+ },
+ "Female_Adult_03": {
+  "path": "Adults/Female_Adult_03",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "casual",
+  "conference_fit": 2,
+  "notes": "East Asian appearance; black layered shoulder-length hair, purple eyeshadow; purple strappy tunic top with sash, purple wristband, black trousers, black flats",
+  "confidence": 0.85
+ },
+ "Female_Adult_04": {
+  "path": "Adults/Female_Adult_04",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "casual",
+  "conference_fit": 3,
+  "notes": "Short spiky blonde hair, large hoop earrings; brown leather hooded jacket, black top, khaki cargo pants, black heeled boots",
+  "confidence": 0.85
+ },
+ "Female_Adult_05": {
+  "path": "Adults/Female_Adult_05",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "smart_casual",
+  "conference_fit": 3,
+  "notes": "Dark brown/black bob with side fringe; pink tweed blazer over light blue shirt, brown belt, blue jeans, black heels",
+  "confidence": 0.85
+ },
+ "Female_Adult_06": {
+  "path": "Adults/Female_Adult_06",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 4,
+  "outfit": "casual",
+  "conference_fit": 2,
+  "notes": "Middle-aged; white fringed hijab/shawl; olive-green long tunic and trousers (shalwar kameez style), black flats; traditional dress",
+  "confidence": 0.75
+ },
+ "Female_Adult_07": {
+  "path": "Adults/Female_Adult_07",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "smart_casual",
+  "conference_fit": 3,
+  "notes": "Brown hair in low bun; dark brown belted jacket over pink top, light-wash jeans, brown knee-high heeled boots",
+  "confidence": 0.85
+ },
+ "Female_Adult_08": {
+  "path": "Adults/Female_Adult_08",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "casual",
+  "conference_fit": 3,
+  "notes": "Long straight brown hair; grey graphic t-shirt, brown belt, ripped blue jeans, brown heeled ankle boots, white wristwatch",
+  "confidence": 0.85
+ },
+ "Female_Adult_09": {
+  "path": "Adults/Female_Adult_09",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "smart_casual",
+  "conference_fit": 3,
+  "notes": "Light brown hair in low bun; long taupe cardigan over white collared shirt, dark blue beaded necklace, black trousers, brown flats",
+  "confidence": 0.85
+ },
+ "Female_Adult_10": {
+  "path": "Adults/Female_Adult_10",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 4,
+  "outfit": "casual",
+  "conference_fit": 2,
+  "notes": "Black hijab and full-length black abaya with cape-like overlay, sandals; traditional dress",
+  "confidence": 0.7
+ },
+ "Female_Adult_11": {
+  "path": "Adults/Female_Adult_11",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "smart_casual",
+  "conference_fit": 3,
+  "notes": "Dark curly hair in updo; brown long-sleeve knit dress with wide black belt, brown knee-high heeled boots",
+  "confidence": 0.75
+ },
+ "Female_Adult_12": {
+  "path": "Adults/Female_Adult_12",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "casual",
+  "conference_fit": 2,
+  "notes": "Young adult; auburn-brown hair with bangs in ponytail, lip piercing, necklace; black zip hoodie with green trim and purple graphic, denim shorts with plaid cuffs, black/green sneakers",
+  "confidence": 0.8
+ },
+ "Female_Adult_13": {
+  "path": "Adults/Female_Adult_13",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "smart_casual",
+  "conference_fit": 3,
+  "notes": "Short blonde pixie cut; grey waistcoat over black top, blue jeans, black ankle boots, wristwatch",
+  "confidence": 0.85
+ },
+ "Female_Adult_14": {
+  "path": "Adults/Female_Adult_14",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "smart_casual",
+  "conference_fit": 3,
+  "notes": "Brown bob with highlights; oatmeal wrap cardigan with tie belt over black top, dark jeans, dark brown slouch boots",
+  "confidence": 0.85
+ },
+ "Female_Adult_15": {
+  "path": "Adults/Female_Adult_15",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "business",
+  "conference_fit": 3,
+  "notes": "Long light-brown hair; blue-violet fitted button-up blouse, pearl necklace, black pencil skirt, black knee-high heeled boots",
+  "confidence": 0.85
+ },
+ "Female_Adult_16": {
+  "path": "Adults/Female_Adult_16",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 4,
+  "outfit": "casual",
+  "conference_fit": 1,
+  "notes": "Full blue burqa with mesh face screen covering entire body including face and hands, dark shoes; traditional dress; skin and age not visible",
+  "confidence": 0.15
+ },
+ "Female_Adult_17": {
+  "path": "Adults/Female_Adult_17",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "casual",
+  "conference_fit": 3,
+  "notes": "Blonde hair in top bun, small necklace; green short-sleeve t-shirt with cream trim, purple wristband, light-wash jeans, dark brown flats",
+  "confidence": 0.85
+ },
+ "Female_Child_01": {
+  "path": "Children/Female_Child_01",
+  "sex": "female",
+  "age_group": "child",
+  "skin_tone": 2,
+  "outfit": "casual",
+  "conference_fit": 1,
+  "notes": "Girl ~10-12, blonde ponytail with pink scrunchie, magenta t-shirt over white long sleeves, light blue jeans, purple sneakers",
+  "confidence": 0.8
+ },
+ "Female_Child_02": {
+  "path": "Children/Female_Child_02",
+  "sex": "female",
+  "age_group": "child",
+  "skin_tone": 4,
+  "outfit": "casual",
+  "conference_fit": 1,
+  "notes": "Girl ~10-12 in maroon hijab, green embroidered long tunic (shalwar kameez) and trousers, black flats",
+  "confidence": 0.55
+ },
+ "Female_Party_01": {
+  "path": "Adults/Female_Party_01",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "party",
+  "conference_fit": 1,
+  "notes": "Young adult; curly shoulder-length blonde hair, turquoise earrings, necklace; white camisole over turquoise top, denim mini shorts, white knee-high heeled boots",
+  "confidence": 0.8
+ },
+ "Female_Party_02": {
+  "path": "Adults/Female_Party_02",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 4,
+  "outfit": "party",
+  "conference_fit": 2,
+  "notes": "Voluminous curly dark-brown hair, large gold hoop earrings; dark purple diamond-patterned short-sleeve tunic, black mini skirt, black heeled sandals",
+  "confidence": 0.7
+ },
+ "Fire_Female_01": {
+  "path": "Professions/Fire_Female_01",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 5,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "US-style firefighter: yellow helmet with number 19, SCBA full face mask, tan turnout gear with reflective stripes, gloves; face mostly hidden",
+  "confidence": 0.3
+ },
+ "Fire_Female_02": {
+  "path": "Professions/Fire_Female_02",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 8,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Firefighter: yellow helmet, SCBA mask and harness, dirty yellow turnout coat and trousers, gloves; face mostly hidden",
+  "confidence": 0.4
+ },
+ "Fire_Female_03": {
+  "path": "Professions/Fire_Female_03",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "German-style firefighter: cream helmet, full face mask with SCBA, navy turnout gear with reflective chevrons, gloves; face mostly hidden, sex hard to judge",
+  "confidence": 0.35
+ },
+ "Fire_Male_01": {
+  "path": "Professions/Fire_Male_01",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Firefighter: yellow European helmet, navy turnout gear with yellow/silver reflective stripes, black gloves",
+  "confidence": 0.7
+ },
+ "Fire_Male_02": {
+  "path": "Professions/Fire_Male_02",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 8,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Firefighter: yellow helmet with clear face shield, dirty yellow turnout coat and trousers, gloves; face partly behind shield",
+  "confidence": 0.45
+ },
+ "Fire_Male_03": {
+  "path": "Professions/Fire_Male_03",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 6,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Firefighter: white helmet with gold visor, moustache and goatee, sooty face, tan turnout gear with hi-vis stripes, gloves",
+  "confidence": 0.7
+ },
+ "Fire_Male_04": {
+  "path": "Professions/Fire_Male_04",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Firefighter: white helmet with gold visor, SCBA full face mask and harness, tan turnout gear with hi-vis stripes; face mostly hidden",
+  "confidence": 0.3
+ },
+ "Fire_Male_05": {
+  "path": "Professions/Fire_Male_05",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "German-style firefighter: cream helmet with clear face shield and neck flap, navy turnout gear with reflective chevrons, gloves",
+  "confidence": 0.45
+ },
+ "Fire_Male_06": {
+  "path": "Professions/Fire_Male_06",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 7,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "US-style firefighter: yellow helmet with number 19, moustache, tan turnout gear with reflective stripes, gloves",
+  "confidence": 0.7
+ },
+ "Fire_Male_07": {
+  "path": "Professions/Fire_Male_07",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Firefighter: yellow European helmet, SCBA full face mask and harness, navy turnout gear with reflective stripes; face mostly hidden",
+  "confidence": 0.3
+ },
+ "Gardener_Male_01": {
+  "path": "Professions/Gardener_Male_01",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "~50s, dark hair greying at temples, grey-white beard, brown work jacket and trousers, green gardening gloves, yellow rubber boots",
+  "confidence": 0.55
+ },
+ "Male_Adult_01": {
+  "path": "Adults/Male_Adult_01",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "casual",
+  "conference_fit": 2,
+  "notes": "Young adult; short dark-brown hair; white polo with brown stripes and brown collar, khaki cargo shorts, grey canvas sneakers",
+  "confidence": 0.85
+ },
+ "Male_Adult_02": {
+  "path": "Adults/Male_Adult_02",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "smart_casual",
+  "conference_fit": 3,
+  "notes": "Dark brown swept-back hair; beige cable-knit V-neck sweater, dark brown trousers, brown leather sneakers",
+  "confidence": 0.85
+ },
+ "Male_Adult_03": {
+  "path": "Adults/Male_Adult_03",
+  "sex": "male",
+  "age_group": "older",
+  "skin_tone": 2,
+  "outfit": "smart_casual",
+  "conference_fit": 3,
+  "notes": "Short grey/white receding hair, lined face; grey-brown tweed blazer over burgundy shirt, black trousers, black shoes",
+  "confidence": 0.7
+ },
+ "Male_Adult_04": {
+  "path": "Adults/Male_Adult_04",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 6,
+  "outfit": "casual",
+  "conference_fit": 3,
+  "notes": "Afro hair and short beard; black leather bomber jacket over grey hoodie and cyan graphic tee, olive-brown trousers, white sneakers with pink/teal accents",
+  "confidence": 0.75
+ },
+ "Male_Adult_05": {
+  "path": "Adults/Male_Adult_05",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "casual",
+  "conference_fit": 2,
+  "notes": "Middle-aged (~50); short dark-brown hair, grey-white beard; beige utility vest with black collar over olive long-sleeve shirt, brown trousers, tan shoes",
+  "confidence": 0.6
+ },
+ "Male_Adult_06": {
+  "path": "Adults/Male_Adult_06",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "casual",
+  "conference_fit": 3,
+  "notes": "Young adult; wavy medium-brown hair, cord necklace; red long-sleeve henley, black wristband, dark jeans, grey sneakers",
+  "confidence": 0.85
+ },
+ "Male_Adult_07": {
+  "path": "Adults/Male_Adult_07",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "smart_casual",
+  "conference_fit": 3,
+  "notes": "Short dark-brown hair with sideburns; charcoal casual blazer over rust-brown shirt and tee, blue jeans, brown shoes",
+  "confidence": 0.8
+ },
+ "Male_Adult_08": {
+  "path": "Adults/Male_Adult_08",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "smart_casual",
+  "conference_fit": 3,
+  "notes": "Short brown hair styled up; light blue button-up shirt with rolled sleeves over white tee, dark jeans, black shoes",
+  "confidence": 0.85
+ },
+ "Male_Adult_09": {
+  "path": "Adults/Male_Adult_09",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "casual",
+  "conference_fit": 3,
+  "notes": "East Asian appearance; long black hair in low ponytail; navy graphic t-shirt, light-wash jeans, brown sneakers",
+  "confidence": 0.8
+ },
+ "Male_Adult_10": {
+  "path": "Adults/Male_Adult_10",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 4,
+  "outfit": "sportswear",
+  "conference_fit": 2,
+  "notes": "East/Southeast Asian appearance, young adult; short black hair; maroon track jacket with white stripes over white tee, black track pants, white running shoes",
+  "confidence": 0.75
+ },
+ "Male_Adult_11": {
+  "path": "Adults/Male_Adult_11",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "casual",
+  "conference_fit": 3,
+  "notes": "Very short reddish-brown hair; dark olive short-sleeve button-up shirt, light-wash jeans, brown shoes",
+  "confidence": 0.85
+ },
+ "Male_Adult_12": {
+  "path": "Adults/Male_Adult_12",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 8,
+  "outfit": "casual",
+  "conference_fit": 3,
+  "notes": "Short black hair; denim jacket over white tee, black belt, light-wash jeans, white sneakers",
+  "confidence": 0.75
+ },
+ "Male_Adult_13": {
+  "path": "Adults/Male_Adult_13",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "smart_casual",
+  "conference_fit": 3,
+  "notes": "Middle-aged; balding with short brown hair; grey zip cardigan with black/white/grey argyle front, blue jeans, brown shoes",
+  "confidence": 0.7
+ },
+ "Male_Adult_14": {
+  "path": "Adults/Male_Adult_14",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "smart_casual",
+  "conference_fit": 3,
+  "notes": "Middle-aged (~50); balding with dark hair at sides; grey button-up shirt, brown leather belt, khaki chinos, brown shoes",
+  "confidence": 0.6
+ },
+ "Male_Adult_15": {
+  "path": "Adults/Male_Adult_15",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 5,
+  "outfit": "casual",
+  "conference_fit": 2,
+  "notes": "South Asian appearance; black hair, short beard, embroidered tan prayer cap; white shalwar kameez, brown sandals; traditional dress",
+  "confidence": 0.75
+ },
+ "Male_Adult_16": {
+  "path": "Adults/Male_Adult_16",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "casual",
+  "conference_fit": 3,
+  "notes": "Young adult; short blond hair; blue graphic t-shirt, light-wash jeans, black sneakers, black wristwatch",
+  "confidence": 0.85
+ },
+ "Male_Adult_17": {
+  "path": "Adults/Male_Adult_17",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 6,
+  "outfit": "casual",
+  "conference_fit": 2,
+  "notes": "South Asian appearance; black baseball cap, goatee; blue/white/black zip hoodie, dark jeans, white sneakers",
+  "confidence": 0.75
+ },
+ "Male_Adult_18": {
+  "path": "Adults/Male_Adult_18",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 9,
+  "outfit": "casual",
+  "conference_fit": 2,
+  "notes": "Grey knit hooded henley pullover with hood up over white tee, black trousers, olive/black sneakers",
+  "confidence": 0.65
+ },
+ "Male_Adult_19": {
+  "path": "Adults/Male_Adult_19",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 5,
+  "outfit": "business",
+  "conference_fit": 2,
+  "notes": "Middle Eastern appearance; full dark beard; red-and-white checked keffiyeh with black agal, white thobe, brown sandals; traditional Gulf formal dress",
+  "confidence": 0.75
+ },
+ "Male_Adult_20": {
+  "path": "Adults/Male_Adult_20",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "casual",
+  "conference_fit": 3,
+  "notes": "Short dark-brown hair with sideburns, light stubble; brown pullover hoodie over black tee, dark jeans, black sneakers",
+  "confidence": 0.85
+ },
+ "Male_Adult_21": {
+  "path": "Adults/Male_Adult_21",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 5,
+  "outfit": "business",
+  "conference_fit": 2,
+  "notes": "Short dark beard; traditional Gulf formal dress: white thobe, red-and-white checked ghutra with black agal, black shoes",
+  "confidence": 0.8
+ },
+ "Male_Child_01": {
+  "path": "Children/Male_Child_01",
+  "sex": "male",
+  "age_group": "child",
+  "skin_tone": 2,
+  "outfit": "casual",
+  "conference_fit": 1,
+  "notes": "Boy ~11-13, short brown hair, blue sweatshirt with cartoon print, light blue jeans, grey sneakers",
+  "confidence": 0.6
+ },
+ "Male_Child_02": {
+  "path": "Children/Male_Child_02",
+  "sex": "male",
+  "age_group": "child",
+  "skin_tone": 8,
+  "outfit": "casual",
+  "conference_fit": 1,
+  "notes": "Boy ~11-13, close-cropped black hair, worn torn orange t-shirt with number 38, khaki cargo shorts, worn sandals",
+  "confidence": 0.8
+ },
+ "Medical_Female_01": {
+  "path": "Professions/Medical_Female_01",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 4,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Curly dark hair in a bun, white short-sleeve medical tunic over light blue top, white trousers, white clogs",
+  "confidence": 0.75
+ },
+ "Medical_Female_02": {
+  "path": "Professions/Medical_Female_02",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Dark brown hair in low ponytail; white doctor's lab coat over light blue shirt, black trousers, black shoes; stethoscope around neck, ID badge.",
+  "confidence": 0.85
+ },
+ "Medical_Female_03": {
+  "path": "Professions/Medical_Female_03",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Brown hair in low bun; bright blue paramedic jacket and trousers with black shoulders and white reflective stripes, emblem patch, black boots.",
+  "confidence": 0.85
+ },
+ "Medical_Male_01": {
+  "path": "Professions/Medical_Male_01",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Dark brown medium-length hair, light stubble; all-white outfit: lab coat, white shirt and trousers, white shoes; ID badge and pen in pocket.",
+  "confidence": 0.8
+ },
+ "Medical_Male_02": {
+  "path": "Professions/Medical_Male_02",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Curly brown hair; bright blue paramedic jacket and trousers with black shoulders and white reflective stripes, emblem patch, black boots.",
+  "confidence": 0.85
+ },
+ "Medical_Male_03": {
+  "path": "Professions/Medical_Male_03",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 4,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Balding with short brown hair, moustache, middle-aged (~50); white lab coat, light blue shirt, grey striped tie, dark grey trousers, stethoscope, ID badge.",
+  "confidence": 0.7
+ },
+ "Medical_Male_04": {
+  "path": "Professions/Medical_Male_04",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Green surgical scrubs, teal surgical cap, white face mask covering lower face, white clogs.",
+  "confidence": 0.55
+ },
+ "Medical_Male_05": {
+  "path": "Professions/Medical_Male_05",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Blue full-length radiation/lead apron with collar over green scrubs, light blue surgical cap and face mask, white clogs.",
+  "confidence": 0.45
+ },
+ "Military_Female_01": {
+  "path": "Professions/Military_Female_01",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Grey digital-camouflage combat uniform, helmet with chin strap, tactical vest with pouches and radio, gloves, knee pads, tan boots.",
+  "confidence": 0.75
+ },
+ "Military_Female_02": {
+  "path": "Professions/Military_Female_02",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 6,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Grey digital-camouflage combat uniform, helmet with chin strap, tactical vest with pouches and radio, gloves, knee pads, tan boots.",
+  "confidence": 0.7
+ },
+ "Military_Male_01": {
+  "path": "Professions/Military_Male_01",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 8,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Grey digital-camouflage combat uniform, helmet with goggles, headset microphone, tactical vest with knife and pouches, gloves, tan boots.",
+  "confidence": 0.8
+ },
+ "Military_Male_02": {
+  "path": "Professions/Military_Male_02",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 5,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Grey digital-camouflage uniform with patrol cap, shoulder harness, flag patch, tan boots.",
+  "confidence": 0.8
+ },
+ "Military_Male_03": {
+  "path": "Professions/Military_Male_03",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 4,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Grey digital-camouflage combat uniform with rolled sleeves, helmet, dark sunglasses, tactical vest with holster, gloves, knee pads, tan boots.",
+  "confidence": 0.5
+ },
+ "Military_Male_04": {
+  "path": "Professions/Military_Male_04",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 6,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Grey digital-camouflage combat uniform, helmet with night-vision monocular, tactical vest with pouches, gloves, knee pad, tan boots.",
+  "confidence": 0.75
+ },
+ "Military_Male_05": {
+  "path": "Professions/Military_Male_05",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Short dark hair, thin moustache; grey digital-camouflage uniform with patrol cap, rank and flag patches, tan boots.",
+  "confidence": 0.8
+ },
+ "Military_Male_06": {
+  "path": "Professions/Military_Male_06",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 8,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Grey digital-camouflage uniform with patrol cap, rank and flag patches, tan boots.",
+  "confidence": 0.8
+ },
+ "Pilot_Female_01": {
+  "path": "Professions/Pilot_Female_01",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Brown hair in bun; white peaked captain's cap with gold braid, white long-sleeve shirt with epaulettes, black trousers and belt, black shoes.",
+  "confidence": 0.8
+ },
+ "Pilot_Female_02": {
+  "path": "Professions/Pilot_Female_02",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 6,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Dark hair tied back; white peaked captain's cap with gold braid, white short-sleeve shirt with epaulettes, black trousers and belt, black shoes.",
+  "confidence": 0.8
+ },
+ "Pilot_Male_01": {
+  "path": "Professions/Pilot_Male_01",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Airline pilot: black peaked cap with gold wings, black double-striped jacket, white shirt, black tie, wings badge, black trousers.",
+  "confidence": 0.8
+ },
+ "Pilot_Male_02": {
+  "path": "Professions/Pilot_Male_02",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Middle-aged (~50) with grey moustache and goatee; airline pilot black peaked cap, black jacket with gold sleeve stripes, white shirt, black tie.",
+  "confidence": 0.6
+ },
+ "Pilot_Male_03": {
+  "path": "Professions/Pilot_Male_03",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Short dark hair, ~40s; white peaked captain's cap with gold braid, white short-sleeve shirt with captain epaulettes and pen, black trousers.",
+  "confidence": 0.75
+ },
+ "Police_Female_01": {
+  "path": "Professions/Police_Female_01",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Black tactical/riot police gear: helmet with clear visor, black balaclava covering face, ear protection, body armour marked POLICE, holster, gloves, boots. Face hidden; sex not discernible from appearance (female per asset name).",
+  "confidence": 0.3
+ },
+ "Police_Male_01": {
+  "path": "Professions/Police_Male_01",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 5,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Moustache and goatee; light blue police uniform shirt and trousers with patrol cap, shoulder insignia, black duty belt with holster, black boots.",
+  "confidence": 0.75
+ },
+ "Police_Male_02": {
+  "path": "Professions/Police_Male_02",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Black SWAT gear: helmet with goggles, black balaclava (only eyes visible), tactical vest with S.W.A.T. patch and radio, fingerless gloves, holsters, boots.",
+  "confidence": 0.3
+ },
+ "Police_Male_03": {
+  "path": "Professions/Police_Male_03",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Black police peaked cap marked POLICE, black jacket with radio, white shirt, black tie, black trousers with white stripe, duty belt with holster.",
+  "confidence": 0.8
+ },
+ "Police_Male_04": {
+  "path": "Professions/Police_Male_04",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Short light hair; dark red beret, black short-sleeve security shirt with SECURITY patch, red lanyard ID badge, radio, black cargo trousers, duty belt, boots.",
+  "confidence": 0.8
+ },
+ "Police_Male_05": {
+  "path": "Professions/Police_Male_05",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Short dark hair, East Asian appearance; white peaked officer's cap with gold braid, white short-sleeve shirt with epaulettes, black trousers.",
+  "confidence": 0.75
+ },
+ "Police_Male_06": {
+  "path": "Professions/Police_Male_06",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "uniform",
+  "conference_fit": 0,
+  "notes": "Short brown hair; black body-armour vest marked POLICE over white short-sleeve shirt, blue jeans, brown belt with badge, dark sneakers.",
+  "confidence": 0.85
+ },
+ "Police_Male_07": {
+  "path": "Professions/Police_Male_07",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 1,
+  "notes": "Short black hair, trimmed beard; navy vest marked POLICE over white shirt with pink striped tie, black trousers, badge on belt, black shoes.",
+  "confidence": 0.85
+ },
+ "Security_Female_01": {
+  "path": "Professions/Security_Female_01",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "uniform",
+  "conference_fit": 2,
+  "notes": "Blonde ponytail; black cap marked SECURITY, black zip jacket with SECURITY patch, light shirt collar, black cargo trousers, black shoes.",
+  "confidence": 0.85
+ },
+ "Security_Male_01": {
+  "path": "Professions/Security_Male_01",
+  "sex": "male",
+  "age_group": "older",
+  "skin_tone": 3,
+  "outfit": "uniform",
+  "conference_fit": 2,
+  "notes": "Grey/white hair, lined face; dark peaked guard cap, grey long-sleeve security shirt with black tie and SECURITY badge, black trousers, duty belt with holster/flashlight.",
+  "confidence": 0.6
+ },
+ "Sports_Female_01": {
+  "path": "Professions/Sports_Female_01",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "sportswear",
+  "conference_fit": 0,
+  "notes": "Blonde hair in bun; pink floral bikini (swimwear), barefoot.",
+  "confidence": 0.85
+ },
+ "Sports_Female_02": {
+  "path": "Professions/Sports_Female_02",
+  "sex": "female",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "casual",
+  "conference_fit": 2,
+  "notes": "Black hair in low ponytail, East Asian appearance; grey tank top, dark navy cargo trousers, white sneakers, black wristwatch.",
+  "confidence": 0.8
+ },
+ "Sports_Male_01": {
+  "path": "Professions/Sports_Male_01",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "sportswear",
+  "conference_fit": 0,
+  "notes": "Short brown hair, stubble beard; shirtless in black/blue swim trunks, barefoot.",
+  "confidence": 0.85
+ },
+ "Sports_Male_02": {
+  "path": "Professions/Sports_Male_02",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "sportswear",
+  "conference_fit": 1,
+  "notes": "Short brown hair; football kit: black-and-white striped jersey with orange trim and 'FYA MOTORS' sponsor, black shorts, striped socks, white cleats.",
+  "confidence": 0.85
+ },
+ "Sports_Male_03": {
+  "path": "Professions/Sports_Male_03",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 6,
+  "outfit": "sportswear",
+  "conference_fit": 1,
+  "notes": "Long dark curly/twisted hair; football kit: black-and-white striped jersey with orange trim and 'FYA MOTORS' sponsor, black shorts, striped socks, black cleats.",
+  "confidence": 0.8
+ },
+ "Sports_Male_04": {
+  "path": "Professions/Sports_Male_04",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 2,
+  "outfit": "sportswear",
+  "conference_fit": 1,
+  "notes": "Short dark brown hair; blue athletic tank top, white sports shorts, white running shoes with red accents.",
+  "confidence": 0.85
+ },
+ "Wood_Male_01": {
+  "path": "Professions/Wood_Male_01",
+  "sex": "male",
+  "age_group": "adult",
+  "skin_tone": 6,
+  "outfit": "casual",
+  "conference_fit": 2,
+  "notes": "Goatee, South Asian appearance; beige baseball cap, light blue denim shirt over white T-shirt, blue jeans, brown leather belt and shoes.",
+  "confidence": 0.8
+ }
+}
