@@ -89,10 +89,10 @@ def test_the_sign_is_held_up_and_put_away_for_yoga(biped):
     hand = biped.skeleton.index("Bip01 R Hand")
     person.update(0.0)
     hanging = person.pose[hand, :3, 3].copy()
-    dress(person, "sign", "welcome", t=0.0)
-    person.update(0.25)
+    dress(person, "sign", "welcome", t=0.5)
+    person.update(0.75)
     halfway = person.pose[hand, :3, 3].copy()
-    person.update(1.0)
+    person.update(1.5)
     holding = person.pose[hand, :3, 3].copy()
     assert holding[2] > hanging[2] + 0.1 and holding[1] > hanging[1] + 0.1  # the hand up in front
     assert 0.0 < np.linalg.norm(halfway - hanging) < np.linalg.norm(holding - hanging)  # lifted gradually
@@ -104,9 +104,14 @@ def test_the_sign_is_held_up_and_put_away_for_yoga(biped):
     assert np.linalg.norm(person.pose[hand, :3, 3] - hanging) < 0.02
     person.update(act.end + 2.0)
     assert board.current_visible and np.allclose(person.pose[hand, :3, 3], holding, atol=1e-6)
+    performer.reset()  # the scene restarts (R): time is back at 0, before the sign was given; it is still held
+    person.update(0.1)
+    assert board.current_visible and np.allclose(person.pose[hand, :3, 3], holding, atol=1e-6)
     dress(person, "sign", None, t=act.end + 2.0)
     person.update(act.end + 4.0)
     assert np.allclose(person.pose[hand, :3, 3], hanging, atol=1e-6) and person.props == []
+    person.update(0.5)  # and after a restart it stays let go
+    assert np.allclose(person.pose[hand, :3, 3], hanging, atol=1e-6)
 
 
 def test_the_wardrobe_offers_your_files_first(tmp_path):

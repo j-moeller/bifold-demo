@@ -51,3 +51,7 @@ work goes on. The people are avatars from the
   Pose, Downward Facing Dog and Upward Facing Dog (keys 2, 4 and 6), each at a
   spot they walked to where the camera sees the whole pose; the selected one is
   tagged with what they are doing, and the key help is at the bottom.
+- `accessories.jpg`: the Items menu of selection mode in the fair: three of
+  the audience dressed by key (a straw hat and a red t-shirt; the welcome sign,
+  black glasses and the logo t-shirt; a navy hat, sunglasses, the yoga sign and
+  a white t-shirt); the tag of the selected one says what they wear.

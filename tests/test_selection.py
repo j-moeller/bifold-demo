@@ -14,7 +14,7 @@ from bifold_demo.characters.character import Character
 from bifold_demo.characters.model import AnimationClip, CharacterState, Layer
 from bifold_demo.characters.performer import Performer, choose_place, place
 from bifold_demo.characters.yoga_clips import YogaClips, cache_path, model_key
-from bifold_demo.display.window import BACKSPACE, BACKTAB, LEFT, RIGHT, TAB, key_code
+from bifold_demo.display.window import BACKSPACE, BACKTAB, DOWN, LEFT, RIGHT, TAB, UP, key_code
 from bifold_demo.scene import Camera, Scene
 from bifold_demo.selection import Selection
 
@@ -31,6 +31,8 @@ def test_key_codes_from_every_backend():
     assert key_code(0x250000) == LEFT and key_code(0x270000) == RIGHT  # Windows arrows
     assert key_code(0xF702) == LEFT and key_code(0xFF53) == RIGHT  # macOS, Qt and GTK (X11 keysyms)
     assert key_code(0xFF51) == LEFT  # GTK: not "q" (which would quit)
+    assert key_code(0xFF52) == UP and key_code(0xFF54 | 1 << 16) == DOWN and key_code(0xF700) == UP  # GTK, macOS
+    assert key_code(0x260000) == UP and key_code(0x280000) == DOWN  # Windows
     assert key_code(27 | 0x10 << 16) == 27  # GTK Escape with NumLock on
     assert key_code(ord("y") | 0x10 << 16) == ord("y")
     assert key_code(127) == BACKSPACE and key_code(0xFF08) == BACKSPACE
@@ -359,6 +361,49 @@ def test_the_same_number_again_holds_a_pose_that_has_not_started_yet(biped):
         t, _ = _run_until(scene, selection, 0.0, lambda t: isinstance(person.behaviour, Performer)
                           and person.behaviour.current(t) is not None)
         assert person.behaviour.current(t).looping
+    finally:
+        selection.close()
+
+
+def test_the_menus_switch_between_poses_and_items(biped):
+    from bifold_demo.characters import accessories
+    from bifold_demo.characters.accessories import Wardrobe
+    from bifold_demo.selection import menus
+
+    titles = [title for title, _kind, _entries in menus()]
+    assert titles[-1] == "Items" and all(len(entries) <= 8 for _t, _k, entries in menus())
+    scene = _scene(biped)
+    selection = Selection(_clips(), Wardrobe(None))
+    try:
+        selection.enter(scene, SIZE)
+        person = selection.selected
+        assert selection.handle_key(UP, 0.0) == (True, "menu: Items")  # round to the last menu
+        assert "[Items] 1 hat  2 glasses  3 sign  4 t-shirt" in selection.help_lines()[1]
+        hats = [look.name for look in accessories.built_in()["hat"].values()]
+        for k, look in enumerate(hats):
+            message = selection.handle_key(ord("1"), 0.0)[1]
+            assert message.startswith(f"middle (synthetic_biped): {look} ({k + 1} of {len(hats)}")
+        assert message.endswith("again: off)")  # the last look
+        assert selection.handle_key(ord("1"), 0.0)[1] == "middle (synthetic_biped) takes the hat off"
+        for _ in range(list(accessories.built_in()["glasses"]).index("sunglasses") + 1):
+            selection.handle_key(ord("2"), 0.0)
+        assert selection.wears(person) == "sunglasses"  # not "sunglasses glasses"
+        selection.handle_key(ord("2"), 0.0)
+        selection.handle_key(ord("2"), 0.0)
+        assert "glasses" not in accessories.wearing(person)
+        assert "hat" not in accessories.wearing(person)
+        selection.handle_key(ord("3"), 0.0)
+        selection.handle_key(ord("4"), 0.0)
+        assert sorted(accessories.wearing(person)) == ["sign", "tshirt"]
+        assert selection.wears(person) == "welcome sign, white t-shirt"
+        assert selection.detail(person, 0.0) == "welcome sign, white t-shirt"
+        assert "wears: welcome sign, white t-shirt" in selection.status_lines(0.0)
+        assert selection.handle_key(ord("9"), 0.0) == (True, None)  # nothing on that key
+        assert selection.handle_key(ord("0"), 0.0)[1] == "middle (synthetic_biped) takes everything off"
+        assert accessories.wearing(person) == {}
+        assert selection.handle_key(ord("i"), 0.0)[1] == f"menu: {titles[0]}"  # back to the poses
+        assert selection.handle_key(ord("5"), 0.0)[1].startswith("preparing")
+        assert selection.handle_key(ord("i"), 0.0)[1] == "menu: Items"
     finally:
         selection.close()
 

@@ -1,25 +1,30 @@
-"""The demo's selection mode: pick one of the 3D people in the picture and have them do yoga poses.
+"""The demo's selection mode: pick one of the 3D people in the picture, have them do yoga poses, dress them up.
 
-``Y`` (or Tab) starts it with the most prominent person selected; Tab and Shift+Tab (or the arrow keys) go to the next
-person to the right or left; the number keys make the selected person do a pose (1 = the first of
-:data:`yoga.POSES`), the same key again keeps them holding it, 0 (or Backspace) stops; Esc or ``Y`` ends it. When the
-selected person leaves the picture, is hidden or is removed from the scene, the person nearest to where they were is
-selected instead.
+``Y`` (or Tab) starts it with the most prominent person selected; Tab and Shift+Tab (or the left and right arrows) go
+to the next person to the right or left; Esc or ``Y`` ends it. The up and down arrows (or ``I``) switch between the
+:func:`menus`, whose entries are on the number keys: in a yoga menu a number makes the selected person do that pose,
+the same number again keeps them holding it and 0 (or Backspace) stops; in the items menu a number puts that item on
+(:mod:`.characters.accessories`), the same number again goes to its next look and, after the last, takes it off, and
+0 takes everything off. When the selected person leaves the picture, is hidden or is removed from the scene, the
+person nearest to where they were is selected instead.
 """
 
 from __future__ import annotations
 
 import math
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import numpy as np
 
-from .characters import yoga
+from .characters import accessories, yoga
+from .characters.accessories import Wardrobe
 from .characters.performer import TURN_MIN, Performer, choose_place, floors, footprint, obstacles, place
 from .characters.yoga_clips import YogaClips
-from .display.window import BACKSPACE, BACKTAB, LEFT, RIGHT, TAB
+from .display.window import BACKSPACE, BACKTAB, DOWN, LEFT, RIGHT, TAB, UP
 
-POSE_KEYS = {ord(str(k + 1)): name for k, name in enumerate(yoga.POSES)}  # "1" -> the first pose, ...
+PAGE = 8  # poses to a menu
+NUMBER_KEYS = {ord(str(k)): k for k in range(1, 10)}
 STOP_KEYS = (ord("0"), BACKSPACE)
 MIN_HEIGHT = 0.08  # share of the picture height: people drawn smaller standing (far away) cannot be selected
 MIN_INSIDE = 0.6  # share of a person's box that must be in the picture
@@ -30,6 +35,15 @@ PERSON = 0.6, 1.8  # width and height of the box that stands for another person 
 HIDDEN = 0.1  # share of a pose's points that may be hidden behind people or furniture in a frame of its hold
 
 
+def menus() -> list[tuple[str, str, list[str]]]:
+    """Selection mode's menus, ``(title, kind, entries)`` with the entries on the number keys 1, 2, ...: the yoga
+    poses (:data:`PAGE` to a menu, in the order of :data:`yoga.POSES`), then the items (``kind`` "items")."""
+    poses = list(yoga.POSES)
+    pages = [poses[k:k + PAGE] for k in range(0, len(poses), PAGE)]
+    titles = [f"Yoga {k + 1}/{len(pages)}" if len(pages) > 1 else "Yoga" for k in range(len(pages))]
+    return [(title, "yoga", page) for title, page in zip(titles, pages)] + [("Items", "items", list(accessories.ITEMS))]
+
+
 def short_title(pose: str) -> str:
     """``"Cow Pose"`` for ``"cow"`` (the title without the Sanskrit name)."""
     return yoga.POSES[pose].title.split(" (")[0]
@@ -37,6 +51,22 @@ def short_title(pose: str) -> str:
 
 def _pose_of(clip) -> str:
     return str(clip.metadata.get("pose", "")) if not isinstance(clip, str) else clip
+
+
+def _same(a, b) -> bool:
+    """Whether two texture values are the same look (arrays and textures by identity)."""
+    if a is b:
+        return True
+    if isinstance(a, (str, Path)) and isinstance(b, (str, Path)):
+        return str(a) == str(b)
+    return isinstance(a, tuple) and isinstance(b, tuple) and a == b
+
+
+def _item_title(look_name: str, item: str) -> str:
+    """``"navy hat"`` for the look ``"navy"`` (or ``"navy hat"``) of the hat, but ``"sunglasses"``, not
+    ``"sunglasses glasses"``."""
+    title = accessories.TITLES[item]
+    return look_name if title in look_name.lower() else f"{look_name} {title}"
 
 
 def person_name(character) -> str:
@@ -82,8 +112,10 @@ class Selection:
     Call :meth:`update` after every rendered frame of the scene and :meth:`handle_key` with each key press.
     """
 
-    def __init__(self, clips: YogaClips | None = None):
+    def __init__(self, clips: YogaClips | None = None, wardrobe: Wardrobe | None = None):
         self.clips = clips if clips is not None else YogaClips()
+        self.wardrobe = wardrobe if wardrobe is not None else Wardrobe()
+        self.menu = 0  # which of menus()
         self.active = False
         self.selected = None  # the Character
         self.box: tuple | None = None  # its box in the last frame
@@ -219,10 +251,24 @@ class Selection:
             return False, None
         if key in (TAB, RIGHT, BACKTAB, LEFT):
             return True, self.step(1 if key in (TAB, RIGHT) else -1)
-        if key in POSE_KEYS:
-            return True, self.do(POSE_KEYS[key], t)
+        all_menus = menus()
+        if key in (UP, DOWN, ord("i")):
+            if key == ord("i"):  # to the items and back to the poses
+                items = len(all_menus) - 1
+                self.menu = items if self.menu != items else self._yoga_menu
+            else:
+                self.menu = (self.menu + (1 if key == DOWN else -1)) % len(all_menus)
+            if all_menus[self.menu][1] == "yoga":
+                self._yoga_menu = self.menu
+            return True, f"menu: {all_menus[self.menu][0]}"
+        _title, kind, entries = all_menus[min(self.menu, len(all_menus) - 1)]
+        if key in NUMBER_KEYS:
+            k = NUMBER_KEYS[key] - 1
+            if k >= len(entries):
+                return True, None
+            return True, self.do(entries[k], t) if kind == "yoga" else self.wear(entries[k], t)
         if key in STOP_KEYS:
-            return True, self.stop(t)
+            return True, self.stop(t) if kind == "yoga" else self.undress(t)
         if key in (27, ord("y")):
             self.leave()
             return True, "selection off"
@@ -274,6 +320,39 @@ class Selection:
             self._requests[key] = (*self._requests[key][:2], True)
         if key in self._placing:
             self._placing[key] = (*self._placing[key][:3], True)
+
+    def wear(self, item: str, t: float) -> str:
+        """The selected person puts ``item`` on, or changes it to its next look in :attr:`wardrobe`, or (after the
+        last look) takes it off."""
+        character = self.selected
+        if character is None:
+            return "nobody selected"
+        if not accessories.supports(character.skinned_model):
+            return f"{person_name(character)} cannot wear items"
+        name = accessories.TITLES[item]
+        looks = self.wardrobe.looks(item)
+        current = accessories.wearing(character).get(item)
+        index = 0 if current is None else next((k + 1 for k, (_n, spec) in enumerate(looks) if _same(spec, current.look)),
+                                                len(looks))
+        if index >= len(looks):
+            accessories.dress(character, item, None, t=t)
+            return f"{person_name(character)} takes the {name} off"
+        try:
+            worn = accessories.dress(character, item, looks[index][1], self.wardrobe, t=t)
+        except (OSError, ValueError) as exc:
+            return f"cannot put the {name} on {person_name(character)}: {exc}"
+        again = "off" if index + 1 == len(looks) else "the next"
+        return f"{person_name(character)}: {_item_title(worn.name, item)} ({index + 1} of {len(looks)}; again: {again})"
+
+    def undress(self, t: float) -> str:
+        """The selected person takes everything off."""
+        character = self.selected
+        if character is None:
+            return "nobody selected"
+        worn = accessories.wearing(character)
+        for item in worn:
+            accessories.dress(character, item, None, t=t)
+        return f"{person_name(character)} takes everything off" if worn else f"{person_name(character)} wears nothing"
 
     def stop(self, t: float) -> str:
         """The selected person leaves their pose (and forgets one being prepared)."""
@@ -500,6 +579,15 @@ class Selection:
             text += f", then {short_title(_pose_of(performer.queued[0]))}" + (" (held)" if performer.queued[3] else "")
         return text
 
+    @staticmethod
+    def wears(character) -> str:
+        """What ``character`` wears, e.g. ``"navy hat, welcome sign"`` (empty when nothing)."""
+        return ", ".join(_item_title(worn.name, item) for item, worn in accessories.wearing(character).items())
+
+    def detail(self, character, t: float) -> str:
+        """The second line of the selected person's tag: what they are doing, else what they wear."""
+        return self.describe(character, t) or self.wears(character)
+
     def status_lines(self, t: float) -> list[str]:
         if not self.active:
             return []
@@ -507,17 +595,25 @@ class Selection:
             return ["selected: nobody in the picture"]
         index = next((k for k, p in enumerate(self.people) if p.character is self.selected), 0)
         lines = [f"selected: {person_name(self.selected)}, {index + 1} of {len(self.people)} in the picture"]
-        doing = self.describe(self.selected, t)
+        doing, wears = self.describe(self.selected, t), self.wears(self.selected)
         if doing:
             lines.append(f"yoga: {doing}")
+        if wears:
+            lines.append(f"wears: {wears}")
         return lines
 
-    @staticmethod
-    def help_lines() -> list[str]:
-        poses = "  ".join(f"{chr(k)} {short_title(p)}" for k, p in POSE_KEYS.items())
-        return [("Tab / Shift+Tab (or arrows) next / previous person | 0 stop | same number again: keep holding | "
-                 "Esc done"),
-                poses]
+    def help_lines(self) -> list[str]:
+        """The key help of the current menu."""
+        all_menus = menus()
+        title, kind, entries = all_menus[min(self.menu, len(all_menus) - 1)]
+        keys = "  ".join(f"{k + 1} {short_title(e) if kind == 'yoga' else accessories.TITLES[e]}"
+                         for k, e in enumerate(entries))
+        more = "same number again: keep holding | 0 stop" if kind == "yoga" else \
+            "again: next look, after the last: off | 0 all off"
+        return ["Tab / Shift+Tab: next / previous person | Up / Down: menu | Esc: done",
+                f"[{title}] {keys} | {more}"]
+
+    _yoga_menu = 0  # the yoga menu ``I`` goes back to
 
     def _forget(self) -> None:
         """A new scene: the people of the old one are gone."""

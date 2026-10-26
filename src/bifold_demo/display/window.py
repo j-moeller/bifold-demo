@@ -7,21 +7,23 @@ import numpy as np
 
 # Keys without a character of their own, as :meth:`Window.poll_key` returns them (beyond Unicode: never a character)
 TAB, BACKSPACE = 9, 8
-BACKTAB, LEFT, RIGHT = 0x110001, 0x110002, 0x110003  # Shift+Tab, arrow keys
+BACKTAB, LEFT, RIGHT, UP, DOWN = 0x110001, 0x110002, 0x110003, 0x110004, 0x110005  # Shift+Tab, arrow keys
 
 # what the HighGUI backends report for them (cv2.waitKeyEx)
 _SPECIAL = {
-    25: BACKTAB, 127: BACKSPACE, 0xF702: LEFT, 0xF703: RIGHT,  # macOS: Shift+Tab types a back-tab, delete a DEL
+    25: BACKTAB, 127: BACKSPACE,  # macOS: Shift+Tab types a back-tab, the delete key a DEL
+    0xF702: LEFT, 0xF703: RIGHT, 0xF700: UP, 0xF701: DOWN,  # macOS function keys
     11: BACKTAB,  # Qt (the Linux wheels): Shift+Tab as Qt's ASCII for it; other keys as X11 keysyms (below)
-    0x250000: LEFT, 0x270000: RIGHT,  # Windows (cannot tell Shift+Tab from Tab)
+    0x250000: LEFT, 0x270000: RIGHT, 0x260000: UP, 0x280000: DOWN,  # Windows (cannot tell Shift+Tab from Tab)
 }
-_GTK = {0xFE20: BACKTAB, 0xFF51: LEFT, 0xFF53: RIGHT}  # X11 keysyms (GTK and Qt); GTK adds modifiers above bit 16
+# X11 keysyms (GTK and Qt); GTK adds the modifiers above bit 16
+_GTK = {0xFE20: BACKTAB, 0xFF51: LEFT, 0xFF53: RIGHT, 0xFF52: UP, 0xFF54: DOWN}
 
 
 def key_code(raw: int) -> int | None:
     """A ``cv2.waitKeyEx`` code as :meth:`Window.poll_key` returns it: characters as their code (letters
-    lower-cased), Escape 27, Return 13, Tab ``TAB``; Shift+Tab, the left and right arrows and Backspace as
-    ``BACKTAB``, ``LEFT``, ``RIGHT`` and ``BACKSPACE``; ``None`` for other keys (function keys, ...) or no key."""
+    lower-cased), Escape 27, Return 13, Tab ``TAB``; Shift+Tab, the arrows and Backspace as ``BACKTAB``, ``LEFT``,
+    ``RIGHT``, ``UP``, ``DOWN`` and ``BACKSPACE``; ``None`` for other keys (function keys, ...) or no key."""
     if raw < 0:
         return None
     if raw in _SPECIAL:

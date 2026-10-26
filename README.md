@@ -57,24 +57,39 @@ for your terminal app. Allow it, then run the command again.
 | `Space`   | pause or resume the scene's simulation time               |
 | `R`       | restart the scene (time 0, physics reset)                 |
 | `[` / `]` | lower / raise the confidence threshold                    |
-| `Y`/`Tab` | select a person in the 3D scene (see below)               |
+| `Y`/`Tab` | select a person in the 3D scene: yoga poses, accessories (see below) |
 | `F`       | toggle fullscreen                                         |
 | `P`       | save a screenshot to `screenshots/`                       |
 | `M`       | mirror the webcam on or off                               |
 | `H`       | hide or show the status panel                             |
 | `Q`/`Esc` | quit (in selection mode `Esc` ends that first)            |
 
-**Selecting people for yoga.** `Y` (or `Tab`) selects the most prominent of
-the 3D people in the picture and marks them with a tag. In this selection mode
-the keys are:
+**Selecting people for yoga and accessories.** `Y` (or `Tab`) selects the most
+prominent of the 3D people in the picture and marks them with a tag. In this
+selection mode the keys are:
 
 | Key                     | Action                                                  |
 |-------------------------|---------------------------------------------------------|
 | `Tab` / `Shift`+`Tab`   | next person to the right / left (also `→` / `←`)        |
-| `1` … `6`               | the selected person does a yoga pose (see the table in [Yoga poses](#yoga-poses)) |
+| `↑` / `↓` (or `I`)      | the next menu: the yoga poses (eight to a menu), then the items; `I` goes to the items and back |
+| `Esc` / `Y`             | end selection mode (poses already started go on)        |
+
+In a yoga menu:
+
+| Key                     | Action                                                  |
+|-------------------------|---------------------------------------------------------|
+| `1` … `8`               | the selected person does that yoga pose (see the table in [Yoga poses](#yoga-poses)) |
 | the same number again   | keep holding the pose                                   |
 | `0` / `Backspace`       | stop: out of the pose and back to what they were doing  |
-| `Esc` / `Y`             | end selection mode (poses already started go on)        |
+
+In the items menu (see [Accessories](#accessories)):
+
+| Key                     | Action                                                  |
+|-------------------------|---------------------------------------------------------|
+| `1` hat, `2` glasses, `3` sign, `4` t-shirt | the selected person puts it on; the same number again changes it to its next look, after the last look it comes off |
+| `0` / `Backspace`       | take everything off                                     |
+
+The bottom panel shows the keys of the current menu.
 
 People drawn smaller than 8 % of the picture height (far away) cannot be
 selected. When the selected person walks out of the picture, is hidden or is
@@ -100,6 +115,54 @@ While the demo is in selection mode it also solves the poses of the people in
 the picture ahead of time. `bifold-characters yoga` solves every avatar's poses
 once in advance, so the demo always starts them at once. On Windows the
 `Shift`+`Tab` key looks the same as `Tab` to OpenCV; use `←` there.
+
+## Accessories
+
+[`characters/accessories.py`](src/bifold_demo/characters/accessories.py) gives
+the 3D people a hat, glasses, a sign to hold or a t-shirt, in the selection
+mode above or from Python:
+
+```python
+from bifold_demo.characters.accessories import dress
+
+dress(person, "hat", "#24406a")          # any texture value: a colour, an image or video file, an array
+dress(person, "glasses", "sunglasses")   # or the name of a built-in look
+dress(person, "sign", "my_poster.png")   # held up beside the head in the right hand
+dress(person, "tshirt", "logo.png")      # worn over their clothes
+dress(person, "hat", None)               # off again
+```
+
+Each item is fitted to the avatar it is given to:
+
+- the hat sits over the head, hair and ears down to just above the eyes;
+- the glasses sit in front of the eyes, with temples back to the ears;
+- the t-shirt is the avatar's own upper body, a few millimetres off their
+  clothes and moving with them, cut to short sleeves at the hips;
+- the sign is held up on a stick in the right fist (the arm pose is blended
+  over whatever the person does) and is put away while they do a yoga pose.
+
+**Textures.** How each item uses its texture:
+
+| Item | Texture |
+|------|---------|
+| hat | wraps once around the crown (its bottom rows at the brim, so a dark bottom stripe is a hat band); also covers the brim and the top |
+| glasses | the left half colours the frame, the right half the lenses (transparent pixels are clear glass, so the built-in "sunglasses" have dark ones) |
+| sign | the whole image on the board, on both sides (the back reads the right way round too) |
+| t-shirt | wraps around the body: the middle of the image is the centre of the chest, its left and right edges meet in the middle of the back, its bottom row is the hem and its top row the neckline |
+
+The looks the keys step through come from a `Wardrobe`: your files first, then
+the built-in ones (hats: navy, straw, red, grey; glasses: black, tortoise,
+sunglasses, gold; signs: welcome, ask me, yoga; t-shirts: white, black, red,
+logo). The demo looks for your files in `items/` (`--items DIR` to use another
+folder). A file is a look for an item when its name, or the name of its
+subfolder, starts with the item's name: `items/hat.png`, `items/hat_red.jpg`,
+`items/sign/poster.png`, `items/tshirt-logo.png` (`shirt` and `t-shirt` work
+too). The folder is checked every second, and a file you replace changes
+everybody wearing it at once. In Python, `Wardrobe(folder, textures={"sign":
+["poster.png", "#ffffff"]})` puts your own textures first.
+
+Items fit the Rocketbox avatars (their Biped skeleton); a person can wear all
+four at once.
 
 ## The trade-fair scene
 
@@ -522,12 +585,13 @@ src/bifold_demo/
                character.py (skinned scene object), behaviour.py, crowd.py,
                yoga.py (yoga pose clips), yoga_clips.py (built in a worker process, cached),
                performer.py (a pose in the middle of a behaviour),
+               accessories.py (hats, glasses, signs, t-shirts),
                rocketbox.py + library.py + cli.py (bifold-characters),
                rocketbox_catalog.json (avatar labels)                   ← 3D people
   people/      prompts.py, generator.py (text-to-image), cutout.py,
                library.py, defaults.py, cli.py (bifold-people)          ← 2D people generator
   app.py       main loop and command line; loader.py loads and reloads scene files;
-               selection.py (selection mode: people and their yoga poses)
+               selection.py (selection mode: people, their yoga poses and accessories)
   scenes/      fair.py (default trade-fair hall), fair3d.py (static 3D poses), basic.py
 examples/      example scenes
 uploads/       drop textures here while the demo runs

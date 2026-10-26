@@ -48,6 +48,7 @@ class DemoConfig:
     frames: int | None = None
     reload: bool = True
     uploads: str | None = "uploads"
+    items: str | None = "items"  # looks for the hats, glasses, signs and t-shirts (see characters.accessories)
     title: str = "bifold demo"
 
 
@@ -96,7 +97,9 @@ class DemoApp:
         self._last_canvas = None
         self._last_reload_check = 0.0
         self._running = True
-        self.selection = Selection()  # Y: pick a person, number keys: yoga poses
+        from .characters.accessories import Wardrobe
+
+        self.selection = Selection(wardrobe=Wardrobe(config.items))  # Y: pick a person, then yoga poses and items
 
     def _prepare_scene(self, scene: Scene) -> None:
         if self.config.uploads:
@@ -202,7 +205,7 @@ class DemoApp:
         if selecting and self.selection.box is not None:
             t = self.scene_source.scene.time
             draw_selection(canvas, self.selection.box, person_name(self.selection.selected),
-                           self.selection.describe(self.selection.selected, t))
+                           self.selection.detail(self.selection.selected, t))
         if self.show_hud:
             draw_panel(canvas, self._status_lines(frame, result))
             if not self.config.headless:
@@ -360,6 +363,9 @@ def parse_args(argv=None) -> DemoConfig:
     g.add_argument("--uploads", default="uploads",
                    help="folder whose files replace textures of same-named objects ('' to disable)")
     g.add_argument("--no-reload", dest="reload", action="store_false", help="do not reload the scene file on save")
+    g.add_argument("--items", default="items",
+                   help="folder of looks for the hats, glasses, signs and t-shirts of selection mode, e.g. "
+                        "items/sign_logo.png ('' for the built-in ones only)")
     g = p.add_argument_group("detection")
     g.add_argument("--model", default=DEFAULT_MODEL, help=f"YOLO weights (default {DEFAULT_MODEL})")
     g.add_argument("--device", default="auto", help="auto, mps, cpu or cuda (default auto)")
@@ -380,7 +386,7 @@ def parse_args(argv=None) -> DemoConfig:
         source=a.source, scene=a.scene, camera=a.camera, width=a.size[0], height=a.size[1], fps=a.fps,
         mirror=a.mirror, model=a.model, device=a.device, conf=a.conf, iou=a.iou, imgsz=a.imgsz, classes=a.classes,
         detect=a.detect, sync=a.sync, fullscreen=a.fullscreen, record=a.record, headless=a.headless,
-        frames=a.frames, reload=a.reload, uploads=a.uploads or None,
+        frames=a.frames, reload=a.reload, uploads=a.uploads or None, items=a.items or None,
     )
 
 

@@ -745,13 +745,15 @@ class Grip:
             self.off = t if t is not None else getattr(character, "_time", 0.0)
 
     def weight(self, character, t: float) -> float:
+        """How far the arm holds the sign at ``t``: lifting from ``on``, letting go from ``off`` (before them, when the
+        scene was restarted, it holds it or has let go)."""
         if self.on is None:
             return 0.0
-        w = _ease((t - self.on) / FADE)
         if self.off is not None:
-            w = min(w, 1.0 - _ease((t - self.off) / FADE))
-        w *= 1.0 - _busy(character, t)
-        return w
+            w = 1.0 - _ease((t - self.off) / FADE) if t >= self.off else 0.0
+        else:
+            w = _ease((t - self.on) / FADE) if t >= self.on else 1.0
+        return w * (1.0 - _busy(character, t))
 
     def __call__(self, local: np.ndarray, character, t: float) -> None:
         w = self.weight(character, t)
