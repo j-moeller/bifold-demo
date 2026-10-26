@@ -38,3 +38,6 @@ work goes on. The people are avatars from the
   and knees, the back hollowing with the chest and gaze lifting, and back up.
 - `yoga_warrior_1.jpg`: the Warrior 1 (Virabhadrasana I) clip: a long lunge,
   the back foot turned out with the heel down, the arms overhead.
+- `yoga_downward_dog.jpg`: the Downward Facing Dog clip: down to hands and
+  knees, the toes tucked, the hips lifting into an inverted V with straight
+  arms and legs and the heels down.

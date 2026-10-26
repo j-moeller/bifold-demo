@@ -805,8 +805,52 @@ def _warrior1_steps(body: Body) -> list[Step]:
             Step(sweep, seconds=1.3), Step(stand, seconds=2.2, lift=step_back)]
 
 
+def downward_dog(body: Body, hands: BodyPose, trunk: float = 48.0) -> BodyPose:
+    """Adho Mukha Svanasana with the hands of ``hands``: hips high, arms and back in one line ``trunk`` degrees
+    up from the floor, the legs straight and the heels down, the head between the arms."""
+    left = body.sides["left"]
+    hand = np.asarray(hands.left_arm.target, float)
+    reach = ARM_STRAIGHT * (left["upper_length"] + left["fore_length"])
+    legs = ARM_STRAIGHT * (left["thigh_length"] + left["shin_length"])  # straight legs too
+    down_line = np.array([0.0, -math.sin(math.radians(trunk)), math.cos(math.radians(trunk))])  # hips to hands
+    hips = hand - (reach + body.torso) * down_line
+    arms = {}
+    for name in ("left_arm", "right_arm"):
+        sign = 1.0 if name == "left_arm" else -1.0  # the elbow points up and out, its crease forward
+        arms[name] = replace(getattr(hands, name), pole=(sign * 0.5, 0.7, -0.6))
+    dog = None
+    for _ in range(6):  # slide the hips along the line until straight arms just reach the hands
+        rise = hips[1] - left["ankle_height"]
+        ankle_z = hips[2] - math.sqrt(max(legs ** 2 - rise ** 2, 0.0))
+        feet = {f"{side}_leg": replace(_foot(body, side, s["sign"] * 0.5 * body.hip_width, ankle_z),
+                                       pole=(s["sign"] * 0.1, 0.3, 1.0)) for side, s in body.sides.items()}
+        dog = BodyPose((0.0, hips[1] + body.hip_drop, hips[2]), pelvis=(90.0 + trunk, 0, 0), spine=(-8.0, 0.0, 0.0),
+                       head=(10.0, 0.0, 0.0), flat_hands=True, **arms, **feet)
+        _, glob = solve(body, dog)
+        miss = float(np.linalg.norm(glob[left["upper"], :3, 3] - hand)) - reach
+        if abs(miss) < 1e-3:
+            break
+        hips = hips + miss * down_line
+    return dog
+
+
+def _downward_dog_steps(body: Body) -> list[Step]:
+    """From standing down to hands and knees, the toes tucked, the hips lifting up and back into the dog."""
+    down = _down_to_table(body)
+    table = settle(body, down[-1].pose)  # the hands where they will be, so the arms end up straight
+    tucked = tabletop(body, tucked=True)
+    tucked = replace(tucked, left_arm=table.left_arm, right_arm=table.right_arm)
+    dog = downward_dog(body, table)
+    feet = {"left_leg": 0.05, "right_leg": 0.05}
+    step = {"left_leg": 0.08, "right_leg": 0.08}  # the feet step back while the heels come down
+    into = [Step(tucked, seconds=1.2, lift=feet), Step(dog, seconds=2.5, hold=9.0, lift=step)]
+    return down + into + [Step(tucked, seconds=2.5, lift=step), Step(table, seconds=1.2, hold=1.0, breathe=False,
+                                                                     lift=feet)] + _up_from(down)
+
+
 POSES: dict[str, PoseSpec] = {
     "yogi_squat": PoseSpec("Yogi Squat (Malasana)", _yogi_squat_steps, main=1, view=0.0),
     "cow": PoseSpec("Cow Pose (Bitilasana)", _cow_steps, main=5, view=90.0),
     "warrior_1": PoseSpec("Warrior 1 (Virabhadrasana I)", _warrior1_steps, main=2, view=90.0),
+    "downward_dog": PoseSpec("Downward Facing Dog (Adho Mukha Svanasana)", _downward_dog_steps, main=6, view=90.0),
 }

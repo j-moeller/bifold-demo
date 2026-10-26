@@ -214,6 +214,7 @@ starting pose into the pose, holding it for two breaths, and back.
 | Yogi Squat (Malasana) | `"yogi_squat"` | standing |
 | Cow Pose (Bitilasana) | `"cow"` | standing, down to hands and knees (crouch, kneel with toes tucked, tabletop) |
 | Warrior 1 (Virabhadrasana I) | `"warrior_1"` | standing, the right foot steps back, the arms sweep up |
+| Downward Facing Dog (Adho Mukha Svanasana) | `"downward_dog"` | standing, down to hands and knees, toes tucked, the hips lift |
 
 ```python
 from bifold_demo.characters.character import Character

@@ -212,6 +212,24 @@ def test_warrior_1_lunges_with_the_arms_overhead(body):
     assert pose.pelvis[1] == 0.0  # the hips square to the front
 
 
+def test_downward_dog_is_an_inverted_v(body):
+    spec = yoga.POSES["downward_dog"]
+    pose = yoga.settle(body, spec.steps(body)[spec.main].pose)
+    _, glob = yoga.solve(body, pose)
+    left = body.sides["left"]
+    hips, head = glob[body.root, :3, 3], glob[body.head, :3, 3]
+    hand, foot, shoulder = glob[left["hand"], :3, 3], glob[left["foot"], :3, 3], glob[left["upper"], :3, 3]
+    assert hips[1] > 0.6 * body.leg  # the hips are the highest point of the body
+    assert hips[1] > shoulder[1] > head[1] - 0.05  # the head hangs between the arms
+    assert hand[2] - foot[2] > 0.9 * body.leg  # hands and feet far apart
+    for s in body.sides.values():
+        assert _bend(glob, s["upper"], s["fore"], s["hand"]) < 15.0  # straight arms ...
+        assert _bend(glob, s["thigh"], s["calf"], s["foot"]) < 15.0  # ... and legs
+    trunk = math.degrees(math.atan2(hips[1] - hand[1], hips[2] - hand[2]))
+    assert 120.0 < trunk < 145.0  # arms and back slope up from the hands, the legs down to the feet
+    assert all(getattr(pose, limb).contact for limb in yoga.LIMBS)  # both hands and both feet on the floor
+
+
 def test_yogi_squat_is_deep_with_wide_knees_and_palms_together(body):
     pose = yoga.settle(body, yoga.POSES["yogi_squat"].steps(body)[1].pose)
     _, glob = yoga.solve(body, pose)
