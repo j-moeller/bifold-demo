@@ -4,7 +4,7 @@ import pytest
 
 from bifold_morph import models
 from bifold_morph.faces import Face, FaceTracker, OneEuro
-from bifold_morph.mivolo import AgeGender, letterbox
+from bifold_morph.state import AgeGender
 from bifold_morph.ui import LEFT, RIGHT, UP, Panel, Slider, describe_label, key_code
 
 
@@ -85,21 +85,15 @@ def test_labels():
     assert describe_label(None, None, edited=True) == ""
 
 
-def test_letterbox():
-    out = letterbox(np.full((100, 50, 3), 255, np.uint8))
-    assert out.shape == (224, 224, 3)
-    assert out[112, 112].tolist() == [255, 255, 255] and out[112, 5].tolist() == [0, 0, 0]
-
-
 def test_models_folder_and_checks(tmp_path, monkeypatch):
     monkeypatch.setenv(models.MODELS_ENV, str(tmp_path))
     assert models.models_dir() == tmp_path
     with pytest.raises(FileNotFoundError):
-        models.ensure(models.E4E, download=False)
-    page = tmp_path / models.E4E.name
-    page.write_bytes(b"<!DOCTYPE html>" + b" " * 100)
-    assert not models._looks_complete(models.E4E, page)
-    fake = models.ModelFile("x.bin", "test", url="http://unused", min_size=10)
+        models.ensure(models.FAIRFACE, download=False)
+    fake = models.ModelFile("x.bin", "test", url="http://unused", sha256="0" * 64, size=24)
     (tmp_path / "x.bin").write_bytes(b"PK\x03\x04" + b"\0" * 20)
-    assert models.ensure(fake, download=False) == tmp_path / "x.bin"
-    assert models.E4E.page.startswith("https://drive.google.com/file/d/")
+    assert models.ensure(fake, download=False) == tmp_path / "x.bin"  # the right size: taken as it is
+    (tmp_path / "x.bin").write_bytes(b"short")
+    with pytest.raises(FileNotFoundError):
+        models.ensure(fake, download=False)  # damaged and not allowed to fetch
+    assert all(m.url.startswith("https://") and len(m.sha256) == 64 for m in models.ALL)

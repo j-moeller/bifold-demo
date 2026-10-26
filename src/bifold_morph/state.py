@@ -31,8 +31,7 @@ class Settings:
     age: float = 0.0  # years older (negative: younger)
     gender: float = 0.0  # -1 towards female ... +1 towards male
     enabled: bool = True  # False: show the camera picture as it is
-    replace: bool = False  # True: the generated face replaces the real one; False: only the change is added
-    readout: bool = True  # let MiVOLO read the faces (if it is loaded)
+    readout: bool = True  # let the judges read the faces (if they are loaded)
 
     @property
     def edits(self) -> bool:

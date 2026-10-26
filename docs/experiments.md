@@ -63,3 +63,51 @@ The gap between the two averages is 0.53, and the projections of women and men d
 Neither judge sees any change of gender, not even at three times the gap. A face swapper is trained to keep
 everything but identity, so the hair, the jaw line and the stubble stay. Those are the cues gender is read from.
 Face swapping is the wrong tool, and that matches the literature (see [literature.md](literature.md)).
+
+## Experiment 2: StyleGANEX latent editing: the built-in age edit is weak, a fitted gender vector breaks the image
+
+FaceFusion's StyleGANEX export computes `codes − direction × AGE`, a stored (18, 512) age vector added to the
+encoder's codes. The graph was rewired (`nets.StyleGANEX`): the whole offset became an input and the codes an
+output. After that change it still matches ONNX Runtime exactly, and it takes 4.6 s per face on a 4-core CPU.
+
+- **Age at FaceFusion's maximum (±2.5 × AGE)**: a slight smoothing or wrinkling only. The judges' ages move by
+  0–3 years (Lena 25 → 24/25, a man in t1 26 → 26).
+- **Gender**, as the female-minus-male difference of the 61 encoded direction faces with age projected out:
+  no change at 1–2 gaps, a smeared face at 8 gaps, and an unrecognisable one at 16 gaps before either judge
+  reads the other gender. 61 real faces are far too few to fit a direction in an 18 × 512 space. Noise dominates
+  and pushes the codes off the space of faces.
+
+## Experiment 3: InterFaceGAN directions in StyleGAN2: right for generated faces, out of reach for photos
+
+GFPGAN v1 (Wang et al., CVPR 2021; GitHub release) froze a StyleGAN2 trained on FFHQ at 512 px and learned an
+encoder into it. Its checkpoint holds the generator *with* its mapping network, so faces can be sampled:
+
+1. **The directions**: 2000 random faces (truncation 0.7), labelled by FairFace: 55 % female, age 31 ± 13. Ridge
+   regression of the gender logit and of the age on `w`, each direction made orthogonal to the other one's.
+   The average female and male codes are 2.41 units apart; one unit of age is 10.7 years.
+2. **On generated faces** they work. Moving 16 new random faces towards the other gender, the *independent*
+   judge (InsightFace) reads the other gender in 38 % at 0.5 gaps, 50 % at 1 gap and **75 % at 1.5 gaps**
+   (FairFace: 19 / 50 / 81 %). They look right: beards grow, hair gets longer, faces get softer
+   (contact sheet `exp3_synthetic.jpg`).
+3. **On photos, through GFPGAN's encoder**: no effect at all, even at 3 gaps (P(female) stays at 0.00/0.00 for the
+   men, 1.00/1.00 for the women; identity 0.9). The encoder's codes are not ordinary StyleGAN codes. Decoded on
+   their own they give a smear. What makes the face is GFPGAN's spatial feature transform (per-pixel scales and
+   shifts from the photo), and it overrides any change of the codes.
+
+## Step 4: distillation, the apps' recipe
+
+The generator can change gender and age convincingly, but only for faces it drew itself. So we teach a
+feed-forward network to do the same to any face (`distill.py`, `student.py`). This is the recipe of
+"StyleGAN2 Distillation for Feed-forward Image Manipulation" (ECCV 2020), and it fits how the Snapchat lens
+behaves:
+
+- **4000 pairs**: a random face (truncation 0.5–1) and the same face moved by a random gender amount (±1.5 gaps)
+  and age (±40 years); a tenth change only the gender, a tenth only the age. Saved at 256 px.
+- **The student**: a U-Net (6.1 M parameters) that takes the face and the two amounts (as input channels and
+  through FiLM in every block) and predicts the change. Its last layer starts at zero, so at first it changes
+  nothing.
+- **The loss**: L1 on pixels, plus a perceptual loss on four layers of FairFace's ResNet-34, plus FairFace's
+  gender and age logits. FairFace therefore steers the training, and **InsightFace stays the independent judge**
+  in the validation. ImageNet's VGG, the usual perceptual network, cannot be downloaded here.
+- **Augmentation**: the same flip, ±4° turn, ±5 % scale, ±3 % shift and colour change for both images of a pair,
+  so the student copes with the landmark jitter of a live camera.

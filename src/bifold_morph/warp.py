@@ -90,7 +90,7 @@ def paste(frame: np.ndarray, crop: np.ndarray, mask: np.ndarray, m: np.ndarray) 
 
 def box_mask(size: int, blur: float = 0.3, padding: float = 0.0) -> np.ndarray:
     """1 in the middle of a square crop, fading to 0 at its edges over ``blur`` of half the side (FaceFusion's
-    box mask): hides the crop's border when it goes back into the frame."""
+    box mask, made exactly 0 at the border): hides the crop's border when it goes back into the frame."""
     fade = max(1, int(size * 0.5 * blur))
     pad = int(size * padding)
     mask = np.ones((size, size), np.float32)
@@ -98,7 +98,11 @@ def box_mask(size: int, blur: float = 0.3, padding: float = 0.0) -> np.ndarray:
     mask[-max(fade // 2, pad):] = 0
     mask[:, :max(fade // 2, pad)] = 0
     mask[:, -max(fade // 2, pad):] = 0
-    return cv2.GaussianBlur(mask, (0, 0), fade * 0.25) if fade > 1 else mask
+    if fade <= 1:
+        return mask
+    mask = cv2.GaussianBlur(mask, (0, 0), fade * 0.25)
+    edge = float(mask[0, size // 2])  # the blur leaks out to the border: rescale so the border is exactly 0
+    return np.clip((mask - edge) / max(1.0 - edge, 1e-6), 0.0, 1.0).astype(np.float32)
 
 
 def center_crop(image: np.ndarray, center, side: float, size: int) -> tuple[np.ndarray, np.ndarray]:

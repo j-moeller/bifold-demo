@@ -3,16 +3,11 @@
 For every face (up to ``max_faces``, the biggest):
 
 1. YuNet finds it and its five landmarks; the tracker steadies them from frame to frame;
-2. the FFHQ square round the face is cut out at 256 x 256 (:mod:`.align`);
-3. e4e turns it into a StyleGAN2 code, ``w+`` (18 x 512), smoothed over the last frames;
-4. the code moves along the age and gender directions (:mod:`.directions`) as far as the sliders say;
-5. StyleGAN2 draws the moved code, and the result goes back into the frame along the same square:
-   * by default only the *change* goes back: the generator draws the face as encoded and as edited, and the
-     difference between the two is added to the real pixels. What e4e cannot capture (the exact identity, skin,
-     glasses, background) stays as the camera saw it, and with the sliders at 0 the picture is untouched;
-   * in "replace" mode the generated face itself replaces the real one inside a soft oval.
+2. the head is cut out on the FFHQ template at 256 x 256 (:mod:`.warp`);
+3. the student network (:mod:`.student`) draws it changed by the sliders' amounts, in one pass;
+4. the result goes back into the frame along the same transform, through a soft-edged box.
 
-MiVOLO, if loaded, reads every face before and after the edit.
+The judges (FairFace, InsightFace), if loaded, read every face before and after.
 """
 
 from __future__ import annotations
@@ -22,15 +17,10 @@ import time
 import numpy as np
 import torch
 
-from . import align
-from .directions import Directions
-from .e4e import E4E, INPUT_SIZE, to_input
+from . import warp
+from .distill import GENDER_RANGE, SIZE
 from .faces import FaceDetector, FaceTracker
-from .mivolo import MiVOLO, crop_box
-from .state import FaceResult, FrameResult, Settings
-
-CODE_SMOOTHING = 0.5  # weight of the newest frame's code in the smoothed code of a face
-CODE_KEEP = 0.3  # seconds: an older smoothed code starts afresh
+from .state import AgeGender, FaceResult, FrameResult, Settings
 
 
 def _sync(device: torch.device) -> None:
@@ -41,83 +31,67 @@ def _sync(device: torch.device) -> None:
 
 
 class FaceEditor:
-    def __init__(self, e4e: E4E, directions: Directions, detector: FaceDetector, device="cpu", size: int = 256,
-                 max_faces: int = 2, mivolo: MiVOLO | None = None, half: bool = False):
+    def __init__(self, student, detector: FaceDetector, device="cpu", max_faces: int = 2, judges=None,
+                 half: bool = False):
         self.device = torch.device(device)
-        self.dtype = torch.float16 if half else torch.float32
-        self.e4e = e4e.to(self.device, self.dtype).eval()
-        self.directions, self.detector, self.mivolo = directions, detector, mivolo
-        self.size, self.max_faces = size, max_faces
+        self.dtype = torch.float16 if half and self.device.type != "cpu" else torch.float32
+        self.student = student.to(self.device, self.dtype).eval()
+        self.detector, self.judges, self.max_faces = detector, judges, max_faces
         self.tracker = FaceTracker()
-        self._masks = {False: align.border_mask(size), True: align.face_mask(size)}
-        self._offset_key = None
-        self._offset = None
+        self._mask = warp.box_mask(SIZE, blur=0.35)
 
-    def offset(self, settings: Settings) -> torch.Tensor:
-        key = (settings.age, settings.gender)
-        if key != self._offset_key:
-            delta = self.directions.offset(settings.age, settings.gender)
-            self._offset = torch.as_tensor(delta, dtype=self.dtype, device=self.device)
-            self._offset_key = key
-        return self._offset
+    @staticmethod
+    def amounts(settings: Settings) -> tuple[float, float]:
+        """The student's gender amount (gaps, + towards female) and years for the sliders."""
+        return -settings.gender * GENDER_RANGE, settings.age
+
+    @torch.inference_mode()
+    def edit_crops(self, crops: np.ndarray, gender: float, years: float) -> np.ndarray:
+        """Aligned BGR uint8 faces (B, 256, 256, 3) changed by ``gender`` gaps and ``years``: BGR float32."""
+        x = torch.from_numpy(np.ascontiguousarray(crops[..., ::-1])).to(self.device)
+        x = (x.permute(0, 3, 1, 2).to(self.dtype) / 127.5 - 1).contiguous()
+        n = len(crops)
+        out = self.student(x, torch.full((n,), gender, device=self.device), torch.full((n,), years, device=self.device))
+        out = ((out.float() + 1) * 127.5).permute(0, 2, 3, 1).cpu().numpy()
+        return np.ascontiguousarray(out[..., ::-1])
 
     @torch.inference_mode()
     def process(self, frame: np.ndarray, settings: Settings, t: float | None = None) -> FrameResult:
-        """``frame`` (BGR uint8) with its faces edited as ``settings`` say; ``t`` (seconds) is when it was taken."""
+        """``frame`` (BGR uint8) with its faces changed as ``settings`` say; ``t`` (seconds) is when it was taken."""
         t = time.perf_counter() if t is None else t
         timings = {}
         start = time.perf_counter()
         tracks = self.tracker.update(self.detector.detect(frame)[:self.max_faces], t)
         timings["detect"] = time.perf_counter() - start
         out = frame.copy()
-        faces = [FaceResult(tr.id, tr.face.box, align.ffhq_quad(tr.landmarks)) for tr in tracks]
+        faces = [FaceResult(tr.id, tr.face.box, warp.matrix(tr.landmarks, "ffhq_512", SIZE)) for tr in tracks]
         if faces and settings.edits:
-            self._edit(frame, out, tracks, faces, settings, t, timings)
-        if faces and settings.readout and self.mivolo is not None:
             start = time.perf_counter()
-            self._read(frame, out if settings.edits else None, faces)
-            timings["mivolo"] = time.perf_counter() - start
+            crops = np.stack([warp.warp(frame, f.quad, SIZE) for f in faces])
+            edited = self.edit_crops(crops, *self.amounts(settings))
+            _sync(self.device)
+            timings["student"] = time.perf_counter() - start
+            start = time.perf_counter()
+            for face, crop in zip(faces, edited):
+                warp.paste(out, crop, self._mask, face.quad)
+            timings["paste"] = time.perf_counter() - start
+        if faces and settings.readout and self.judges is not None:
+            start = time.perf_counter()
+            for face, tr in zip(faces, tracks):
+                face.before = self.judges.read(frame, tr)
+                face.after = self.judges.read(out, tr) if settings.edits else face.before
+            timings["judges"] = time.perf_counter() - start
         return FrameResult(out, faces, timings)
 
-    def _edit(self, frame, out, tracks, faces, settings: Settings, t: float, timings: dict) -> None:
-        start = time.perf_counter()
-        crops = [align.crop(frame, f.quad, INPUT_SIZE)[..., ::-1] for f in faces]
-        codes = self.e4e.encode(to_input(crops, self.device, self.dtype))
-        for i, track in enumerate(tracks):
-            prev, when = track.state.get("codes"), track.state.get("t", -1e9)
-            if prev is not None and t - when <= CODE_KEEP:
-                codes[i] = prev + CODE_SMOOTHING * (codes[i] - prev)
-            track.state.update(codes=codes[i].clone(), t=t)
-        _sync(self.device)
-        timings["encode"] = time.perf_counter() - start
 
-        start = time.perf_counter()
-        edited = codes + self.offset(settings)
-        g = self.e4e.generator
-        if settings.replace:
-            layers = (g.synthesis(edited, self.size).float().clamp(-1, 1) + 1) * 127.5
-        else:
-            both = g.synthesis(torch.cat([codes, edited]), self.size).float().clamp(-1, 1)
-            layers = (both[len(faces):] - both[:len(faces)]) * 127.5
-        layers = layers.permute(0, 2, 3, 1).flip(-1).cpu().numpy()  # RGB -> BGR
-        timings["generate"] = time.perf_counter() - start
+class Judges:
+    """Both classifiers' verdict, averaged, as the window shows it ("male 97%, 31 y")."""
 
-        start = time.perf_counter()
-        mask = self._masks[settings.replace]
-        for face, layer in zip(faces, layers):
-            align.paste(out, layer, mask, face.quad, settings.replace)
-        timings["paste"] = time.perf_counter() - start
+    def __init__(self, fairface, genderage):
+        self.fairface, self.genderage = fairface, genderage
 
-    def _read(self, frame, edited, faces) -> None:
-        crops, where = [], []
-        for i, face in enumerate(faces):
-            for which, image in (("before", frame), ("after", edited)):
-                c = crop_box(image, face.box) if image is not None else None
-                if c is not None:
-                    crops.append(c)
-                    where.append((i, which))
-        for (i, which), result in zip(where, self.mivolo.predict(crops) if crops else []):
-            setattr(faces[i], which, result)
-        if edited is None:
-            for face in faces:
-                face.after = face.before
+    def read(self, image: np.ndarray, track) -> AgeGender:
+        a = self.fairface.read(image, [track.landmarks])[0]
+        b = self.genderage.read(image, [track.face.box])[0]
+        female = (a.female + b.female) / 2
+        return AgeGender(age=(a.age + b.age) / 2, male=1 - female)

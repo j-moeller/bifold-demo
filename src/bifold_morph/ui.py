@@ -179,7 +179,7 @@ class Panel:
 
 
 def describe_label(before: AgeGender | None, after: AgeGender | None, edited: bool) -> str:
-    """MiVOLO's reading of a face, e.g. "31 -> 52 y, male 98% -> female 81%"."""
+    """The judges' reading of a face, e.g. "31 -> 52 y, male 98% -> female 81%"."""
     if before is None and after is None:
         return ""
     def one(r: AgeGender) -> tuple[str, str]:

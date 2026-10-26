@@ -17,7 +17,7 @@ from .state import AGE_END, FrameResult, Settings
 from .ui import Panel, Slider, Window, describe_label, draw_face
 
 TITLE = "bifold morph"
-KEYS_HELP = "drag the sliders | Space original | D mode | E MiVOLO | R reset | H help | Q quit"
+KEYS_HELP = "drag the sliders | Space original | E read-out | R reset | H help | Q quit"
 
 
 def pick_device(name: str = "auto"):
@@ -32,33 +32,26 @@ def pick_device(name: str = "auto"):
     return torch.device("cpu")
 
 
-def load_editor(device, size: int = 256, max_faces: int = 2, readout: bool = True, half: bool = False,
+def load_editor(device, max_faces: int = 2, readout: bool = True, half: bool = False, student=None,
                 folder=None, download: bool = True, progress=print):
-    """The :class:`~.editor.FaceEditor` with its models from the models folder (fetching missing ones when
-    ``download``). This is where PyTorch and the model files come in."""
-    from .directions import Directions
-    from .e4e import E4E
-    from .editor import FaceEditor
+    """The :class:`~.editor.FaceEditor`: the student network (``student``, default: the one that comes with the
+    package), YuNet and, for the read-out, the two judges, from the models folder (fetched when missing)."""
+    from . import student as student_mod
+    from .editor import FaceEditor, Judges
     from .faces import FaceDetector
-    from .mivolo import MiVOLO
+    from .nets import FairFace, GenderAge
 
-    directions_file = models.directions_path(folder)
-    if not directions_file.is_file():
-        raise FileNotFoundError(f"no age and gender directions in {directions_file}: run `bifold-morph setup` once "
-                                "(it downloads the models and finds the directions, a few minutes on a GPU)")
+    path = student or models.STUDENT
+    if not path.is_file():
+        raise FileNotFoundError(f"no student network at {path} (train one: bifold-morph train)")
     detector = FaceDetector(models.ensure(models.YUNET, folder, download, progress))
-    if progress:
-        progress(f"[morph] loading e4e + StyleGAN2 on {device} ...")
-    e4e = E4E.load(models.ensure(models.E4E, folder, download, progress))
-    mivolo = None
+    judges = None
     if readout:
-        try:
-            mivolo = MiVOLO.load(models.ensure(models.MIVOLO, folder, download, progress), device)
-        except (OSError, RuntimeError, ValueError, ImportError) as error:
-            if progress:
-                progress(f"[morph] MiVOLO not loaded ({error}); no age and gender read-out")
-    return FaceEditor(e4e, Directions.load(directions_file), detector, device, size=size, max_faces=max_faces,
-                      mivolo=mivolo, half=half)
+        if progress:
+            progress("[morph] loading the judges (FairFace, InsightFace) for the read-out ...")
+        judges = Judges(FairFace(models.ensure(models.FAIRFACE, folder, download, progress), device),
+                        GenderAge(models.ensure(models.GENDERAGE, folder, download, progress), device))
+    return FaceEditor(student_mod.load(path), detector, device, max_faces=max_faces, judges=judges, half=half)
 
 
 @dataclass
@@ -166,9 +159,10 @@ class App:
         parts = [f"{self._fps:4.1f} fps", str(self.editor.device)]
         n = len(self._shown.faces) if self._shown else 0
         parts.append(f"{n} face{'s' if n != 1 else ''}")
-        parts.append("ORIGINAL" if not s.enabled else "replace face" if s.replace else "change only")
-        if self.editor.mivolo is not None:
-            parts.append(f"MiVOLO {'on' if s.readout else 'off'}")
+        if not s.enabled:
+            parts.append("ORIGINAL")
+        if self.editor.judges is not None:
+            parts.append(f"read-out {'on' if s.readout else 'off'}")
         if self.worker.error is not None:
             parts.append(f"error: {self.worker.error}")
         elif self.source.error:
@@ -206,9 +200,6 @@ class App:
             self.age.nudge(-1 if key == ord("1") else 1)
         elif key in (ord("3"), ord("4")):
             self.gender.nudge(-1 if key == ord("3") else 1)
-        elif key == ord("d"):
-            s.replace = not s.replace
-            self.say("the generated face replaces the real one" if s.replace else "only the change is added")
         elif key == ord("e"):
             s.readout = not s.readout
         elif key == ord("b"):
@@ -254,24 +245,24 @@ class App:
             self.window.close()
 
 
-def run(source: str = "0", device: str = "auto", size: int = 256, max_faces: int = 2, readout: bool = True,
-        half: bool = False, width: int = 1280, height: int = 720, mirror: bool | None = None,
-        fullscreen: bool = False, age: float = 0.0, gender: float = 0.0, replace: bool = False) -> None:
-    editor = load_editor(pick_device(device), size=size, max_faces=max_faces, readout=readout, half=half)
+def run(source: str = "0", device: str = "auto", max_faces: int = 2, readout: bool = True, half: bool = False,
+        width: int = 1280, height: int = 720, mirror: bool | None = None, fullscreen: bool = False,
+        age: float = 0.0, gender: float = 0.0, student=None) -> None:
+    editor = load_editor(pick_device(device), max_faces=max_faces, readout=readout, half=half, student=student)
     src = open_source(source, width, height, mirror)
-    settings = Settings(age=age, gender=gender, replace=replace, readout=readout)
+    settings = Settings(age=age, gender=gender, readout=readout)
     print(f"[morph] running on {editor.device}; {KEYS_HELP}")
     App(editor, src, settings, fullscreen=fullscreen).run()
 
 
-def edit_file(path, output, age: float, gender: float, device: str = "auto", size: int = 1024,
-              replace: bool = False, readout: bool = True) -> FrameResult:
-    """Edit the faces in one picture and save it to ``output``."""
+def edit_file(path, output, age: float, gender: float, device: str = "auto", readout: bool = True,
+              student=None) -> FrameResult:
+    """Change the faces in one picture and save it to ``output``."""
     image = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if image is None:
         raise FileNotFoundError(f"cannot read image {path}")
-    editor = load_editor(pick_device(device), size=size, max_faces=8, readout=readout)
-    result = editor.process(image, Settings(age=age, gender=gender, replace=replace, readout=readout))
+    editor = load_editor(pick_device(device), max_faces=8, readout=readout, student=student)
+    result = editor.process(image, Settings(age=age, gender=gender, readout=readout))
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     if not cv2.imwrite(str(output), result.image):
         raise OSError(f"cannot write {output}")

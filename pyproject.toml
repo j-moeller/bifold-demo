@@ -5,15 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "bifold-morph"
 version = "0.1.0"
-description = "Live webcam face editing with age and gender sliders (e4e + StyleGAN2, directions found with MiVOLO)"
+description = "Live webcam face changing with age and gender sliders (a U-Net distilled from StyleGAN2 edits)"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.24",
     "opencv-python>=4.8",
-    "torch>=2.5",
-    "timm>=0.9",
-    "gdown>=5.1",
+    "torch>=2.14",
+    "onnx>=1.17",
+    "onnx2torch>=1.5.15",
 ]
 
 [project.optional-dependencies]
@@ -24,6 +24,9 @@ bifold-morph = "bifold_morph.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"bifold_morph" = ["weights/*.pt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
