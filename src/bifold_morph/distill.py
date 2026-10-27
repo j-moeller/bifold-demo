@@ -229,9 +229,10 @@ def _augment(a: torch.Tensor, b: torch.Tensor, gen: torch.Generator):
 
 
 def train(pairs_dir, fairface_path, out_path, steps: int = 4000, batch: int = 8, lr: float = 2e-4, device="cpu",
-          start=None, log_every: int = 50, save_every: int = 500, progress=print):
+          start=None, log_every: int = 50, save_every: int = 250, progress=print):
     """Fit a :class:`~.student.Student` to the pairs: L1 on pixels, plus FairFace features (perceptual) and its
-    gender / age logits (so the change carries the cues a classifier reads)."""
+    gender / age logits (so the change carries the cues a classifier reads). Saves the student to ``out_path``
+    every ``save_every`` steps, with ``<out_path>.resume`` to go on from there if it is interrupted."""
     from .student import Student, load, save
 
     dev = torch.device(device)
@@ -243,12 +244,23 @@ def train(pairs_dir, fairface_path, out_path, steps: int = 4000, batch: int = 8,
     opt = torch.optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.99))
     gen = torch.Generator().manual_seed(0)
     rng = np.random.default_rng(0)
+    resume_path = Path(str(out_path) + ".resume")  # everything needed to go on after an interruption
+    first = 1
+    if resume_path.is_file():
+        state = torch.load(resume_path, map_location="cpu", weights_only=True)
+        model.load_state_dict(state["model"])
+        opt.load_state_dict(state["opt"])
+        gen.set_state(state["gen"])
+        rng.bit_generator.state = state["rng"]
+        first = state["step"] + 1
+        if progress:
+            progress(f"[train] resuming after step {state['step']}")
 
     def tensor(x):
         return torch.from_numpy(np.ascontiguousarray(x[..., ::-1])).to(dev).permute(0, 3, 1, 2).float() / 127.5 - 1
 
     start_t, logs = time.perf_counter(), []
-    for step in range(1, steps + 1):
+    for step in range(first, steps + 1):
         idx = np.sort(rng.choice(len(before), batch, replace=False))
         x, y = _augment(tensor(before[idx]), tensor(after[idx]), gen)
         g = torch.as_tensor(amounts[idx, 0], device=dev)
@@ -267,9 +279,13 @@ def train(pairs_dir, fairface_path, out_path, steps: int = 4000, batch: int = 8,
         logs.append([l1.item(), perc.item(), attr.item()])
         if progress and step % log_every == 0:
             m = np.mean(logs[-log_every:], 0)
-            rate = step / (time.perf_counter() - start_t)
+            rate = (step - first + 1) / (time.perf_counter() - start_t)
             progress(f"[train] step {step}/{steps}: L1 {m[0]:.4f} perceptual {m[1]:.4f} attributes {m[2]:.3f} "
                      f"({rate:.2f} steps/s, {(steps - step) / rate / 60:.0f} min left)")
         if step % save_every == 0 or step == steps:
             save(model, out_path, step=step, pairs=str(d))
+            tmp = resume_path.with_name(resume_path.name + ".tmp")
+            torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "gen": gen.get_state(),
+                        "rng": rng.bit_generator.state, "step": step}, tmp)
+            tmp.replace(resume_path)
     return model
