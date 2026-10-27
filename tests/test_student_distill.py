@@ -59,3 +59,23 @@ def test_augment_moves_both_alike():
     a = torch.rand(4, 3, 32, 32) * 2 - 1
     x, y = _augment(a, a.clone(), torch.Generator().manual_seed(0))
     assert x.shape == a.shape and torch.allclose(x, y)
+
+
+def test_make_pairs_resumes_exactly(tmp_path):
+    """A run stopped after its first batch and started again makes the same pairs as one that ran through."""
+    from bifold_morph.distill import make_pairs
+    from bifold_morph.stylegan2 import Generator
+
+    torch.manual_seed(0)
+    g = Generator(size=16).eval()
+    d = Directions(unit(np.ones(512)), unit(np.arange(512.0)), 2.0, 10.0)
+    full = make_pairs(g, d, 8, tmp_path / "full", batch=4, progress=None)
+    part = tmp_path / "part"
+    make_pairs(g, d, 8, part, batch=4, progress=None)
+    after = np.load(part / "after.npy", mmap_mode="r+")
+    after[4:] = 0  # as if it stopped after the first batch
+    after.flush()
+    (part / "done.txt").write_text("4")
+    make_pairs(g, d, 8, part, batch=4, progress=None)
+    for name in ("before.npy", "after.npy", "amounts.npy"):
+        assert np.array_equal(np.load(full / name), np.load(part / name)), name

@@ -78,7 +78,7 @@ def _train(work: Path, device: str, labels: int, pairs: int, steps: int) -> None
         fit_directions(w, female, age).save(work / "directions.npz")
     directions = Directions.load(work / "directions.npz")
     print(f"[train] directions: female-male gap {directions.gap:.2f} units, {directions.years:.1f} years per unit")
-    if not (work / "pairs" / "amounts.npy").is_file():
+    if not (work / "pairs" / "info.json").is_file():  # written when all pairs are made
         make_pairs(generator, directions, pairs, work / "pairs")
     del generator
     train(work / "pairs", fairface_path, work / "student.pt", steps=steps, device=dev)

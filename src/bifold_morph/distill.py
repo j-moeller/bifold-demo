@@ -111,41 +111,55 @@ def make_pairs(generator, directions: Directions, n: int, out_dir, seed: int = 1
                progress=print) -> Path:
     """``n`` before/after pairs in ``out_dir``: ``before.npy`` and ``after.npy`` (n, 256, 256, 3, BGR uint8) and
     ``amounts.npy`` (n, 2): the gender amount (gaps, + towards female) and the years. A tenth of the pairs change
-    only the gender, a tenth only the age; truncation varies from 0.5 to 1 for variety."""
+    only the gender, a tenth only the age; truncation varies from 0.5 to 1 for variety. Stopped runs resume."""
     from .gfpgan import to_bgr
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    before = np.lib.format.open_memmap(out / "before.npy", "w+", np.uint8, (n, SIZE, SIZE, 3))
-    after = np.lib.format.open_memmap(out / "after.npy", "w+", np.uint8, (n, SIZE, SIZE, 3))
+    done_file = out / "done.txt"  # how many pairs are complete: a stopped run goes on from there
+    done = int(done_file.read_text()) if done_file.is_file() else 0
+
+    def array(name, dtype, shape):
+        path = out / name
+        return np.lib.format.open_memmap(path, "r+" if done and path.is_file() else "w+", dtype, shape)
+
+    before = array("before.npy", np.uint8, (n, SIZE, SIZE, 3))
+    after = array("after.npy", np.uint8, (n, SIZE, SIZE, 3))
+    amounts = array("amounts.npy", np.float32, (n, 2))  # replayed for the pairs already made
     rng = np.random.default_rng(seed)
     torch.manual_seed(seed)
     dev = generator.input.input.device
     w_avg = generator.mean_latent(10000)
-    amounts = np.zeros((n, 2), np.float32)
-    start = time.perf_counter()
+    start, made = time.perf_counter(), 0
     for i in range(0, n, batch):
         b = min(batch, n - i)
+        # every random number is drawn in the same order whether the batch is made or skipped, so a resumed run
+        # makes exactly the pairs an uninterrupted one would
         psi = torch.as_tensor(rng.uniform(0.5, 1.0, (b, 1)), dtype=torch.float32, device=dev)
-        w = w_avg + psi * (generator.mapping(torch.randn(b, 512, device=dev)) - w_avg)
+        z = torch.randn(b, 512, device=dev)
         g = rng.uniform(-GENDER_RANGE, GENDER_RANGE, b)
         a = rng.uniform(-AGE_RANGE, AGE_RANGE, b)
         kind = rng.random(b)
         a[kind < 0.1] = 0.0
         g[(kind >= 0.1) & (kind < 0.2)] = 0.0
+        amounts[i:i + b] = np.stack([g, a], 1)
+        if i + b <= done:
+            continue
+        w = w_avg + psi * (generator.mapping(z) - w_avg)
         delta = np.stack([directions.offset(gi, ai) for gi, ai in zip(g, a)])
         w2 = w + torch.as_tensor(delta, dtype=torch.float32, device=dev)
         images = to_bgr(generator.synthesis(torch.cat([w, w2]))).astype(np.uint8)
         small = [cv2.resize(x, (SIZE, SIZE), interpolation=cv2.INTER_AREA) for x in images]
         before[i:i + b] = np.stack(small[:b])
         after[i:i + b] = np.stack(small[b:])
-        amounts[i:i + b] = np.stack([g, a], 1)
+        for arr in (before, after, amounts):
+            arr.flush()
+        done_file.write_text(str(i + b))
+        made += b
         if progress and (i // batch) % 25 == 0:
-            rate = (i + b) / (time.perf_counter() - start)
+            rate = made / (time.perf_counter() - start)
             progress(f"[distill] {i + b}/{n} pairs ({rate:.1f}/s, {(n - i - b) / rate / 60:.0f} min left)")
-    np.save(out / "amounts.npy", amounts)
-    before.flush()
-    after.flush()
+    amounts.flush()
     (out / "info.json").write_text(json.dumps({"pairs": n, "size": SIZE, "gender_range": GENDER_RANGE,
                                                "age_range": AGE_RANGE, "seed": seed}))
     return out
