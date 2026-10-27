@@ -9,4 +9,5 @@ See "Created characters" in the main README.
 
 They can hold a person's face (from photos), which is personal data: this
 folder stays on this computer and is ignored by git. Deleting a character's
-folder removes everything of it; it leaves the fair a second later.
+folder removes everything of it at once; its 3D person leaves the fair at the
+next moment nobody sees it go (press `R` in the demo to make that now).

@@ -895,24 +895,42 @@ this order:
 
 A child's place is never taken (up to 13 places in all). Within each kind, a
 place whose person is like the character's avatar (a woman's place for a
-woman) comes first. There the place's own behaviour fits the avatar as it is:
-Rocketbox grown-ups of one sex have the same legs, so the feet do not slide,
-and the character steps in exactly where that person was, doing what they did.
-Elsewhere the behaviour is made again for the new avatar: the same path and
-pauses, but the avatar's own walk, turn and idle clips. It walks as fast as
-the person before when its clips can keep up (else at its own pace), its
-timing is fitted in so that it keeps 0.6 m from everyone, and its camera play
-is planned around the others'. It follows the old timing only roughly: in
-some places it is in step with the person before for most of the loop, in
-others (turns and pauses that fall differently, or a loop of another length,
-as for a child's avatar) metres apart for long stretches. So it is swapped in
-at a moment nobody sees it happen: when it stands where that person stands,
-or when neither of them is in the camera's picture (out of view, or hidden
-while walkers come back to the start of their aisle). Without such a moment
-for a minute of scene time, a short jump (up to 2 m) or one of them appearing
-or vanishing in view will do; after two minutes, whatever there is. For a
-grown-up in a visitor's place such a moment comes within half a minute, and
-in none of the fair's places did a swap have to wait the two minutes.
+woman) comes first, and someone doing a yoga pose in selection mode (or who
+did one) gives up their place last. In a place like the avatar, the place's
+own behaviour fits the avatar as it is: Rocketbox grown-ups of one sex have
+the same legs, so the feet do not slide, and the character does exactly what
+that person did, where and when they did it. Elsewhere the behaviour is made
+again for the new avatar: the same path and pauses, but the avatar's own walk,
+turn and idle clips. It walks as fast as the person before when its clips can
+keep up (else at its own pace), its timing is fitted in so that it keeps
+0.6 m from everyone (the characters made just before it count too, so several
+that join at once keep apart as well), and its camera play is planned around
+the others'. It follows the old timing only roughly: in some places it is in
+step with the person before for most of the loop, in others (turns and pauses
+that fall differently, or a loop of another length, as for a child's avatar)
+metres apart for long stretches.
+
+**Nobody sees a change.** A viewer is never to see someone turn into someone
+else, jump or pop up, so every change of a place (a character coming in,
+another avatar, new looks, a character leaving) is made between two frames
+where nothing of it shows. The person there is taken out at a frame where no
+pixel of them is seen: out of the picture, hidden while walkers come back to
+the start of their aisle, or behind a booth, a plant or someone else (the
+renderer counts their pixels against the frame it has just drawn). The place
+stays empty until the person coming in would show no pixel either, and then
+they are there. Over the fair's six-minute loop the walkers' places have such
+moments every few seconds (the near aisles leave the picture, the far ones
+pass behind booths), the wanderers' and the visitors' places now and then,
+when someone passes in front of them, and the visitor walking up the middle of
+the aisle never. So after 20 s of scene time without such a moment, a frame
+where the change shows at most 0.05 % of the picture (460 of 1280 x 720
+pixels: someone far down the hall, or nearly hidden) will do, never more.
+Counted for the fair's own people from every second of the loop, a change in a
+walker's place then comes after 0.2 s (median; at most 17 s), in a wanderer's
+after 12 s (at most 46 s) and in a visitor's after 25 s (at most a minute and
+a half, for the one in the middle of the aisle). Restarting the scene (`R`)
+and reloading the scene file make the changes at once: the whole picture
+changes anyway. A character with a sign holds it up from the start.
 
 The character wears its own textures and items. The known faces of
 [face recognition](#known-faces-on-the-3d-people) are never put on it: it
@@ -921,42 +939,73 @@ items), and its tag shows the character's name, e.g. `approach1 (Ada)`.
 
 While the demo runs it looks at the folder once a second:
 
-- a character saved by the creator (or copied in) joins the fair in the next
-  free place, and the demo says so ("Ada joined the fair");
+- a character saved by the creator (or copied in) is picked up and joins the
+  fair in the next free place, and the demo says so ("Ada joined the fair");
 - a character saved again changes in place: new looks on the same 3D person,
   or, with another avatar, a new 3D person in the same place;
-- a deleted character gives the place back to the person who had it.
+- a deleted character leaves the same way, and the place's own person comes
+  back; or a character waiting for a place takes it (the place stays empty in
+  between, its own person does not come back for a moment).
 
-The status panel lists who is in the fair (`created: Ada, Ben in the fair`)
-and how many wait for a free place; when several join at once there is one
-notice for them all ("Ada and Ben joined the fair"). Making a character's 3D
-person (reading its images, about 30 ms each, loading the avatar, putting its
-looks on) takes 0.05 to 0.1 s of work, and 0.2 to 0.7 s when its behaviour is
-made again. That runs on a worker thread, paced
-([`pacing`](src/bifold_demo/pacing.py)): Python runs one thread at a time,
-and a busy worker would take the main thread's turn for up to 5 ms every time
-it lets go, so the worker rests three quarters of the time. Its work then
-takes one to three seconds, and the video keeps its frame rate. Measured on
-the fair at 30 frames a second (updating the scene without drawing it, three
-characters joining, two of them made again, on four CPUs shared with other
-work): frames took 11 to 13 ms (median) without a character in the making
-and 13 to 18 ms while one was, with up to 3 frames in a hundred late (over
-33 ms; about one in two hundred without); not paced, they took 30 ms, and
-almost half of them came late. The swap itself costs the main thread at most
-2 to 3 ms. Restarting the scene (`R`) and reloading the scene file keep the
-characters in the fair.
+The status panel lists who is in the fair (`created: Ada, Ben in the fair`),
+how many are on the way (made, or waiting for a moment nobody sees), who is
+leaving and how many wait for a free place. When several join at once, or a
+frame or two apart, there is one notice for them all ("Ada and Ben joined the
+fair"). Making a character's 3D person (reading its images, about 30 ms each,
+loading the avatar, putting its looks on) takes about 0.1 s of work, and 0.4
+to 0.75 s when its behaviour is made again. That runs on a worker thread,
+paced ([`pacing`](src/bifold_demo/pacing.py)): Python runs one thread at a
+time, and a busy worker would take the main thread's turn for up to 5 ms
+every time it lets go, so the worker rests three quarters of the time, and
+more while the frames keep the main thread busy. Its work then takes 0.4 to
+0.8 s for a character in a place like its avatar, and 2 to 4.5 s when the
+behaviour is made again. Measured in the demo's own loop (the real fair at
+1280 x 720 and 30 frames a second, with the draw calls left out: this machine
+has only a software renderer, which spends 70 to 300 ms a frame on them; four
+CPUs shared with other work), the main thread's work per frame took 14 to
+17 ms (median) with nothing in the making, and up to 6 frames in a hundred
+came late (over 33 ms); while one character was made, 15 to 20 ms, with up to
+2 in a hundred late; while four copied in at once were made, 16 to 18 ms,
+with 6 to 13 in a hundred late (at most 71 ms). Not paced, 30 to 43 in a
+hundred came late. What drawing a newcomer needs goes to the GPU over the
+frames before they come in, one texture (or its mipmaps) a frame, so the frame
+they come in has none of it left to do: 5 to 10 ms a frame with this software
+renderer, up to 30 ms when the machine is busy. While a change waits for its
+moment, counting the pixels of the two people takes about 7 ms a frame here.
+Before the first frame and after a scene reload nobody sees the fair yet: the
+demo waits for its characters then, and the worker does not rest: 0.5 s for
+four characters (two made again), 1.4 s for thirteen (eight made again), on
+top of building the fair. Quitting stops the work at once.
 
-A character the demo cannot show is skipped and the others go on: its avatar
-not prepared ("cannot put Zed in the fair: ..."), its `character.json` not
-readable or with a look of the wrong kind (the status panel counts them), an
-item its avatar cannot wear (left out; the console says which). New looks
-that cannot be used leave the character as it was.
+A character the demo cannot show is skipped and the others go on:
+
+- its avatar not prepared ("cannot put Zed in the fair: ..."): it is tried
+  again every 10 s, so an avatar prepared meanwhile brings it in;
+- its `character.json` not readable or not one (not JSON, a list, a field of
+  the wrong kind, a look of the wrong kind): said once when that turns up (and
+  again if it happens again later), and counted in the status panel. A
+  character that could be read before stays as it was meanwhile: an editor or
+  a sync tool writing the file in place leaves it half written for a moment;
+- an image it cannot read (half copied, say): it is read again as soon as the
+  file changes;
+- an item its avatar cannot wear, or whose picture is not a file of the
+  character's folder, and textures painted for parts its avatar does not have
+  (left out; the console says which).
+
+New looks that cannot be used leave the character as it was. A folder copied
+by hand (`Ada copy/`) is reported, and the character's own folder counts.
+Saving a character whose name goes to another one's folder (`Ada?` and `Ada`
+both go to `Ada/`) is refused, and so is deleting it for the other; saving
+again keeps the other files of the folder (an item's picture). Images of any
+PNG kind are read (grey, a palette, 16 bits a channel), and larger than 1024
+pixels they are scaled down, like the avatars' own textures.
 
 **Privacy.** A created character can wear a real person's face, painted from
 their photos: that is personal data. `created/` stays on this computer, git
 ignores it, and the demo keeps no copy of it anywhere else. To remove a
-character, delete it in the creator or delete its folder (`created/Ada/`); it
-leaves the fair within a second.
+character, delete it in the creator or delete its folder (`created/Ada/`): its
+files are gone at once, and its 3D person leaves the fair at the next moment
+nobody sees (press `R` to make that now).
 
 ```python
 from bifold_demo.characters.created import CharacterBook, CreatedCharacter
@@ -972,7 +1021,8 @@ casting (`CreatedCast`), [`characters/created.py`](src/bifold_demo/characters/cr
 the saving and loading.
 [docs/previews/created_characters.jpg](docs/previews/created_characters.jpg)
 shows three created characters (plain colour outfits, a hat, sunglasses) in
-the visitors' places.
+the visitors' places, and [docs/previews/created_swaps.jpg](docs/previews/created_swaps.jpg)
+how characters come in where nobody sees it.
 
 ## Generating 2D people
 

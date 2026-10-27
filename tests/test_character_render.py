@@ -314,3 +314,51 @@ def test_gpu_resources_are_shared_and_released(render):
     gc.collect()
     renderer._collect_garbage()
     assert not renderer._primitives and not renderer._joints
+
+
+def test_visible_pixels_counts_what_of_someone_would_show(render):
+    """Against the frame drawn last: a person in the open shows, one behind a wall or out of the picture does not; a
+    person not in the scene (about to come in) is counted the same, in front of what the frame shows."""
+    from bifold_demo.scene import Box
+
+    person = Character(_model())
+    scene = _scene(person, floor=True)
+    render(scene)
+    renderer = render.renderer
+    (alone,) = renderer.visible_pixels([person])
+    body = _mask(renderer.render(scene), RED).sum()
+    assert alone >= body > 300  # (its blob shadow counts too)
+
+    def at(x, z, visible=True):
+        other = Character(_model(), lambda t: CharacterState((x, 0.0, z), 0.0, [], visible=visible), name="other")
+        other.update(0.0)
+        return other
+
+    counts = renderer.visible_pixels([person, at(1.0, -1.0), at(0.0, -1.0), at(40.0, 0.0), at(0.0, 0.5, False)])
+    assert counts[0] == alone and counts[1] > 300 and counts[2] < 0.4 * counts[1]  # mostly behind the person
+    assert counts[3:] == [0, 0]  # out of the picture; hidden
+    scene.add(Box(size=(3.0, 3.0, 0.1), position=(0.0, 1.0, 2.0), texture="#808080"), name="wall")
+    render(scene)
+    assert renderer.visible_pixels([person, at(1.0, -1.0)]) == [0, 0]  # behind the wall
+
+
+def test_prepare_uploads_one_thing_a_call(render):
+    from bifold_demo.scene.textures import Texture, prepare_upload
+
+    renderer = render.renderer
+    render(_scene(Character(_model())))
+    newcomer = Character(_model(), name="newcomer")  # a model the renderer has not seen: 3 parts, 3 textures
+    face = prepare_upload(Texture(np.full((4, 4, 4), (0, 255, 0, 255), np.uint8)))
+    newcomer.texture_overrides = {"box0": face}
+    calls = 1
+    while not renderer.prepare(newcomer):
+        calls += 1
+        assert calls < 20
+    assert calls == 1 + 3 + 3 and renderer.prepare(newcomer)  # 3 parts, then 2 textures of its own and its face
+    assert "_upload" not in face.__dict__  # the prepared bytes went to the GPU (and are let go)
+    image = render(_scene(newcomer))
+    assert _mask(image, GREEN).sum() > 300  # drawn with its face texture, the right way up
+    loose = Texture(np.zeros((2, 2, 4), np.uint8))
+    assert renderer.prepare(loose) is False and renderer.prepare(loose) is True  # a texture on its own
+    large = Texture(np.zeros((512, 512, 4), np.uint8))  # a large one: its pixels, then its mipmaps
+    assert [renderer.prepare(large) for _ in range(3)] == [False, False, True]

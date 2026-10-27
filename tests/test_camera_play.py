@@ -447,6 +447,23 @@ def test_join_plans_one_more_player_around_those_who_play(biped, planned):
         assert np.all((d >= cp.CLEARANCE) | (d >= d0 - 1e-3)), d.min()
     near = _reaching(biped, [play], [newcomer], [p.behaviour for p in people] + list(others))
     assert len(near) and np.all((near[:, 0] >= 0.3) | (near[:, 0] >= near[:, 1] - 0.02)), near[:, 0].min()
+    # someone new standing 0.7 m beside one who plays: planned around those who play, their moves keep clear; a
+    # plan that left them out would bring the two too near now and then
+    beside = people[0].behaviour.inner(0.0).position
+    inner = watch((float(beside[0]) + 0.7, 0.0, float(beside[2])), CAMERA, library=None, rng=3)
+    close = Character(biped, behaviour=inner, name="close")
+    blind = cp.plan_camera_play([cp.Player.of(close)], CAMERA, others=list(others), period=360.0, rng=3)[0]
+
+    def too_near(behaviour):
+        mine, still = behaviour.positions(times), behaviour.inner.positions(times)
+        count = 0
+        for other in [p.behaviour for p in people]:
+            d, d0 = np.hypot(*(mine - other.positions(times)).T), np.hypot(*(still - other.positions(times)).T)
+            count += int(np.sum((d < cp.CLEARANCE) & (d < d0 - 1e-3)))
+        return count
+
+    assert too_near(cp.CameraPlay(inner, blind, CAMERA, 360.0)) > 0
+    assert too_near(cp.join(close, CAMERA, players=people, others=others, period=360.0, rng=3)) == 0
     cutout = Character(biped, behaviour=None, name="still")
     assert cp.join(cutout, CAMERA, players=people) is None  # nothing to play with
 

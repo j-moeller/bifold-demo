@@ -103,6 +103,7 @@ class DemoApp:
         self.show_hud = True
         self.display_rate = _Rate()
         self._message: tuple[str, float, bool] | None = None  # (text, expiry time, is_error)
+        self._created_notes: tuple[str, list[str]] | None = None  # the created characters' notice shown last
         self._detector_error: str | None = None
         self._last_submitted: tuple[str, int] | None = None
         self._writer = None
@@ -194,16 +195,23 @@ class DemoApp:
 
     def _update_created(self, wait: bool = False) -> None:
         """Keep the created characters in the scene (new, changed and deleted ones; see scenes.created_cast), and say
-        what changed in one notice (several often join at once)."""
+        what changed in one notice (several often join at once, or a frame or two apart: a notice still on the
+        screen takes the new ones in)."""
         if self.created is not None:
             from .scenes.created_cast import notice
 
-            notes = self.created.update(self.scene_source.scene, wait=wait)
+            notes = self.created.update(self.scene_source.scene, wait=wait, view=self.scene_source.renderer)
             for note in notes:  # every one in the console; on the screen together
                 print(f"[demo] {note}")
             if notes:
-                self.notify(notice(notes), 3.0 + 0.5 * min(len(notes) - 1, 4),
+                shown = self._created_notes
+                if shown is not None and self._message is not None and self._message[0] == shown[0] \
+                        and time.perf_counter() < self._message[1]:
+                    notes = shown[1] + notes
+                text = notice(notes)
+                self.notify(text, 3.0 + 0.5 * min(len(notes) - 1, 4),
                             error=any(note.startswith("cannot") for note in notes), echo=False)
+                self._created_notes = (text, notes)
 
     def _faces_for(self, frame: Frame):
         """The recognised faces of ``frame`` (or of a frame just before it), or ``None``; kept for the status panel."""

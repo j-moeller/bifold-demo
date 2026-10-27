@@ -737,7 +737,8 @@ class _WalkPiece:
 
     def floor(self, tl: np.ndarray) -> np.ndarray:
         """``(x, z)`` at each of the piece times ``tl`` (an array): :meth:`state` for many times at once, the same
-        arithmetic (:meth:`distance`, then :meth:`at`), so the same numbers."""
+        formulas (:meth:`distance`, then :meth:`at`). The numbers agree to rounding, not always to the last bit
+        (numpy's powers and Python's round differently now and then: under 1e-14 m)."""
         v, e, length = self.speed, self.ease, self.length
         local = tl - self.t0
         duration = self.t1 - self.t0
@@ -1755,9 +1756,11 @@ def _plan(cost: np.ndarray, dt: float) -> np.ndarray | None:
     finite = np.isfinite(cost)
     free = finite.sum(axis=1)
     tighter = np.nonzero(free < free.max())[0]
-    if len(tighter):  # the step farthest (round the loop) from any more constrained one
-        gap = np.abs(np.arange(n)[:, None] - tighter[None, :])
-        start = int(np.argmax(np.minimum(gap, n - gap).min(axis=1)))
+    if len(tighter):  # the step farthest (round the loop) from any more constrained one: the nearest is a neighbour
+        steps = np.arange(n)
+        around = np.concatenate([tighter - n, tighter, tighter + n])
+        after = np.searchsorted(around, steps)
+        start = int(np.argmax(np.minimum(around[after] - steps, steps - around[after - 1])))
     else:
         start = 0
     pause()

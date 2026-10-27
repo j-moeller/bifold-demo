@@ -89,3 +89,43 @@ def test_a_paced_worker_leaves_the_main_thread_its_time():
     # measured: about 1500 steps a second alone, 170 beside the busy worker (each sleep waits for the GIL's 5 ms
     # switch), 1250 beside the paced one
     assert paced > 3 * unpaced and paced > 0.5 * alone, (alone, unpaced, paced)
+
+
+def test_hurried_work_rests_no_more():
+    control = pacing.Control()
+    with pacing.paced(share=0.25, burst=0.002, control=control) as pacer:
+        _busy(0.01)
+        rested = pacer.rested
+        assert rested > 0.015
+        control.hurry()  # someone waits for it now
+        start = time.perf_counter()
+        _busy(0.02)
+        assert pacer.rested == rested and time.perf_counter() - start < 0.05
+
+
+def test_cancelled_work_stops_at_its_next_pause_even_while_it_rests():
+    control, stopped = pacing.Control(), {}
+
+    def work():
+        try:
+            with pacing.paced(share=0.01, burst=0.002, control=control):  # rests 99 % of the time
+                _busy(1.0)
+        except pacing.Cancelled:
+            stopped["at"] = time.perf_counter()
+
+    thread = threading.Thread(target=work)
+    thread.start()
+    time.sleep(0.05)
+    start = time.perf_counter()
+    control.cancel()
+    thread.join(timeout=1.0)
+    assert not thread.is_alive() and stopped["at"] - start < 0.05
+
+
+def test_the_longest_stretch_counts_the_work_after_the_last_pause():
+    with pacing.paced() as pacer:
+        pacing.pause()
+        start = time.perf_counter()
+        while time.perf_counter() - start < 0.02:  # no pause point
+            pass
+    assert pacer.longest >= 0.02

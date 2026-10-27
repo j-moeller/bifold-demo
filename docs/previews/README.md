@@ -150,3 +150,14 @@ work goes on. The people are avatars from the
   place and Carl in a woman's place, his behaviour made again for him, both
   watching the camera; at 62 s Carl walking back up the aisle. Their outfits
   are plain colours put on the avatars' own clothes (no real faces).
+- `created_swaps.jpg`: created characters coming into the fair and leaving it
+  where nobody sees it (`scenes/created_cast.py`, frame by frame as in the
+  demo, cropped from the fixed camera's 1280x720 picture). Above: Gina (red)
+  takes over the place of a walker in a long robe while the walker passes
+  behind a man of the audience; at the frame of the change nothing of either
+  shows, and a second later Gina comes out from behind him. Below: Ada
+  (orange), in the place of a visitor who walks up the aisle (`approach2`), is
+  deleted; she goes out while Gina walks in front of her, the place stays
+  empty, and 5.1 s later the visitor of the place comes back while Dan (green)
+  walks in front of her. Plain colour outfits on the avatars' own clothes (no
+  real faces).

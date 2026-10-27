@@ -673,10 +673,7 @@ def dress(character, item: str, look=True, wardrobe: Wardrobe | None = None, t: 
     if look is None or look is False:
         _refresh(character)
         return None
-    if look is True:
-        look = wardrobe.looks(kind)[0][1]
-    else:
-        look = wardrobe.look(kind, look)
+    look = look_of(kind, look, wardrobe)
     as_texture(look)  # fail now on a missing file
     f = fit(character.skinned_model, character.poser)
     name = f"{character.name}.{kind}"
@@ -698,6 +695,14 @@ def dress(character, item: str, look=True, wardrobe: Wardrobe | None = None, t: 
     items[kind] = worn
     _refresh(character)
     return worn
+
+
+def look_of(item: str, look=True, wardrobe: Wardrobe | None = None):
+    """The texture value :func:`dress` puts on for ``look`` of ``item`` (``True``: the first look; a look name of
+    ``wardrobe``, the built-in looks without one; any texture value as it is)."""
+    kind = item_kind(item)
+    wardrobe = wardrobe or Wardrobe()
+    return wardrobe.looks(kind)[0][1] if look is True else wardrobe.look(kind, look)
 
 
 def wearing(character) -> dict[str, Worn]:

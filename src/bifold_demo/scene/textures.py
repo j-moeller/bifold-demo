@@ -157,6 +157,14 @@ def as_texture(spec) -> Texture | None:
     raise TypeError(f"cannot use {type(spec).__name__} as a texture: {spec!r}")
 
 
+def prepare_upload(texture: Texture) -> Texture:
+    """Lay out the pixels of ``texture`` the way the renderer uploads them (rows bottom first, for OpenGL) now, on the
+    calling thread, so that the thread that draws does not have to: for a texture made on a worker thread. The
+    renderer uses (and drops) them on the upload, unless the pixels changed meanwhile. Returns ``texture``."""
+    texture._upload = (texture.version, np.ascontiguousarray(texture.rgba[::-1]).tobytes())
+    return texture
+
+
 def parse_color(color) -> tuple[int, int, int]:
     """Parse ``(r, g, b)`` (0-255) or ``"#rrggbb"`` into an RGB tuple."""
     if isinstance(color, str):

@@ -148,6 +148,14 @@ void main() {
 }
 """
 
+# Counting what of someone would show (Renderer.visible_pixels): only the depth test matters, nothing is written.
+_PROBE_FS = """
+#version 330 core
+void main() {
+}
+"""
+_PROBE_SHADOW = 0.7  # the part of a blob shadow that counts (outside it, it darkens the floor by under 12 %)
+
 
 class Renderer:
     """Renders scenes off-screen at a fixed resolution.
@@ -187,11 +195,13 @@ class Renderer:
         self._bg_program["u_texture"].value = 0
         self._white = as_texture((255, 255, 255))
         self._meshes: dict[int, tuple] = {}  # id(mesh) -> (weakref, vao, vbo, ibo)
-        self._textures: dict[int, list] = {}  # texture.id -> [weakref, gl texture, version]
+        self._textures: dict[int, list] = {}  # texture.id -> [weakref, gl texture, version, mipmaps built]
         self._skinned_program = self._shadow_program = None  # compiled when the first character shows up
         self._shadow_vbo = self._shadow_vao = None
         self._primitives: dict[int, list] = {}  # id(primitive) -> [weakref, vao, vbo, ibo, texture spec, Texture]
         self._joints: dict[int, tuple] = {}  # id(character) -> (weakref, joint-palette texture)
+        self._probes = None  # (object program, skinned program, shadow program): see visible_pixels
+        self._drawn = None  # (view-projection, camera position) of the last frame
         self.info = self.ctx.info.get("GL_RENDERER", "OpenGL")
         self._frames = 0
 
@@ -238,6 +248,7 @@ class Renderer:
                     self._draw(obj, view_proj, camera.current_position)
         if characters:
             self._draw_characters(characters, view_proj, camera.current_position, uniforms, scene.time)
+        self._drawn = (view_proj, camera.current_position)
 
         if fbo is not self._resolve_fbo:
             ctx.copy_framebuffer(self._resolve_fbo, fbo)
@@ -320,6 +331,138 @@ class Renderer:
             fbo.depth_mask = True
             ctx.disable(mgl.BLEND)
 
+    def visible_pixels(self, people) -> list[int]:
+        """How many pixels of each of ``people`` (characters posed for the time of the frame drawn last, in its scene
+        or not) would show in that frame, in front of what it shows: 0 when hidden behind it or out of the picture,
+        or when the person is invisible. Each is counted on its own, with what it wears and the middle of its blob
+        shadow; what textures cut out (hair) counts as if it were there. For changes to a scene that nobody should
+        see (``scenes.created_cast``): call it after :meth:`render`, from the same thread."""
+        if self._drawn is None:
+            raise RuntimeError("visible_pixels needs a frame drawn first")
+        mgl, ctx, fbo = self._moderngl, self.ctx, self._draw_fbo
+        view_proj, camera_position = self._drawn
+        objects, skinned, shadow = self._probe_programs()
+        fbo.use()
+        ctx.viewport = (0, 0, self.width, self.height)
+        ctx.enable(mgl.DEPTH_TEST)
+        ctx.depth_func = "<="  # a person drawn in the frame meets their own depth
+        fbo.color_mask = (False, False, False, False)
+        fbo.depth_mask = False
+        counts = []
+        try:
+            for person in people:
+                if not person.current_visible:
+                    counts.append(0)
+                    continue
+                query = self._probe_query
+                with query:
+                    model, _ = person.matrices(camera_position)
+                    skinned["u_mvp"].write(gl_bytes(view_proj @ model))
+                    self._joint_texture(person).use(1)
+                    for primitive in (*person.skinned_model.primitives, *getattr(person, "worn", ())):
+                        self._probe_vao(primitive, skinned).render(mgl.TRIANGLES)
+                    for prop in getattr(person, "props", ()):
+                        if prop.current_visible:
+                            prop_model, _ = prop.matrices(camera_position)
+                            objects["u_mvp"].write(gl_bytes(view_proj @ prop_model))
+                            self._probe_vao(prop.mesh, objects).render(mgl.TRIANGLES)
+                    if getattr(person, "shadow", False):
+                        self._probe_shadow(person, view_proj, camera_position, shadow)
+                counts.append(int(query.samples))
+        finally:
+            fbo.color_mask = (True, True, True, True)
+            fbo.depth_mask = True
+            ctx.depth_func = "<"
+        samples = max(1, fbo.samples)
+        return [-(-count // samples) for count in counts]  # whole pixels, rounded up
+
+    def prepare(self, *things) -> bool:
+        """Upload one of what drawing ``things`` needs and is not on the GPU yet: a character's mesh parts, textures
+        and what it wears (in the scene or not yet), or a :class:`Texture`. True when all of it is there. Called once
+        a frame before someone comes into the scene, it spreads the uploads over those frames, so that the frame they
+        come in has none of them left to do."""
+        for thing in things:
+            if isinstance(thing, Texture):
+                if not self._uploaded(thing):
+                    self._upload_step(thing)
+                    return False
+            elif not self._prepare_character(thing):
+                return False
+        return True
+
+    def _prepare_character(self, obj) -> bool:
+        t = getattr(obj, "_time", 0.0)
+        overrides = getattr(obj, "texture_overrides", None) or {}
+        for primitive in (*obj.skinned_model.primitives, *getattr(obj, "worn", ())):
+            entry = self._primitives.get(id(primitive))
+            if entry is None or entry[0]() is not primitive or entry[4] is not primitive.texture:
+                self._skinned_primitive(primitive)
+                return False
+            texture = overrides.get(primitive.name, entry[5]).at_time(t)
+            if not self._uploaded(texture):
+                self._upload_step(texture)
+                return False
+        for prop in getattr(obj, "props", ()):
+            texture = as_texture(prop.texture) if not callable(prop.texture) else prop.current_texture
+            texture = (texture or self._white).at_time(t)
+            if not self._uploaded(texture):
+                self._upload_step(texture)
+                return False
+            entry = self._meshes.get(id(prop.mesh))
+            if entry is None or entry[0]() is not prop.mesh:
+                self._vao(prop.mesh)
+                return False
+        return True
+
+    def _uploaded(self, texture: Texture) -> bool:
+        entry = self._textures.get(texture.id)
+        return entry is not None and entry[2] == texture.version and entry[3]
+
+    def _probe_programs(self):
+        if self._probes is None:
+            ctx = self.ctx
+            self._probes = (ctx.program(vertex_shader=_OBJECT_VS, fragment_shader=_PROBE_FS),
+                            ctx.program(vertex_shader=_SKINNED_VS, fragment_shader=_PROBE_FS),
+                            ctx.program(vertex_shader=_SHADOW_VS, fragment_shader=_PROBE_FS))
+            self._probes[1]["u_joints"].value = 1
+            self._probe_vaos: dict[tuple[int, int], tuple] = {}
+            self._probe_query = ctx.query(samples=True)  # one, used again for each person
+            self._probe_shadow_vbo = ctx.buffer(reserve=6 * 3 * 4, dynamic=True)
+            self._probe_shadow_vao = ctx.vertex_array(self._probes[2], [(self._probe_shadow_vbo, "3f", "in_position")],
+                                                      skip_errors=True)
+        return self._probes
+
+    def _probe_vao(self, mesh, program):
+        """A vertex array of ``mesh`` (a skinned primitive or a mesh) for a probe program, sharing the buffers the
+        drawing uses."""
+        key = (id(mesh), program.glo)
+        entry = self._probe_vaos.get(key)
+        if entry is not None and entry[0]() is mesh:
+            return entry[1]
+        if hasattr(mesh, "joints"):
+            _ref, _vao, vbo, ibo, *_ = self._primitive_entry(mesh)
+            layout = (vbo, "3f 3f 2f 4f 4f", "in_position", "in_normal", "in_uv", "in_joints", "in_weights")
+        else:
+            self._vao(mesh)
+            _ref, _vao, vbo, ibo = self._meshes[id(mesh)]
+            layout = (vbo, "3f 3f 2f", "in_position", "in_normal", "in_uv")
+        if entry is not None:
+            entry[1].release()
+        vao = self.ctx.vertex_array(program, [layout], index_buffer=ibo, skip_errors=True)
+        self._probe_vaos[key] = (weakref.ref(mesh), vao)
+        return vao
+
+    def _probe_shadow(self, person, view_proj, camera_position, program) -> None:
+        model = person.matrices(camera_position)[0][:3]
+        cx, cz, rx, rz = (float(v) for v in person.shadow_ellipse)
+        local = np.ones((6, 4))
+        local[:, 0] = cx + _SHADOW_CORNERS[:, 0] * rx * _PROBE_SHADOW
+        local[:, 1] = SHADOW_LIFT
+        local[:, 2] = cz + _SHADOW_CORNERS[:, 1] * rz * _PROBE_SHADOW
+        self._probe_shadow_vbo.write((local @ model.T).astype("f4").tobytes())
+        program["u_view_proj"].write(gl_bytes(view_proj))
+        self._probe_shadow_vao.render(self._moderngl.TRIANGLES, vertices=6)
+
     def _skinned(self):
         if self._skinned_program is None:
             prog = self.ctx.program(vertex_shader=_SKINNED_VS, fragment_shader=_OBJECT_FS)
@@ -329,8 +472,9 @@ class Renderer:
             self._skinned_program = prog
         return self._skinned_program
 
-    def _skinned_primitive(self, primitive):
-        """``(vao, Texture)`` of a character's mesh part, uploaded once and shared by every character using it."""
+    def _primitive_entry(self, primitive) -> list:
+        """``[weakref, vao, vbo, ibo, texture spec, Texture]`` of a character's mesh part: its buffers uploaded once
+        and shared by every character using it (the texture is resolved by :meth:`_skinned_primitive`)."""
         key = id(primitive)
         entry = self._primitives.get(key)
         if entry is None or entry[0]() is not primitive:
@@ -345,6 +489,11 @@ class Renderer:
             )
             entry = [weakref.ref(primitive), vao, vbo, ibo, _UNSET, None]
             self._primitives[key] = entry
+        return entry
+
+    def _skinned_primitive(self, primitive):
+        """``(vao, Texture)`` of a character's mesh part, uploaded once and shared by every character using it."""
+        entry = self._primitive_entry(primitive)
         if entry[4] is not primitive.texture:
             try:
                 texture = _character_texture(primitive.texture)
@@ -384,11 +533,19 @@ class Renderer:
         self._meshes[id(mesh)] = (weakref.ref(mesh), vao, vbo, ibo)
         return vao
 
-    def _gl_texture(self, texture: Texture):
+    def _gl_texture(self, texture: Texture, mipmaps: bool = True):
+        """``texture`` on the GPU (uploaded when new or changed), with its mipmaps unless ``mipmaps`` is False (then
+        they are built the next time it is asked for with them)."""
         entry = self._textures.get(texture.id)
         if entry is not None and entry[2] == texture.version:
+            if mipmaps and not entry[3]:
+                self._build_mipmaps(entry)
             return entry[1]
-        pixels = np.ascontiguousarray(np.flipud(texture.rgba)).tobytes()  # first row = bottom for OpenGL
+        prepared = texture.__dict__.pop("_upload", None)  # laid out already (textures.prepare_upload)
+        if prepared is not None and prepared[0] == texture.version:
+            pixels = prepared[1]
+        else:
+            pixels = np.ascontiguousarray(np.flipud(texture.rgba)).tobytes()  # first row = bottom for OpenGL
         size = (texture.width, texture.height)
         if entry is not None and entry[1].size == size:
             gl_tex = entry[1]
@@ -402,18 +559,33 @@ class Renderer:
                 gl_tex.anisotropy = 8.0
             except Exception:  # noqa: BLE001 - anisotropic filtering is optional
                 pass
-        if texture.width > 1 or texture.height > 1:
+        gl_tex.filter = (self._moderngl.LINEAR, self._moderngl.LINEAR)  # until the mipmaps are built for the pixels
+        entry = self._textures[texture.id] = [weakref.ref(texture), gl_tex, texture.version, False]
+        if mipmaps:
+            self._build_mipmaps(entry)
+        return gl_tex
+
+    def _build_mipmaps(self, entry: list) -> None:
+        gl_tex = entry[1]
+        if gl_tex.width > 1 or gl_tex.height > 1:
             gl_tex.build_mipmaps()
             gl_tex.filter = (self._moderngl.LINEAR_MIPMAP_LINEAR, self._moderngl.LINEAR)
-        self._textures[texture.id] = [weakref.ref(texture), gl_tex, texture.version]
-        return gl_tex
+        entry[3] = True
+
+    def _upload_step(self, texture: Texture) -> None:
+        """One step of putting ``texture`` on the GPU (for :meth:`prepare`): its pixels, then (the next time) its
+        mipmaps; both at once for a small texture (for a large one on a software renderer each takes a few
+        milliseconds or more: 5 to 25 ms the mipmaps of 1024 x 1024 here)."""
+        entry = self._textures.get(texture.id)
+        small = texture.width * texture.height <= 256 * 256
+        self._gl_texture(texture, mipmaps=small or (entry is not None and entry[2] == texture.version))
 
     def _collect_garbage(self) -> None:
         """Free GPU resources of meshes and textures that no longer exist."""
         for key, (ref, *_rest) in list(self._meshes.items()):
             if ref() is None:
                 self._release_mesh(key)
-        for key, (ref, gl_tex, _version) in list(self._textures.items()):
+        for key, (ref, gl_tex, *_rest) in list(self._textures.items()):
             if ref() is None:
                 gl_tex.release()
                 del self._textures[key]
@@ -424,6 +596,10 @@ class Renderer:
             if ref() is None:
                 gl_tex.release()
                 del self._joints[key]
+        for key, (ref, vao) in list(getattr(self, "_probe_vaos", {}).items()):
+            if ref() is None:
+                vao.release()
+                del self._probe_vaos[key]
 
     def _release_mesh(self, key: int) -> None:
         _ref, vao, vbo, ibo = self._meshes.pop(key)
@@ -443,11 +619,20 @@ class Renderer:
         for _ref, gl_tex in self._joints.values():
             gl_tex.release()
         self._joints.clear()
+        if self._probes is not None:
+            for _ref, vao in self._probe_vaos.values():
+                vao.release()
+            self._probe_vaos.clear()
+            self._probe_shadow_vao.release()
+            self._probe_shadow_vbo.release()
+            for program in self._probes:
+                program.release()
+            self._probes = None
         if self._shadow_vbo is not None:
             self._shadow_vao.release()
             self._shadow_vbo.release()
             self._shadow_vbo = self._shadow_vao = None
-        for _ref, gl_tex, _version in self._textures.values():
+        for _ref, gl_tex, *_rest in self._textures.values():
             gl_tex.release()
         self._textures.clear()
         self.ctx.release()
