@@ -1,0 +1,1520 @@
+diff --git a/src/bifold_demo/characters/cli.py b/src/bifold_demo/characters/cli.py
+index b8b2b18..047900c 100644
+--- a/src/bifold_demo/characters/cli.py
++++ b/src/bifold_demo/characters/cli.py
+@@ -5,6 +5,7 @@ from __future__ import annotations
+ import argparse
+ import os
+ import sys
++import threading
+ import time
+ import warnings
+ from pathlib import Path
+@@ -217,8 +218,9 @@ def cmd_fabric(args) -> int:
+     from .outfit.fabric import FabricGenerator, PromptRefused
+     from .outfit.tailor import Outfit, tailor_for
+ 
+-    if args.views and not args.avatar:
+-        return _error("--views needs --avatar NAME")
++    for flag, value in (("--views", args.views), ("--texture", args.texture)):
++        if value and not args.avatar:
++            return _error(f"{flag} needs --avatar NAME")
+     try:
+         generator = FabricGenerator(args.model, device=args.device, seeds=args.seeds, size=args.size,
+                                     cache=not args.no_cache, download=not args.offline)
+@@ -233,29 +235,33 @@ def cmd_fabric(args) -> int:
+         if args.avatar not in library.available():
+             return _error(library.explain(args.avatar), 1)
+         model = library.load(args.avatar)
+-    print(f"[fabric] {text!r}: {prompt}", flush=True)
+-    job = generator.start(text, first_seed=args.seed, on_message=lambda m: print(f"[fabric] {m}", flush=True))
++    printing = threading.Lock()  # (the job's messages come from its worker thread)
++
++    def say(line: str) -> None:
++        with printing:
++            print(f"[fabric] {line}", flush=True)
++
++    say(f"{text!r}: {prompt}")
++    job = generator.start(text, first_seed=args.seed, on_message=say)
+     try:
+         for swatch in job:
+             if swatch.preview:
+-                print(f"[fabric] preview: {swatch.describe()}", flush=True)
++                say(f"preview: {swatch.describe()}")
+             elif swatch.generated:
+-                when = "from the cache" if swatch.cached else f"{swatch.seconds:.1f} s"
+-                print(f"[fabric] swatch: {swatch.describe()} ({when})", flush=True)
++                say(f"swatch: {swatch.describe()} ({'from the cache' if swatch.cached else f'{swatch.seconds:.1f} s'})")
+     except KeyboardInterrupt:
+         job.cancel()
+         job.wait(60)
+         print("\n[fabric] cancelled", file=sys.stderr)
+         return 130
+     best = job.best
+-    print(f"[fabric] chosen: {best.describe()}; {best.scale:g} m per repeat")
+-    if args.output:
+-        if not cv2.imwrite(args.output, cv2.cvtColor(best.image, cv2.COLOR_RGB2BGR)):
+-            return _error(f"cannot write {args.output}", 1)
+-        print(f"[fabric] swatch -> {args.output}")
++    say(f"chosen: {best.describe()}; {best.scale:g} m per repeat")
++    written = []
++    if args.output:  # the swatch at --size (a plain colour or a keyword pattern has a size of its own)
++        written.append((args.output, cv2.cvtColor(_at_size(best.image, args.size), cv2.COLOR_RGB2BGR), "swatch"))
+     if args.sheet:  # the swatches a model made (or the fallback when none did)
+-        cv2.imwrite(args.sheet, _fabric_sheet([s for s in job.variations if s.generated] or [best]))
+-        print(f"[fabric] the swatches, each tiled 2 x 2 -> {args.sheet}")
++        sheet = _fabric_sheet([s for s in job.variations if s.generated] or [best])
++        written.append((args.sheet, sheet, "the swatches, each tiled 2 x 2"))
+     if model is not None:
+         regions = outfit_regions.body_regions(model)
+         if not regions.counts().get(args.region):
+@@ -263,16 +269,29 @@ def cmd_fabric(args) -> int:
+         tailor = tailor_for(model)
+         fill = best.fill(args.scale)
+         rgba = tailor.texture(Outfit({args.region: fill}, name=text))
+-        print(f"[fabric] {args.avatar}: {args.region} in {fill!r}")
++        say(f"{args.avatar}: {args.region} in {fill!r}")
+         if args.texture:
+-            cv2.imwrite(args.texture, cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA))
+-            print(f"[fabric] body texture -> {args.texture}")
++            written.append((args.texture, cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA), "body texture"))
+         if args.views:
+-            cv2.imwrite(args.views, _outfit_views(model, tailor.primitive.name, rgba))
+-            print(f"[fabric] front and back -> {args.views}")
++            written.append((args.views, _outfit_views(model, tailor.primitive.name, rgba), "front and back"))
++    for path, image, what in written:
++        if not cv2.imwrite(path, image):
++            return _error(f"cannot write {path}", 1)
++        say(f"{what} -> {path}")
+     return 0
+ 
+ 
++def _at_size(rgb, size: int):
++    """A swatch resampled to ``size`` x ``size`` as one repeat (it still tiles)."""
++    import numpy as np
++
++    from .outfit.seamless import resize_periodic
++
++    if rgb.shape[:2] == (size, size):
++        return rgb
++    return np.clip(resize_periodic(rgb.astype(np.float32), size) + 0.5, 0, 255).astype(np.uint8)
++
++
+ def _fabric_sheet(swatches, side: int = 256):
+     """The swatches side by side (BGR), each tiled 2 x 2 to show its seams, with how it was made under it."""
+     import cv2
+@@ -456,7 +475,7 @@ def build_parser() -> argparse.ArgumentParser:
+                                    "(a fallback ladder down to the keyword fabric when there is none), and dress an "
+                                    "avatar in it")
+     fb.add_argument("description", help='what the fabric looks like, e.g. "blue paisley silk"')
+-    fb.add_argument("-o", "--output", help="write the chosen swatch here (PNG)")
++    fb.add_argument("-o", "--output", help="write the chosen swatch here (PNG, --size pixels)")
+     fb.add_argument("--model", default="flux2-klein",
+                     help="flux2-klein (default), z-image-turbo, sd-turbo, a Hugging Face id, or none (no model)")
+     fb.add_argument("--seeds", type=int, default=4, help="swatches to make (default 4)")
+@@ -470,8 +489,8 @@ def build_parser() -> argparse.ArgumentParser:
+     fb.add_argument("--region", default="top", choices=("top", "shirt", "bottoms", "shoes", "other"),
+                     help="the garment to dress (default top)")
+     fb.add_argument("--scale", type=float, help="metres per repeat (default: by the kind of fabric)")
+-    fb.add_argument("--texture", help="write the avatar's new body texture here (PNG)")
+-    fb.add_argument("--views", help="write the avatar from the front and the back here (needs OpenGL)")
++    fb.add_argument("--texture", help="write the avatar's new body texture here (PNG; needs --avatar)")
++    fb.add_argument("--views", help="write the avatar from the front and the back here (needs --avatar and OpenGL)")
+ 
+     i = add("info", cmd_info, "show the details of an avatar or animation clip")
+     i.add_argument("name", help="avatar or clip name, e.g. Business_Female_01 or m_walk_neutral_01")
+diff --git a/src/bifold_demo/characters/outfit/fabric.py b/src/bifold_demo/characters/outfit/fabric.py
+index bda98f2..23f7628 100644
+--- a/src/bifold_demo/characters/outfit/fabric.py
++++ b/src/bifold_demo/characters/outfit/fabric.py
+@@ -23,25 +23,33 @@ puts the garment's own folds and stitching on it.
+      grey).
+ 
+    Each step down says why (:attr:`FabricJob.messages`). A model that fails (out of memory, an error) is not tried
+-   again at more steps. Packages that are missing (diffusers, torch), weights that are not downloaded or no network
+-   go straight to the procedural fabric (by way of the repair if an image was made by then), with the command that
+-   installs or fetches what is missing. Z-Image-Turbo takes klein's place with ``model="z-image-turbo"``.
++   again at more steps; one that runs out of memory is let go of before the next model loads, and this generator
++   does not load it again (until :meth:`FabricGenerator.release`). A model that fails once some of its seeds were
++   kept ends the job there, with those swatches. Packages that are missing (diffusers, torch), weights that are not
++   downloaded or no network go straight to the procedural fabric (by way of the repair if an image was made by
++   then), with the command that installs or fetches what is missing. Z-Image-Turbo takes klein's place with
++   ``model="z-image-turbo"``.
+ 5. Each image is scored (:func:`.seamless.seam_score`). Above ``threshold`` (:data:`.seamless.SEAM_THRESHOLD`) it is
+-   left out, but stays a candidate for the repair. Those kept get even light (:func:`.seamless.equalise_light`) and
+-   are shown as they come. Their size on the body (metres per repeat) depends on the kind of fabric the words name
+-   (:func:`fabric_scale`).
++   left out, but stays a candidate for the repair. Those kept get even light (:func:`.seamless.equalise_light`: it
++   takes out a light gradient, and leaves an evenly lit image alone) and are shown as they come. Their size on the
++   body (metres per repeat) depends on the kind of fabric the words name (:func:`fabric_scale`).
+ 
+ **For the creator screen.** :meth:`FabricGenerator.start` returns a :class:`FabricJob` at once and works on a daemon
+ thread. :meth:`FabricJob.poll` (it never waits) or iterating over the job gives each swatch as it is ready, the
+-preview first. :meth:`FabricJob.cancel` stops the job at the end of the next denoising step, and
+-:attr:`FabricJob.progress` says how far the current image is. The model loads on the worker the first time it is
+-needed, after the preview (that can take a minute; it cannot be cancelled half way). Torch releases the GIL in its
+-operations and the Python between them is short; ``pace``, a callable, is called after every denoising step and
+-between images, so a caller can slow the worker down further for the frame rate.
+-
+-**The cache.** Finished swatches (kept or left out) are stored in ``fabrics/`` (git-ignored; ``$BIFOLD_FABRIC_CACHE``
+-moves it), keyed by the prompt, the model, the seed, the size and the method. The same description gives its
+-swatches back at once, and one whose swatches are all cached does not load the model at all.
++preview first. :meth:`FabricJob.cancel` stops the job at the end of the next denoising step (a job waiting for the
++pipeline, which another job is using, stops before it starts its image), and :attr:`FabricJob.progress` says how far
++the current image is. The model loads on the worker the first time it is needed, after the preview (that can take a
++minute; it cannot be cancelled half way). Torch releases the GIL in its operations and the Python between them is
++short; ``pace``, a callable, is called after every denoising step and between images, so a caller can slow the worker
++down further for the frame rate. :meth:`FabricGenerator.release` lets go of the generator's models (their memory is
++given back once nothing else holds them).
++
++**The cache.** The images the models made (kept or left out) are stored in ``fabrics/`` (git-ignored;
++``$BIFOLD_FABRIC_CACHE`` moves it) as they came, keyed by the prompt, the model, the seed, the size and the method;
++they are scored and finished again when read, so the threshold and the even light are those of the generator that
++reads them. The same description gives its swatches back at once, and one whose swatches are all cached does not load
++the model at all; a job that waited for the pipeline looks again, so jobs for the same description do not make the
++same image twice. A cache that cannot be written costs a message, never a swatch.
+ 
+ **The fill.** :class:`Fabric` is a :class:`~.fills.Swatch` that knows how it was made. Its spec holds the description,
+ the prompt, the model, the seed, the method and the image (lossless WebP in a ``data:`` URI), so a saved outfit recipe
+@@ -85,7 +93,7 @@ SEEDS = 4
+ SIZE = 512
+ MAX_WORDS = 24
+ CACHE_LIMIT = 400  # swatches the cache keeps; the oldest go first
+-VERSION = 1  # part of every cache key: raise it when what is cached changes
++VERSION = 2  # part of every cache key: raise it when what is cached changes (2: the images as the models made them)
+ MARKS = "™®©"  # trademark, registered, copyright
+ 
+ 
+@@ -133,10 +141,53 @@ _LEET = str.maketrans("013457@$!|", "oieastasii")
+ 
+ 
+ def _tokens(text: str) -> list[str]:
+-    """Words of ``text`` as plain letters: no accents, lower case, digits read as the letters they look like."""
++    """Words of ``text`` as plain letters: no accents, lower case, digits and signs read as the letters they look
++    like ("gucc1", "sh!t"; a "!" that ends a word is punctuation), ``*`` kept as a letter left out ("f*ck")."""
+     text = unicodedata.normalize("NFKD", str(text))
+-    text = "".join(ch for ch in text if not unicodedata.combining(ch)).lower().translate(_LEET)
+-    return re.findall(r"[a-z]+", text)
++    text = "".join(ch for ch in text if not unicodedata.combining(ch)).lower()
++    text = re.sub(r"[!|]+(?![a-z0-9@$*!|])", " ", text)
++    return [t for t in re.findall(r"[a-z*]+", text.translate(_LEET)) if t.strip("*")]
++
++
++def _like(joined: str, word: str) -> bool:
++    """Whether ``joined``, whose ``*`` stand for letters left out, is ``word`` (at least half its letters shown)."""
++    if len(joined) != len(word) or 2 * joined.count("*") > len(joined):
++        return False
++    return all(a == "*" or a == b for a, b in zip(joined, word, strict=True))
++
++
++def _word_class(name: str) -> set[str]:
++    """The words of a class a context rule names: ``@colours`` (the colour and shade words of :mod:`.fills`) or
++    ``@materials`` (the materials of :data:`FABRIC_SCALES`, and "fabric", "cloth")."""
++    from .fills import SHADES
++
++    if name == "@colours":
++        return {w for key in (*COLORS, *SHADES) for w in key.split()}
++    if name == "@materials":
++        return {*FABRIC_SCALES["material"][1], "fabric", "cloth"}
++    raise ValueError(f"no word class {name!r} (there are @colours and @materials)")
++
++
++@dataclass(frozen=True)
++class Sense:
++    """A word the kiosk takes only in its fabric sense: it is refused unless a word ``near`` it (at most ``reach``
++    words away) or right before it (``after``) gives it that sense, and always when the description also has a word
++    of ``never`` (people, bodies, photos). ``kind``: its list; ``message``: shown when it is refused."""
++
++    kind: str
++    message: str
++    near: frozenset = frozenset()
++    after: frozenset = frozenset()
++    never: frozenset = frozenset()
++    reach: int = 3
++
++    def fits(self, tokens: list[str], start: int, end: int) -> bool:
++        """Whether the word at ``tokens[start:end]`` has its fabric sense there."""
++        if self.never.intersection(tokens):
++            return False
++        if start > 0 and tokens[start - 1] in self.after:
++            return True
++        return any(t in self.near for t in (*tokens[max(0, start - self.reach):start], *tokens[end:end + self.reach]))
+ 
+ 
+ class PromptFilter:
+@@ -144,11 +195,18 @@ class PromptFilter:
+ 
+     ``lists``: ``{kind: {"message": ..., "words": [...]}}`` (the form of ``fabric_words.json``; a kind ending in
+     ``_rot13`` has ROT13-encoded words); ``allow``: words never refused. A word matches whole words of a description
+-    whatever their case, accents, spacing ("louis vuitton", "louisvuitton", "g u c c i") or digits standing in for
+-    letters ("gucc1"), and its plural; "cocktail" or "Sussex" do not match anything."""
++    whatever their case, accents, spacing ("louis vuitton", "louisvuitton", "g u c c i"), digits or signs standing
++    in for letters ("gucc1", "sh!t") or stars for letters left out ("f*ck"), and its plural; "cocktail" or "Sussex"
++    do not match anything.
++
++    Some words have a fabric sense as well: "nude" is a colour ("nude satin"), "blue tits" are birds. A list whose
++    ``"words"`` is a mapping holds them (``{word: {"near": [...], "after": [...], "message": ...}}``, and the list's
++    ``"never with"``): such a word is let through only where its neighbours give it that sense (see :class:`Sense`;
++    ``near`` may name the classes ``@colours`` and ``@materials``), never when it is written with stars."""
+ 
+     def __init__(self, lists: dict | None = None, allow=()):
+         self.lists: dict[str, tuple[str, set[str]]] = {}
++        self.senses: dict[str, Sense] = {}
+         self.allowed: set[str] = set()
+         self.update(lists or {})
+         self.allow(allow)
+@@ -173,18 +231,33 @@ class PromptFilter:
+             if kind == "allow":
+                 self.allow(entry)
+             elif isinstance(entry, dict):
+-                self.add(kind, entry.get("words", []), entry.get("message"))
++                self.add(kind, entry.get("words", []), entry.get("message"), entry.get("never with", ()))
+ 
+-    def add(self, kind: str, words, message: str | None = None) -> None:
+-        """Refuse ``words`` too, as ``kind`` (with ``message``, or the kind's message if it has one)."""
++    def add(self, kind: str, words, message: str | None = None, never=()) -> None:
++        """Refuse ``words`` too, as ``kind`` (with ``message``, or the kind's message if it has one). ``words`` as a
++        mapping, ``{word: {"near": [...], "after": [...], "message": ...}}``, are taken in their fabric sense where
++        their neighbours give it (see :class:`Sense`), but never with a word of ``never``."""
+         old_message, known = self.lists.get(kind, (None, set()))
++        message = message or old_message or "That description cannot be made into a fabric here ({word})."
+         decode = kind.endswith("_rot13")
++        if isinstance(words, dict):
++            never = frozenset(w for word in never for w in _tokens(word))
++            for word, rule in words.items():
++                word = "".join(_tokens(codecs.decode(str(word), "rot13") if decode else str(word)))
++                near: set[str] = set()
++                for entry in rule.get("near", ()):
++                    near |= _word_class(entry) if str(entry).startswith("@") else {"".join(_tokens(entry))}
++                after = frozenset("".join(_tokens(w)) for w in rule.get("after", ()))
++                if word:
++                    self.senses[word] = Sense(kind, rule.get("message") or message, frozenset(near), after, never,
++                                              int(rule.get("reach", 3)))
++            self.lists.setdefault(kind, (message, set()))
++            return
+         for word in words:
+             word = codecs.decode(str(word), "rot13") if decode else str(word)
+             joined = "".join(_tokens(word))
+             if joined:
+                 known.add(joined)
+-        message = message or old_message or "That description cannot be made into a fabric here ({word})."
+         self.lists[kind] = (message, known)
+ 
+     def allow(self, words) -> None:
+@@ -197,25 +270,32 @@ class PromptFilter:
+             message = self.lists.get("marks", ("Logos and trademarks can't be made into a fabric here ({word}).",))[0]
+             return PromptRefused(message.format(word="™"), "™", "marks")
+         tokens = _tokens(text)
+-        candidates: dict[str, str] = {}  # joined form -> as written
++        spans: list[tuple[str, str, int, int]] = []  # (joined, as written, first token, the token after it)
+         for i in range(len(tokens)):
+             for j in range(i + 1, min(len(tokens), i + 4) + 1):
+-                candidates.setdefault("".join(tokens[i:j]), " ".join(tokens[i:j]))
+-        letters: list[str] = []
+-        for token in [*tokens, ""]:  # "g u c c i"
++                spans.append(("".join(tokens[i:j]), " ".join(tokens[i:j]), i, j))
++        start = None
++        for k, token in enumerate([*tokens, ""]):  # "g u c c i"
+             if len(token) == 1:
+-                letters.append(token)
++                start = k if start is None else start
+                 continue
+-            if len(letters) >= 2:
+-                candidates.setdefault("".join(letters), " ".join(letters))
+-            letters = []
+-        for joined, shown in list(candidates.items()):
+-            if len(joined) > 3 and joined.endswith("s"):
+-                candidates.setdefault(joined[:-1], shown)
++            if start is not None and k - start >= 2:
++                spans.append(("".join(tokens[start:k]), " ".join(tokens[start:k]), start, k))
++            start = None
++        spans += [(joined[:-1], shown, i, j) for joined, shown, i, j in spans if len(joined) > 3 and
++                  joined.endswith("s")]
++        spans = [span for span in spans if span[0] not in self.allowed]
+         for kind, (message, words) in self.lists.items():
+-            for joined, shown in candidates.items():
+-                if joined in words and joined not in self.allowed:
++            for joined, shown, _, _ in spans:
++                if joined in words or "*" in joined and any(_like(joined, word) for word in words):
+                     return PromptRefused(message.format(word=f'"{shown}"'), shown, kind)
++        for joined, shown, i, j in spans:  # words with a fabric sense: in context, never with stars
++            sense = self.senses.get(joined)
++            if sense is not None and not sense.fits(tokens, i, j):
++                return PromptRefused(sense.message.format(word=f'"{shown}"'), shown, sense.kind)
++            starred = "*" in joined and next((self.senses[w] for w in self.senses if _like(joined, w)), None)
++            if starred:
++                return PromptRefused(starred.message.format(word=f'"{shown}"'), shown, starred.kind)
+         return None
+ 
+     def check(self, text: str) -> None:
+@@ -515,9 +595,11 @@ def _slug(text: str) -> str:
+ 
+ 
+ class FabricCache:
+-    """Finished swatches on disk, in ``folder`` (``$BIFOLD_FABRIC_CACHE``, else ``fabrics/``): a PNG and a JSON file
+-    each, named by the description and a key of the prompt, model, seed, size and method. At most ``limit`` swatches
+-    are kept (the oldest go first); a damaged entry counts as missing."""
++    """The images the models made, on disk, in ``folder`` (``$BIFOLD_FABRIC_CACHE``, else ``fabrics/``): a PNG and a
++    JSON file each, named by the description and a key of the prompt, model, seed, size and method. An image is
++    stored as the model made it, before anything that depends on the generator's settings (the seam threshold, even
++    light), so a generator scores and finishes what it reads like what it makes. At most ``limit`` swatches are kept
++    (the oldest go first); a damaged entry counts as missing."""
+ 
+     def __init__(self, folder=None, limit: int = CACHE_LIMIT):
+         self.folder = Path(folder if folder is not None else os.environ.get(CACHE_ENV) or DEFAULT_CACHE).expanduser()
+@@ -545,8 +627,8 @@ class FabricCache:
+                 raise OSError(f"cannot read {png}")
+             return FabricSwatch(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), meta["text"], meta["method"], meta.get("model"),
+                                 meta.get("seed"), meta.get("prompt"), float(meta["seam"]), float(meta["scale"]),
+-                                float(meta.get("rotation", 0.0)), meta.get("note", ""), ok=bool(meta["ok"]),
+-                                cached=True, seconds=float(meta.get("seconds", 0.0)), path=png)
++                                float(meta.get("rotation", 0.0)), meta.get("note", ""), cached=True,
++                                seconds=float(meta.get("seconds", 0.0)), path=png)
+         except (OSError, ValueError, KeyError, TypeError):
+             for path in (png, meta_path):  # damaged: made again
+                 path.unlink(missing_ok=True)
+@@ -561,9 +643,8 @@ class FabricCache:
+         os.replace(tmp, png)
+         meta = {"key": key, "version": VERSION, "text": swatch.text, "prompt": swatch.prompt, "model": swatch.model,
+                 "seed": swatch.seed, "size": int(swatch.image.shape[0]), "method": swatch.method,
+-                "seam": round(float(swatch.seam), 4), "ok": bool(swatch.ok), "scale": swatch.scale,
+-                "rotation": swatch.rotation, "note": swatch.note, "seconds": round(swatch.seconds, 2),
+-                "created": time.time()}
++                "seam": round(float(swatch.seam), 4), "scale": swatch.scale, "rotation": swatch.rotation,
++                "note": swatch.note, "seconds": round(swatch.seconds, 2), "created": time.time()}
+         tmp = meta_path.with_name(f".{meta_path.stem}.{os.getpid()}.{threading.get_ident()}.json")
+         tmp.write_text(json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
+         os.replace(tmp, meta_path)
+@@ -610,6 +691,7 @@ class FabricJob:
+         self._queue: queue.Queue = queue.Queue()
+         self._cancel = threading.Event()
+         self._finished = threading.Event()
++        self._uncached = False  # the cache could not be written: the job goes on without it
+ 
+     def cancel(self) -> None:
+         """Stop at the end of the next denoising step (or before the next image); the swatches so far stay."""
+@@ -694,6 +776,18 @@ def check_size(size: int) -> int:
+     return size
+ 
+ 
++def check_seeds(seeds: int) -> int:
++    """``seeds`` as the number of swatches to make of a description: at least one."""
++    seeds = int(seeds)
++    if seeds < 1:
++        raise ValueError(f"ask for at least one seed, not {seeds}")
++    return seeds
++
++
++def _all_seeds(count: int) -> str:
++    return "its only seed" if count == 1 else ("both seeds" if count == 2 else f"all {count} seeds")
++
++
+ def _takes(pipe, name: str) -> bool:
+     """Whether calling ``pipe`` takes the keyword argument ``name``."""
+     try:
+@@ -712,7 +806,8 @@ class FabricGenerator:
+     out. ``cache``: ``True`` (``fabrics/``), a folder, or ``False``. ``words``: the :class:`PromptFilter` (``True``:
+     :meth:`PromptFilter.load`; ``None`` or ``False``: no filter). ``loader(model, device, download)`` loads a model
+     (:func:`load_generator`; tests pass stand-ins); ``download=False`` never downloads weights. ``pace()``: called
+-    after every denoising step and between images."""
++    after every denoising step and between images. The models load when a job first needs them and stay loaded
++    until :meth:`release`."""
+ 
+     def __init__(self, model: str | None = DEFAULT_MODEL, device: str = "auto", seeds: int = SEEDS, size: int = SIZE,
+                  threshold: float = SEAM_THRESHOLD, cache=True, words=True, loader=None, download: bool = True,
+@@ -720,7 +815,7 @@ class FabricGenerator:
+         self.model = None if model in (None, "", "none") else str(model)
+         self.ladder = tuple(ladder) if ladder is not None else ladder_for(self.model)
+         self.device, self.download, self.pace = device, bool(download), pace
+-        self.seeds, self.size, self.threshold = int(seeds), check_size(size), float(threshold)
++        self.seeds, self.size, self.threshold = check_seeds(seeds), check_size(size), float(threshold)
+         self.cache = FabricCache() if cache is True else (FabricCache(cache) if cache else None)
+         self.words = PromptFilter.load() if words is True else (words or None)
+         self.loader = loader or load_generator
+@@ -746,9 +841,7 @@ class FabricGenerator:
+         ``size`` pixels. Returns the :class:`FabricJob` at once; a refused or empty description raises at once
+         (:class:`PromptRefused`, ``ValueError``)."""
+         cleaned, prompt = self.prepare(text)
+-        count = self.seeds if seeds is None else int(seeds)
+-        if count < 1:
+-            raise ValueError("ask for at least one seed")
++        count = self.seeds if seeds is None else check_seeds(seeds)
+         job = FabricJob(cleaned, prompt, [int(first_seed) + k for k in range(count)],
+                         check_size(size or self.size), on_result, on_message)
+         job.thread = threading.Thread(target=self._work, args=(job,), name=f"fabric: {cleaned[:30]}", daemon=True)
+@@ -761,6 +854,21 @@ class FabricGenerator:
+         job.wait()
+         return job
+ 
++    def release(self, model: str | None = None) -> None:
++        """Let go of the models this generator loaded (``model``: only that one) and forget the ones that failed, so
++        the next job loads them again. Their memory is given back once nothing else holds them: another generator,
++        or a job still running (then when it ends). A model that another generator still holds is given out again
++        rather than loaded a second time (:func:`~bifold_demo.people.generator.shared_generator`)."""
++        from ...people.generator import free_memory, release_shared
++
++        with self._load_lock:
++            gone = [self._loaded.pop(name) for name in list(self._loaded) if model is None or name == model]
++        for loaded in gone:
++            if not isinstance(loaded, Failure):
++                release_shared(loaded.pipe)
++        gone = loaded = None  # (no reference left here either)
++        free_memory()
++
+     # the worker
+ 
+     def _work(self, job: FabricJob) -> None:
+@@ -773,8 +881,11 @@ class FabricGenerator:
+             job._say("cancelled")
+         except Exception as exc:  # noqa: BLE001 - kept on the job; the caller still gets a fabric
+             status, job.error = "failed", exc
+-            job._say(f"failed: {type(exc).__name__}: {exc}; the procedural fabric instead")
+-            job._emit(self._fallback(job))
++            if any(s.generated for s in job.variations):
++                job._say(f"failed: {type(exc).__name__}: {exc}; the swatches made so far stay")
++            else:
++                job._say(f"failed: {type(exc).__name__}: {exc}; the procedural fabric instead")
++                job._emit(self._fallback(job))
+         finally:
+             job._finish(status)
+ 
+@@ -784,11 +895,13 @@ class FabricGenerator:
+             job._emit(self._fallback(job))
+             return
+         rejected: list[FabricSwatch] = []
+-        failed: set[str] = set()  # models that failed (out of memory, an error): their other rungs are not tried
++        failed: dict[str, Failure] = {}  # models that failed (out of memory, an error): their other rungs are skipped
+         for index, rung in enumerate(self.ladder):
+             if rung.model in failed:
+                 continue
+             outcome = self._rung(job, index, rejected, failed)
++            if outcome == "failed" and failed[rung.model].kind == "memory":
++                self._let_go(rung.model, failed[rung.model])  # (before the next model loads)
+             if outcome == "kept":
+                 return
+             if outcome == "stop":
+@@ -798,44 +911,50 @@ class FabricGenerator:
+             best = min(rejected, key=lambda s: s.seam)
+             repaired = self._repair(best)
+             if repaired.ok:
+-                job._say(f"no seed came out seamless: the best one ({best.describe()}, seam {best.seam:.2f}) "
+-                         f"repaired without a model (seam {repaired.seam:.2f})")
++                job._say(f"no seed came out seamless: the best one ({best.describe()}) repaired without a model "
++                         f"(seam {repaired.seam:.2f})")
+                 job._emit(repaired)
+                 return
+-            job._say(f"the repair left a seam (score {repaired.seam:.2f}); the procedural fabric instead")
++            job._say(f"the repair of the best one ({best.describe()}) left a seam (score {repaired.seam:.2f}); "
++                     f"the procedural fabric instead")
+         job._emit(self._fallback(job))
+ 
+-    def _next(self, index: int, failed: set, rejected: list) -> str:
++    def _next(self, index: int, failed: dict, rejected: list) -> str:
+         """What the ladder tries after rung ``index`` (for the messages)."""
+         for rung in self.ladder[index + 1:]:
+             if rung.model not in failed:
+                 return rung.label
+         return "the seam repair" if rejected else "the procedural fabric"
+ 
+-    def _rung(self, job: FabricJob, index: int, rejected: list, failed: set) -> str:
++    def _rung(self, job: FabricJob, index: int, rejected: list, failed: dict) -> str:
+         """Every seed on rung ``index``: ``"kept"`` (some swatches kept), ``"seams"`` (all left out, for
+-        ``rejected``), ``"failed"`` (its model failed, out of memory or with an error: added to ``failed``) or
+-        ``"stop"`` (packages, weights or the network missing: no other model is tried)."""
++        ``rejected``), ``"failed"`` (its model failed, out of memory or with an error, before a seed was kept: in
++        ``failed``) or ``"stop"`` (packages, weights or the network missing: no other model is tried). A model that
++        fails once some seeds were kept stops there: those are the job's swatches, and no other model is loaded."""
+         rung = self.ladder[index]
+         generator, kept = None, 0
+         for seed in job.seeds:
+             job._check()
+             key = FabricCache.key(job.prompt, rung.preset.repo, seed, job.size, rung.method)
+-            swatch = self.cache.get(key, job.text) if self.cache is not None else None
+-            if swatch is None:
++            made = self._cached(job, key)
++            if made is None:
+                 if generator is None:
+                     generator = self._load(job, rung)
+                     if isinstance(generator, Failure):
+                         return self._failed(job, generator, index, rejected, failed)
+                     job._check()
+                 try:
+-                    swatch = self._make(job, generator, rung, seed)
++                    made = self._make(job, generator, rung, seed, key)
+                 except Cancelled:
+                     raise
+                 except Exception as exc:  # noqa: BLE001 - a step down of the ladder
+-                    return self._failed(job, explain_failure(exc, rung.preset), index, rejected, failed, seed)
+-                if self.cache is not None:
+-                    swatch.path = self.cache.put(key, swatch)
++                    failure = explain_failure(exc, rung.preset)
++                    if kept:
++                        job._say(f"{rung.label}, seed {seed}: {failure.message}; the {kept} swatch"
++                                 f"{'es' if kept > 1 else ''} made so far stay")
++                        return "kept"
++                    return self._failed(job, failure, index, rejected, failed, seed)
++            swatch = self._finish(made)
+             if swatch.ok:
+                 kept += 1
+                 job._emit(swatch)
+@@ -847,11 +966,11 @@ class FabricGenerator:
+                 self.pace()
+         if kept:
+             return "kept"
+-        job._say(f"{rung.label}: a seam shows on all {len(job.seeds)} seeds; trying "
++        job._say(f"{rung.label}: a seam shows on {_all_seeds(len(job.seeds))}; trying "
+                  f"{self._next(index, failed, rejected)}")
+         return "seams"
+ 
+-    def _failed(self, job: FabricJob, failure: Failure, index: int, rejected: list, failed: set,
++    def _failed(self, job: FabricJob, failure: Failure, index: int, rejected: list, failed: dict,
+                 seed: int | None = None) -> str:
+         """Say why rung ``index`` failed and what comes next (see :meth:`_rung`)."""
+         rung = self.ladder[index]
+@@ -860,10 +979,18 @@ class FabricGenerator:
+             then = "the seam repair of the best image so far" if rejected else "the procedural fabric instead"
+             job._say(f"{where}{failure.message}; {then}")
+             return "stop"
+-        failed.add(rung.model)
+-        job._say(f"{where}{failure.message}; trying {self._next(index, failed, rejected)}")
++        failed[rung.model] = failure
++        how = "letting it go and trying" if failure.kind == "memory" and seed is not None else "trying"
++        job._say(f"{where}{failure.message}; {how} {self._next(index, failed, rejected)}")
+         return "failed"
+ 
++    def _let_go(self, model: str, failure: Failure) -> None:
++        """A model that ran out of memory: let go of it, so that the next rung's model fits, and remember why, so that
++        this generator does not load it again (until :meth:`release`)."""
++        self.release(model)
++        with self._load_lock:
++            self._loaded[model] = failure
++
+     def _load(self, job: FabricJob, rung: Rung):
+         """The loaded model of ``rung`` (an ImageGenerator), or the :class:`Failure` of loading it (kept, so a model
+         that cannot load is not tried again by this generator)."""
+@@ -879,36 +1006,67 @@ class FabricGenerator:
+                 self._loaded[rung.model] = loaded
+             return loaded
+ 
+-    def _make(self, job: FabricJob, generator, rung: Rung, seed: int) -> FabricSwatch:
+-        """One image of the model, tiled (see :mod:`.tiling`), scored and finished."""
+-        start = time.perf_counter()
++    def _make(self, job: FabricJob, generator, rung: Rung, seed: int, key: str) -> FabricSwatch:
++        """One image of the model, tiled (see :mod:`.tiling`) and scored, as it came. Once the pipeline is free it
++        looks in the cache again (another job may have made the image meanwhile), and it caches what it makes."""
+         steps = rung.step_count
+         plan = plan_for(generator.pipe)
+         roller = LatentRoller(steps, seed, plan.roll) if plan.roll else None
+-        job.progress = {"model": rung.label, "seed": seed, "step": 0, "steps": steps}
+         callback = StepCallback(roller, job._cancel.is_set, lambda step, total: job.progress.update(step=step,
+                                                                                                     steps=total),
+                                 self.pace)
+         kwargs = {}
+         if _takes(generator.pipe, "callback_on_step_end"):
+             kwargs = {"callback_on_step_end": callback, "callback_on_step_end_tensor_inputs": ["latents"]}
+-        with generator.lock, circular_padding(*plan.circular):
+-            rgb = generator.rgb(job.prompt, seed, job.size, job.size, steps=steps, **kwargs)
++        with generator.lock:
++            job._check()  # (cancelled while it waited for the pipeline)
++            made = self._cached(job, key)
++            if made is not None:
++                return made
++            start = time.perf_counter()
++            job.progress = {"model": rung.label, "seed": seed, "step": 0, "steps": steps}
++            with circular_padding(*plan.circular):
++                rgb = generator.rgb(job.prompt, seed, job.size, job.size, steps=steps, **kwargs)
++            rgb = _uint8(np.asarray(rgb)[..., :3])
++            made = FabricSwatch(rgb, job.text, rung.method, generator.preset.repo, seed, job.prompt, seam_score(rgb),
++                                fabric_scale(job.text), seconds=time.perf_counter() - start)
++            self._store(job, key, made)
+         job._check()  # (a stand-in without the callback cannot be stopped half way)
+-        rgb = _uint8(np.asarray(rgb)[..., :3])
+-        seam = seam_score(rgb)
+-        ok = seam <= self.threshold
+-        if ok:  # kept: even light; left out: as it came, for the repair
+-            rgb = _uint8(equalise_light(rgb))
+-            seam = seam_score(rgb)
+-            ok = seam <= self.threshold
+-        return FabricSwatch(rgb, job.text, rung.method, generator.preset.repo, seed, job.prompt, seam,
+-                            fabric_scale(job.text), ok=ok, seconds=time.perf_counter() - start)
++        return made
++
++    def _finish(self, made: FabricSwatch) -> FabricSwatch:
++        """``made`` judged by this generator's threshold; one that is kept gets even light (unless that brings a seam
++        out), one that is left out stays as it came, for the repair."""
++        if made.seam > self.threshold:
++            return replace(made, ok=False)
++        image = _uint8(equalise_light(made.image))
++        if not np.array_equal(image, made.image):
++            seam = seam_score(image)
++            if seam <= self.threshold:
++                return replace(made, image=image, seam=seam, ok=True)
++        return replace(made, ok=True)
++
++    def _cached(self, job: FabricJob, key: str) -> FabricSwatch | None:
++        """The image of ``key`` from the cache, scored again (by this version's score), or ``None``."""
++        made = self.cache.get(key, job.text) if self.cache is not None else None
++        if made is not None:
++            made.seam = seam_score(made.image)
++        return made
++
++    def _store(self, job: FabricJob, key: str, made: FabricSwatch) -> None:
++        """Cache ``made``. A cache that cannot be written costs a message, never the swatch."""
++        if self.cache is None or job._uncached:
++            return
++        try:
++            made.path = self.cache.put(key, made)
++        except Exception as exc:  # noqa: BLE001 - (a full disk, a folder that cannot be written, a file in the way)
++            job._uncached = True
++            job._say(f"the swatches are not cached ({type(exc).__name__}: {exc})")
+ 
+     def _repair(self, swatch: FabricSwatch) -> FabricSwatch:
+         """``swatch`` made seamless without a model, with even light."""
+         start = time.perf_counter()
+-        image = _uint8(equalise_light(make_seamless(swatch.image)))
++        image = _uint8(make_seamless(swatch.image))
+         seam = seam_score(image)
+         return replace(swatch, image=image, method=f"{swatch.method}, repaired", seam=seam,
+                        ok=seam <= self.threshold, cached=False, path=None,
+@@ -954,6 +1112,6 @@ def fabric_fill(text: str, generator: FabricGenerator | None = None, scale: floa
+ 
+ 
+ __all__ = ["DEFAULT_MODEL", "FABRIC_SCALES", "LADDERS", "TEMPLATE", "Fabric", "FabricCache", "FabricGenerator",
+-           "FabricJob", "FabricSwatch", "Failure", "PromptFilter", "PromptRefused", "Rung", "check_size",
+-           "clean_text", "default_generator", "explain_failure", "fabric_fill", "fabric_prompt", "fabric_scale",
+-           "ladder_for", "load_generator", "nearest_colour", "procedural"]
++           "FabricJob", "FabricSwatch", "Failure", "PromptFilter", "PromptRefused", "Rung", "check_seeds",
++           "check_size", "clean_text", "default_generator", "explain_failure", "fabric_fill", "fabric_prompt",
++           "fabric_scale", "ladder_for", "load_generator", "nearest_colour", "procedural"]
+diff --git a/src/bifold_demo/characters/outfit/fabric_words.json b/src/bifold_demo/characters/outfit/fabric_words.json
+index 5acee28..1ab19c8 100644
+--- a/src/bifold_demo/characters/outfit/fabric_words.json
++++ b/src/bifold_demo/characters/outfit/fabric_words.json
+@@ -1,17 +1,19 @@
+ {
+-  "about": "Words a fabric description may not use at a public kiosk (see fabric.py, PromptFilter). Each list has a message shown when a description is refused. Matching ignores case, accents, spaces and digits standing in for letters. A file of the same form named by $BIFOLD_FABRIC_WORDS adds words, lists or 'allow' entries. The words of 'offensive_rot13' are ROT13-encoded, so the repository does not show them in plain text.",
++  "about": "Words a fabric description may not use at a public kiosk (see fabric.py, PromptFilter). Each list has a message shown when a description is refused. Matching ignores case, accents, spaces, digits and signs standing in for letters, and stars for letters left out. The words of 'in context' have a fabric sense too ('nude satin' is a colour, 'blue tits' are birds): they are let through only where the words next to them give them that sense, and never with a word of its 'never with'. A file of the same form named by $BIFOLD_FABRIC_WORDS adds words, lists or 'allow' entries. The words of 'offensive_rot13' are ROT13-encoded, so the repository does not show them in plain text.",
+   "brands": {
+     "message": "Brand names can't be made into a fabric here ({word}). Describe the colours, the pattern and the material instead, for example \"beige and black check wool\".",
+-    "words": ["adidas", "armani", "balenciaga", "burberry", "calvin klein", "chanel", "dior", "dolce gabbana", "fendi",
+-              "gucci", "givenchy", "hermes", "lacoste", "louis vuitton", "lv", "marimekko", "missoni", "moschino", "nike",
+-              "prada", "ralph lauren", "reebok", "tommy hilfiger", "valentino", "versace", "yves saint laurent", "ysl",
+-              "north face", "levis", "stussy", "bape"]
++    "words": ["adidas", "armani", "balenciaga", "burberry", "calvin klein", "chanel", "dior", "dolce gabbana",
++              "dolce and gabbana", "gabbana", "fendi", "gucci", "givenchy", "hermes", "lacoste", "louis vuitton",
++              "vuitton", "lv", "lvmh", "marimekko", "missoni", "moschino", "nike", "prada", "ralph lauren", "reebok",
++              "tommy hilfiger", "hilfiger", "valentino", "versace", "yves saint laurent", "saint laurent", "ysl",
++              "north face", "levis", "levi", "stussy", "bape"]
+   },
+   "characters": {
+     "message": "Characters and other trademarks can't be made into a fabric here ({word}). Describe the colours, the pattern and the material instead, for example \"white stars on navy cotton\".",
+-    "words": ["disney", "mickey mouse", "minnie mouse", "marvel", "spiderman", "spider man", "batman", "superman",
+-              "star wars", "pokemon", "pikachu", "hello kitty", "barbie", "harry potter", "minecraft", "fortnite", "lego",
+-              "coca cola", "pepsi", "mcdonalds"]
++    "words": ["disney", "mickey mouse", "mickey", "minnie mouse", "minnie", "marvel", "spiderman", "spider man",
++              "spider men", "batman", "superman", "star wars", "darth vader", "pokemon", "pikachu", "hello kitty",
++              "barbie", "harry potter", "hogwarts", "super mario", "minecraft", "fortnite", "lego", "coca cola",
++              "pepsi", "mcdonalds", "sex pistols"]
+   },
+   "marks": {
+     "message": "Logos and trademarks can't be made into a fabric here ({word}). Describe the colours, the pattern and the material instead.",
+@@ -19,13 +21,32 @@
+   },
+   "offensive": {
+     "message": "That description uses a word this kiosk does not accept. Please describe the colours, the pattern and the material of the fabric.",
+-    "words": ["nazi", "nazis", "swastika", "hitler", "kkk", "porn", "porno", "pornographic", "nude", "nudes", "naked",
+-              "nsfw", "sex", "sexual", "penis", "vagina", "boobs", "tits", "nipples", "genitals", "fuck", "fucking",
+-              "shit", "bitch", "cunt", "dick", "cock", "asshole", "bastard", "whore", "slut", "rape"]
++    "words": ["nazi", "nazis", "swastika", "hitler", "kkk", "porn", "porno", "pornographic", "nudes", "nudity",
++              "nsfw", "sex", "sexual", "penis", "vagina", "boobs", "nipples", "genitals", "fuck", "fucking", "fuk",
++              "fuking", "fck", "fcking", "phuck", "shit", "shyt", "bitch", "biatch", "cunt", "asshole", "bastard",
++              "whore", "slut", "rape"]
+   },
+   "offensive_rot13": {
+     "message": "That description uses a word this kiosk does not accept. Please describe the colours, the pattern and the material of the fabric.",
+     "words": ["avttre", "avttn", "snttbg", "snt", "ergneq", "puvax", "fcvp", "xvxr", "genaal", "jrgonpx"]
+   },
++  "in context": {
++    "message": "That description uses a word this kiosk takes only in its fabric sense. Please describe the colours, the pattern and the material of the fabric.",
++    "never with": ["woman", "women", "girl", "girls", "man", "men", "boy", "boys", "lady", "ladies", "guy", "guys",
++                   "person", "people", "body", "bodies", "figure", "figures", "photo", "photos", "photograph",
++                   "picture", "pictures", "pic", "pics", "selfie", "model", "models", "pose", "posing", "sexy",
++                   "erotic", "breast", "breasts", "butt", "bum", "painting", "portrait", "statue"],
++    "words": {
++      "nude": {"near": ["@colours", "@materials"],
++               "message": "\"Nude\" is taken here only as a colour, next to the material or another colour (\"nude satin\", \"nude pink chiffon\"); or describe it as beige or blush."},
++      "naked": {"near": ["@materials"],
++                "message": "\"Naked\" is taken here only for undyed cloth, next to its material (\"naked wool\"). Please describe the colours, the pattern and the material."},
++      "cock": {"near": ["pheasant", "pheasants", "feather", "feathers", "hen", "hens", "chicken", "chickens",
++                        "rooster", "roosters", "farmyard", "bird", "birds"]},
++      "tit": {"after": ["blue", "great", "coal", "marsh", "willow", "crested", "bearded", "tailed", "penduline"]},
++      "tits": {"after": ["blue", "great", "coal", "marsh", "willow", "crested", "bearded", "tailed", "penduline"]},
++      "dick": {"near": ["whittington", "spotted", "moby"]}
++    }
++  },
+   "allow": []
+ }
+diff --git a/src/bifold_demo/characters/outfit/seamless.py b/src/bifold_demo/characters/outfit/seamless.py
+index 8d3e588..998dfda 100644
+--- a/src/bifold_demo/characters/outfit/seamless.py
++++ b/src/bifold_demo/characters/outfit/seamless.py
+@@ -53,6 +53,8 @@ its seams.
+ 
+ from __future__ import annotations
+ 
++from functools import lru_cache
++
+ import cv2
+ import numpy as np
+ 
+@@ -62,10 +64,16 @@ SEAM_THRESHOLD = 1.25  # seam_score above this: a visible seam (see the module d
+ ANALYSIS = 256  # the side the seam score looks at the image at
+ STEP_SCALES = (1, 2, 4, 8)  # pixels at the analysis size
+ BAND_RADII = (1, 2, 4)  # half widths of the bands looked for, at the analysis size
+-RHYTHM_HALF = 8  # the rhythm test compares windows of twice this many columns (rows), at the analysis size
++RHYTHM_HALVES = (8, 16, 32, 64)  # the rhythm test compares windows of twice these many columns (rows), at the analysis size
++SEGMENT = 32  # the step test also looks along each part of the seam this many rows (columns) long, at the analysis size
+ FLOOR = 1.0  # CIE Lab units added to both sides of a ratio, so flat images score 1, not noise over noise
+ OVERLAP = (0.06, 0.25)  # the repair's overlap, as a share of the width (height)
+ WIDE_OVERLAP = 0.33  # the overlap of the repair's wide cross-fade, for smooth fabric
++CRISP = 0.015  # an image with strong edges in more than this share of its pixels is never cross-faded
++LIGHT_GRID = 64  # the light is estimated on the image box-filtered to this many pixels across
++LIGHT_MIN = 0.05  # light that changes the brightness by less than this (5 %) across the image is left alone
++LIGHT_PROMINENCE = 2.5  # ... and light not this much stronger than the image's own next slower variations
++LIGHT_COLOUR = 0.5  # ... and light that changes the colours by more than this share of how it changes the brightness
+ 
+ 
+ def _lab(rgb: np.ndarray) -> np.ndarray:
+@@ -118,14 +126,21 @@ def _analysed(image) -> np.ndarray:
+ 
+ 
+ def _step(lab: np.ndarray) -> float:
+-    """The step ratio of the vertical seam (the columns' wrap) of ``lab``."""
++    """The step ratio of the vertical seam (the columns' wrap) of ``lab``: along the whole seam, and along each
++    part of :data:`SEGMENT` rows (a seam along part of the edge, one motif cut)."""
+     worst = 0.0
+     for k in STEP_SCALES:
+         if lab.shape[1] // k < 4:
+             break
+         b = _shrink(lab, k)
+-        col = np.linalg.norm(np.roll(b, -1, axis=1) - b, axis=2).mean(axis=0)  # col[j]: columns j and j + 1
++        diff = np.linalg.norm(np.roll(b, -1, axis=1) - b, axis=2)  # diff[:, j]: columns j and j + 1
++        col = diff.mean(axis=0)
+         worst = max(worst, float((col[-1] + FLOOR) / (col[:-1].max() + FLOOR)))
++        parts = diff.shape[0] * k // SEGMENT
++        if k <= 2 and parts >= 2:
++            rows = diff.shape[0] // parts
++            seg = diff[:rows * parts].reshape(parts, rows, -1).mean(axis=1)  # seg[s, j]: part s of columns j, j + 1
++            worst = max(worst, float((seg[:, -1].max() + FLOOR) / (seg[:, :-1].max() + FLOOR)))
+     return worst
+ 
+ 
+@@ -149,27 +164,51 @@ def _band(lab: np.ndarray) -> float:
+     return worst
+ 
+ 
+-def _rhythm(lab: np.ndarray) -> float:
+-    """The rhythm ratio of the vertical seam of ``lab``: how far the window of columns across the wrap is from the
+-    most alike window elsewhere, against the same for the windows inside (their 99th percentile). A regular pattern
+-    repeats, so a window inside it has a twin a repeat away; one across a seam that breaks the rhythm has none."""
++def _rhythm(lab: np.ndarray, halves: tuple[int, ...] = RHYTHM_HALVES) -> float:
++    """The rhythm ratio of the vertical seam of ``lab``. A regular pattern repeats, so a window of columns inside it
++    has a twin a repeat away; one across a seam that breaks the rhythm has none. Two tests:
++
++    - the nearest twin, with windows of ``2 * halves[0]`` columns (a jog of a fine pattern): how far the window
++      across the wrap is from the most alike window elsewhere, against the same for the windows inside (their 99th
++      percentile);
++    - the repeat, with wider windows (``halves[1:]``: a band of the wrong width in a pattern of wide stripes or
++      checks, inside which a narrow window has twins everywhere): the shift at which every window inside matches
++      the one that far to its right (when there is one: a pattern, not a texture), and the window across the wrap
++      against the windows that far on either side, against the worst match inside."""
+     h, w = lab.shape[:2]
+-    m = RHYTHM_HALF
+-    if w < 8 * m:
+-        return 0.0
+     x = lab.transpose(1, 0, 2).reshape(w, -1).astype(np.float64)
+     sq = (x ** 2).sum(axis=1)
+     d = np.maximum(sq[:, None] + sq[None, :] - 2.0 * (x @ x.T), 0.0) / h  # mean squared distance of two columns
+-    window = np.zeros_like(d)
+-    for t in range(1 - m, m + 1):  # columns j - m + 1 .. j + m against i - m + 1 .. i + m
+-        window += np.roll(d, (-t, -t), axis=(0, 1))
+     j = np.arange(w)
+-    window[np.abs((j[None, :] - j[:, None] + w // 2) % w - w // 2) <= m] = np.inf  # not itself, nor overlapping
+-    straddle = (j >= w - m) | (j < m - 1)  # windows (but the wrap's own) that reach across the wrap
+-    window[:, straddle] = np.inf
+-    distance = np.sqrt(window.min(axis=1) / (2 * m))
+-    inner = distance[~straddle & (j != w - 1)]
+-    return float((distance[-1] + FLOOR) / (np.percentile(inner, 99) + FLOOR))
++    twin = (j[:, None] + j[None, :]) % w
++    near = d[j[:, None], twin]  # near[i, g]: column i against the column g to its right
++    total = np.concatenate([np.zeros((1, w)), np.cumsum(np.concatenate([near, near]), axis=0)])
++    worst = 0.0
++    for m in halves:
++        if w < 4 * m:
++            break
++        start = (j - m + 1) % w
++        raw = total[start + 2 * m] - total[start]  # [i, g]: columns i - m + 1 .. i + m against g further on
++        straddle = (j >= w - m) | (j < m - 1)  # windows that reach across the wrap (the wrap's own is w - 1)
++        apart = (j > m) & (j < w - m)  # (not itself, nor overlapping)
++        if m == halves[0]:  # the nearest twin of each window
++            window = np.where(apart[None, :] & ~straddle[twin], raw, np.inf)
++            distance = np.sqrt(window.min(axis=1) / (2 * m))
++            worst = max(worst, float((distance[-1] + FLOOR) / (np.percentile(distance[~straddle], 99) + FLOOR)))
++            continue
++        # the repeat of the pattern, from the inside (the shift at which pairs of windows inside, the second to the
++        # right of the first without passing the wrap, match best), and the window across the wrap against those a
++        # repeat away on either side (inside, when the repeat is long)
++        inside = ~straddle[:, None] & ~straddle[twin] & apart[None, :] & (j[:, None] + j[None, :] < w)
++        farthest = np.where(inside, raw, -np.inf).max(axis=0)  # [g]: the worst match of a pair g apart
++        farthest[inside.sum(axis=0) < np.maximum(w // 8, j // 2)] = np.inf  # (pairs over half a repeat at least)
++        g = int(np.argmin(farthest))
++        known = farthest[np.isfinite(farthest)]
++        if not known.size or farthest[g] > 0.1 * np.median(known):
++            continue  # (no shift at which every window matches: a texture, not a repeating pattern)
++        across = max(raw[w - 1, g], raw[w - 1, w - g])  # (a repeat away on either side)
++        worst = max(worst, float((np.sqrt(across / (2 * m)) + FLOOR) / (np.sqrt(farthest[g] / (2 * m)) + FLOOR)))
++    return worst
+ 
+ 
+ def seam_scores(image) -> dict[str, float]:
+@@ -222,63 +261,117 @@ def _path(cost: np.ndarray, start: int | None = None, reach: int = 1) -> tuple[f
+     return float(total[cut[-1]]), cut
+ 
+ 
+-def _min_cut(cost: np.ndarray, closed: bool = False) -> np.ndarray:
+-    """The column, row by row, of the cheapest top-to-bottom path through ``cost`` (H, w); ``closed``: its two ends
+-    meet (at most a column apart), so that the image it cuts still tiles top to bottom. The path is found on pairs of
+-    rows (moving up to two columns a pair), so the loop over rows, Python's part of the work, is half as long; a
+-    closed path is the cheapest one that starts where the cheapest open one does."""
++def _min_cut(cost: np.ndarray, closed: bool = False) -> tuple[float, np.ndarray]:
++    """The cheapest top-to-bottom path through ``cost`` (H, w): ``(its cost per row, its column row by row)``;
++    ``closed``: its two ends meet (at most a column apart), so that the image it cuts still tiles top to bottom. The
++    path is found on pairs of rows (moving up to two columns a pair), so the loop over rows, Python's part of the
++    work, is half as long; a closed path is the cheapest one that starts where the cheapest open one does."""
+     h = cost.shape[0]
+     pairs = h // 2
+     if pairs < 32:
+-        _, cut = _path(cost)
+-        return _path(cost, int(cut[0]))[1] if closed else cut
++        total, cut = _path(cost)
++        if closed:
++            total, cut = _path(cost, int(cut[0]))
++        return total / h, cut
+     small = cost[:2 * pairs:2] + cost[1:2 * pairs:2]
+     if h % 2:
+         small[-1] += cost[-1]
+-    _, cut = _path(small, reach=2)
++    total, cut = _path(small, reach=2)
+     if closed:
+-        cut = _path(small, int(cut[0]), reach=2)[1]
++        total, cut = _path(small, int(cut[0]), reach=2)
+     cut = np.repeat(cut, 2)
+-    return np.r_[cut, cut[-1]] if h % 2 else cut
++    return total / h, (np.r_[cut, cut[-1]] if h % 2 else cut)
++
++
++def _smooth_rows(values: np.ndarray, weights: np.ndarray, closed: bool) -> np.ndarray:
++    """``values`` (h, c) smoothed down the rows by a Gaussian that counts each row by its weight (h,), wrapping round
++    when ``closed``; where no row nearby counts, it fades to nothing."""
++    h = values.shape[0]
++    sigma = max(2.0, h / 64)
++    pad = int(3 * sigma) + 1
++    mode = "wrap" if closed else "reflect"
++    both = np.concatenate([values * weights[:, None], weights[:, None]], axis=1).astype(np.float32)
++    padded = np.ascontiguousarray(np.pad(both, ((pad, pad), (0, 0)), mode=mode))
++    smooth = cv2.GaussianBlur(padded, (1, 0), sigmaX=0.1, sigmaY=sigma)[pad:pad + h]
++    return smooth[:, :-1] / np.maximum(smooth[:, -1:], 0.5)
++
++
++def _overlap(guide: np.ndarray, half: int, low: int, high: int) -> tuple[int, np.ndarray]:
++    """The overlap of the strips either side of column ``half`` of ``guide``, ``low`` to ``high`` columns, and its
++    costs: among the overlaps whose strips differ least (those keep a regular pattern's rhythm), the one whose
++    cheapest cut costs least (it has room to go round motifs)."""
++    ks = np.arange(low, high + 1)  # strip a: the k columns left of the seam; strip b: the k right of it
++    diffs = np.array([np.mean((guide[:, half - k:half] - guide[:, half:half + k]) ** 2) for k in ks])
++    minima = (diffs <= np.r_[diffs[1:], np.inf]) & (diffs <= np.r_[np.inf, diffs[:-1]])
++    candidates = ks[minima & (diffs <= 1.25 * diffs.min() + 1e-6)]
++    chosen, chosen_cost, chosen_total = None, None, np.inf
++    for k in candidates[np.argsort(diffs[candidates - low])][:4]:
++        cost = _cut_costs(guide, half, int(k))
++        total = _min_cut(cost)[0]
++        if total < chosen_total:
++            chosen, chosen_cost, chosen_total = int(k), cost, total
++    return chosen, chosen_cost
++
++
++def _cut_costs(guide: np.ndarray, half: int, k: int) -> np.ndarray:
++    """What a cut through each pixel of the overlap of ``k`` columns costs: the strips' difference there, blurred a
++    little; its first and last columns are kept out of reach."""
++    cost = cv2.GaussianBlur(np.sum((guide[:, half - k:half] - guide[:, half:half + k]) ** 2, axis=2), (0, 0), 1.0)
++    margin = max(2, k // 12)
++    cost[:, :margin] += 1e6
++    cost[:, k - margin:] += 1e6
++    return cost
+ 
+ 
+ def _quilt_columns(rgb: np.ndarray, guide: np.ndarray, closed: bool, wide: bool) -> np.ndarray:
+     """``rgb`` made to tile left to right (narrower by the overlap): rolled by half, the strips either side of the
+     seam in its middle overlaid and cut where they agree best. ``guide``: the image the costs are measured on;
+     ``closed``: keep the image tiling top to bottom (the cut's ends meet); ``wide``: a third of the width overlaps
+-    and the coarse colour cross-fades over all of it (else the overlap whose strips differ least, and a cross-fade
+-    round the cut)."""
++    and the coarse colour cross-fades over all of it, for smooth fabric (else the overlap of :func:`_overlap`).
++
++    Each side keeps its own pixels up to the cut (feathered over a pixel or two), so motifs are cut, never blended
++    into ghosts. What differs slowly across the cut (a little more light on one side, a shade) is evened out by an
++    offset: half the difference at the cut, taken from one side and given to the other, fading out over the
++    overlap's width either way. Only the rows where the cut runs through cloth alike on both sides measure that
++    difference (where it has to cross a motif, the motif would be smeared along the cut)."""
+     h, w = rgb.shape[:2]
+     half = w // 2
+     rgb, guide = np.roll(rgb, half, axis=1), np.roll(guide, half, axis=1)
+     low, high = max(4, round(w * OVERLAP[0])), max(5, min(half - 1, round(w * OVERLAP[1])))
+     if wide:
+         k = max(5, min(half - 1, round(w * WIDE_OVERLAP)))
++        cost = _cut_costs(guide, half, k)
+     else:
+-        costs = []
+-        for k in range(low, high + 1):  # strip a: the k columns left of the seam; strip b: the k right of it
+-            costs.append(float(np.mean((guide[:, half - k:half] - guide[:, half:half + k]) ** 2)))
+-        k = low + int(np.argmin(costs))
++        k, cost = _overlap(guide, half, low, high)
+     a, b = rgb[:, half - k:half], rgb[:, half:half + k]
+-    cost = cv2.GaussianBlur(np.sum((guide[:, half - k:half] - guide[:, half:half + k]) ** 2, axis=2), (0, 0), 1.0)
+-    margin = k // 3  # the cut keeps to the middle third, so the strips' outer edges stay as they were
+-    cost[:, :margin] += 1e6
+-    cost[:, k - margin:] += 1e6
+-    cut = _min_cut(cost, closed)
++    cut = _min_cut(cost, closed)[1]
+     take_a = (np.arange(k)[None, :] < cut[:, None]).astype(np.float32)  # a left of the cut, b from it on
+-    # two bands: the fine detail switches at the cut (feathered over two pixels), the coarse colour cross-fades round it
+-    sigma = max(1.5, k / 8)
+     if wide:  # from all a at its outer edge to all b at its: smooth fabric has nothing to cut along
+         t = (np.arange(k, dtype=np.float32) + 0.5) / k
+         coarse = np.broadcast_to((1.0 - t * t * (3.0 - 2.0 * t))[None, :, None], (h, k, 1))
+         fine = cv2.GaussianBlur(take_a, (0, 0), sigmaX=max(2.0, k / 16), sigmaY=1.0)[..., None]
+-    else:
+-        coarse = cv2.GaussianBlur(take_a, (0, 0), sigmaX=sigma, sigmaY=sigma)[..., None]
+-        fine = cv2.GaussianBlur(take_a, (0, 0), sigmaX=2.0, sigmaY=1.0)[..., None]
+-    a_low = cv2.GaussianBlur(a, (0, 0), sigma)
+-    b_low = cv2.GaussianBlur(b, (0, 0), sigma)
+-    joined = a_low * coarse + b_low * (1.0 - coarse) + (a - a_low) * fine + (b - b_low) * (1.0 - fine)
++        sigma = max(1.5, k / 8)
++        a_low, b_low = cv2.GaussianBlur(a, (0, 0), sigma), cv2.GaussianBlur(b, (0, 0), sigma)
++        joined = a_low * coarse + b_low * (1.0 - coarse) + (a - a_low) * fine + (b - b_low) * (1.0 - fine)
++        out = np.concatenate([rgb[:, :half - k], joined, rgb[:, half + k:]], axis=1)
++        return np.roll(out, -(out.shape[1] // 2), axis=1)  # back about where it was
++    fine = cv2.GaussianBlur(take_a, (0, 0), sigmaX=0.8, sigmaY=0.5)[..., None]
++    joined = a * fine + b * (1.0 - fine)
+     out = np.concatenate([rgb[:, :half - k], joined, rgb[:, half + k:]], axis=1)
++    # the slow difference across the cut, row by row: a and b next to the cut, on both sides of it; measured where
++    # they are alike (a colour difference of a few units: a shade, light), not where the cut crosses a motif
++    rows = np.arange(h)
++    near = np.clip(cut[:, None] + np.arange(-2, 2)[None, :], 0, k - 1)
++    difference = (a[rows[:, None], near] - b[rows[:, None], near]).mean(axis=1)
++    apart = np.linalg.norm(guide[rows[:, None], half - k + near] - guide[rows[:, None], half + near], axis=2).mean(
++        axis=1)
++    alike = (apart <= max(6.0, 2.5 * float(np.median(apart)))).astype(np.float32)
++    difference = _smooth_rows(difference, alike, closed)
++    reach = max(8.0, float(k))
++    x = np.arange(out.shape[1], dtype=np.float32)[None, :] - (half - k + cut)[:, None].astype(np.float32)
++    side = np.clip(1.0 - np.abs(x + 0.5) / reach, 0.0, 1.0)
++    side = side * side * (3.0 - 2.0 * side) * np.where(x < 0, -0.5, 0.5)  # -1/2 at the cut on a's side, +1/2 on b's
++    out += side[..., None] * difference[:, None, :]
+     return np.roll(out, -(out.shape[1] // 2), axis=1)  # back about where it was
+ 
+ 
+@@ -296,62 +389,170 @@ def _quilted(rgb: np.ndarray, wide: bool) -> np.ndarray:
+ 
+ def make_seamless(image, even_light: bool = True) -> np.ndarray:
+     """``image`` (a path or an array, see :func:`.fills.image_rgb`) made to tile, as float32 RGB 0-255 of the same
+-    size (see the module docs). ``even_light``: even out the light first (no wrap: the image does not tile yet)."""
++    size (see the module docs). An image that tiles already (its :func:`seam_score` is :data:`SEAM_THRESHOLD` or
++    less) is returned as it is, so the repair never makes a seamless image worse. ``even_light``: even out the light
++    first (no wrap: the image does not tile yet) and once more when it tiles (:func:`equalise_light`)."""
+     rgb = image_rgb(image)
++    if seam_score(rgb) <= SEAM_THRESHOLD:
++        return equalise_light(rgb) if even_light else rgb.copy()
+     if even_light:
+         rgb = equalise_light(rgb, periodic=False)
+     quilted = _quilted(rgb, wide=False)  # crisp: the detail is cut, not blended (no ghosts of a pattern)
+     score = seam_score(quilted)
+-    if score <= SEAM_THRESHOLD:
+-        return quilted
+-    faded = _quilted(rgb, wide=True)  # smooth fabric with nothing alike to cut along: a wide cross-fade
+-    return faded if seam_score(faded) < score else quilted
++    if score > SEAM_THRESHOLD and not _crisp(rgb):
++        faded = _quilted(rgb, wide=True)  # smooth fabric with nothing alike to cut along: a wide cross-fade
++        if seam_score(faded) < score:
++            quilted = faded
++    return equalise_light(quilted) if even_light else quilted
+ 
+ 
+-# -- light ----------------------------------------------------------------------------------------------------------
++def _crisp(rgb: np.ndarray) -> bool:
++    """Whether ``rgb`` has crisp edges (motifs on a ground, stripes) in more than :data:`CRISP` of its pixels:
++    a cross-fade would ghost them, so the repair never fades it (smooth blotches, grain or a fine weave it may)."""
++    lab = cv2.GaussianBlur(_lab(rgb), (0, 0), 1.5)
++    across = np.linalg.norm(np.roll(lab, -1, axis=1) - lab, axis=2)
++    down = np.linalg.norm(np.roll(lab, -1, axis=0) - lab, axis=2)
++    return float((np.maximum(across, down) > 6.0).mean()) > CRISP
+ 
+ 
+-def _light_periodic(log: np.ndarray) -> np.ndarray:
+-    """The light of a swatch that tiles: the part of ``log`` (H, W) that varies once across it (the Fourier modes of
+-    one cycle, either way and diagonally), with its mean taken out."""
+-    spectrum = np.fft.rfft2(log)
+-    keep = np.zeros(spectrum.shape, bool)
+-    keep[[0, 1, -1], :2] = True
+-    keep[0, 0] = False
+-    return np.fft.irfft2(np.where(keep, spectrum, 0), s=log.shape)
++# -- light ----------------------------------------------------------------------------------------------------------
+ 
+ 
+-def _light_open(log: np.ndarray) -> np.ndarray:
+-    """The light of an image that does not tile: a quadratic surface fitted to ``log`` (H, W) by least squares (a
+-    gradient across it, a vignette), with its mean taken out."""
++def _modes(periodic: bool, light: bool) -> list[tuple[int, int]]:
++    """The slow variations (ky, kx) the light is made of (``light``), or the next slower ones a fabric has of its own,
++    to compare it with. A swatch that tiles: Fourier modes of one cycle across it (light: either way and diagonally),
++    resp. two, one of each conjugate pair. An image that does not tile: cosines of up to one cycle, i.e. half cycles
++    across it (light: a gradient, a vignette), resp. one and a half to two cycles."""
++    if periodic:
++        band = 1 if light else 2
++        return [(ky, kx) for ky in range(-band, band + 1) for kx in range(band + 1)
++                if max(abs(ky), kx) == band and (kx > 0 or ky > 0)]
++    sizes = (1, 2) if light else (3, 4)
++    return [(ky, kx) for ky in range(5) for kx in range(5) if max(ky, kx) in sizes]
++
++
++def _basis(modes, periodic: bool, h: int, w: int) -> np.ndarray:
++    """The functions of ``modes`` on an (h, w) grid (pixel centres): (h, w, n); a periodic mode gives a cosine and a
++    sine."""
++    u = (np.arange(w) + 0.5) / w
++    v = (np.arange(h) + 0.5) / h
++    out = []
++    for ky, kx in modes:
++        if periodic:
++            cu, su = np.cos(2 * np.pi * kx * u), np.sin(2 * np.pi * kx * u)
++            cv, sv = np.cos(2 * np.pi * ky * v), np.sin(2 * np.pi * ky * v)
++            out += [np.outer(cv, cu) - np.outer(sv, su), np.outer(sv, cu) + np.outer(cv, su)]  # cos, sin of the sum
++        else:
++            out.append(np.outer(np.cos(np.pi * ky * v), np.cos(np.pi * kx * u)))
++    return np.stack(out, axis=-1)
++
++
++def _changes(a: np.ndarray, periodic: bool) -> np.ndarray:
++    """How ``a`` (h, w, ...) changes from each pixel to the next one right and the next one down (wrapping round when
++    ``periodic``), all in one column: (n, ...)."""
++    if periodic:
++        steps = (np.roll(a, -1, axis=1) - a, np.roll(a, -1, axis=0) - a)
++    else:
++        steps = (a[:, 1:] - a[:, :-1], a[1:] - a[:-1])
++    return np.concatenate([s.reshape(-1, *a.shape[2:]) for s in steps])
++
++
++@lru_cache(maxsize=8)
++def _light_design(periodic: bool, h: int, w: int) -> tuple[np.ndarray, np.ndarray, int]:
++    """The functions the light is fitted with on an (h, w) grid, the light's first and then the next slower
++    variations: ``(the functions (h, w, k), how they change (see :func:`_changes`), how many are the light's)``."""
++    light, other = _modes(periodic, True), _modes(periodic, False)
++    basis = np.concatenate([_basis(light, periodic, h, w), _basis(other, periodic, h, w)], axis=-1)
++    design = _changes(basis, periodic)
++    basis.flags.writeable = design.flags.writeable = False  # (shared by every call)
++    return basis, design, len(light) * (2 if periodic else 1)
++
++
++def _light(log: np.ndarray, periodic: bool) -> tuple[np.ndarray, float, float]:
++    """The light of ``log`` (the log-luminance, (H, W)): ``(its field, with the mean taken out, on the grid of
++    :data:`LIGHT_GRID`; how much it changes the brightness across the image, as a factor; how much stronger it is
++    than the image's own next slower variations)``.
++
++    It is fitted to how the brightness changes from one place to the next, on the image box-filtered to
++    :data:`LIGHT_GRID` across, so a weave averages out: light changes the brightness a little everywhere, the edge
++    of a motif a lot in one place. The fit is robust (iteratively reweighted least squares with Tukey's biweight),
++    so the edges of motifs, large changes, count for nothing, and the layout of a print (more motifs on one side) is
++    not taken for light; the plain ground and the inside of the motifs, where light is all that changes, decide."""
+     h, w = log.shape
++    gh, gw = (LIGHT_GRID, max(8, round(LIGHT_GRID * w / h))) if h >= w else (max(8, round(LIGHT_GRID * h / w)),
++                                                                            LIGHT_GRID)
++    if periodic:
++        grid = resize_periodic(log.astype(np.float32), gw, gh).astype(np.float64)
++    else:
++        grid = cv2.resize(log.astype(np.float32), (gw, gh), interpolation=cv2.INTER_AREA).astype(np.float64)
++    basis, design, n = _light_design(periodic, gh, gw)
++    target = _changes(grid, periodic)
++    coef = np.zeros(basis.shape[-1])
++    for _ in range(12):
++        residual = target - design @ coef
++        scale = max(1.4826 * float(np.median(np.abs(residual))), 0.003)  # (a floor: a flat image has no noise)
++        z = residual / (4.685 * scale)
++        weight = np.where(np.abs(z) < 1.0, (1.0 - z * z) ** 2, 0.0)
++        weighted = design * weight[:, None]
++        coef = np.linalg.solve(weighted.T @ design + 1e-9 * np.eye(len(coef)), weighted.T @ target)
++    size = np.sqrt((basis ** 2).mean(axis=(0, 1))) * np.abs(coef)  # each function's share of the variation
++    prominence = float(np.sqrt((size[:n] ** 2).mean()) / max(np.sqrt((size[n:] ** 2).mean()), 1e-9))
++    field = basis[..., :n] @ coef[:n]
++    return field - field.mean(), float(np.exp(np.ptp(field))), prominence
++
++
++def _full_size(field: np.ndarray, h: int, w: int, periodic: bool) -> np.ndarray:
++    """A light field on its grid, at (h, w): it is smooth, so resampling it is as good as evaluating it there."""
++    field = np.asarray(field, np.float32)
++    big = resize_periodic(field, w, h) if periodic else cv2.resize(field, (w, h), interpolation=cv2.INTER_CUBIC)
++    return big - big.mean()
++
++
++def _judged(rgb: np.ndarray, periodic: bool) -> tuple[np.ndarray, np.ndarray, dict]:
++    """``(the luminance, the light's field on its grid, the verdict of :func:`light_of`)`` of ``rgb``."""
++    lum = (0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]) / 255.0
++    field, change, prominence = _light(np.log(lum.astype(np.float64) + 0.02), periodic)
++    verdict = {"change": change, "prominence": prominence, "colour": None, "light": False}
++    if change >= 1.0 + LIGHT_MIN and prominence >= LIGHT_PROMINENCE:
++        shifted = rgb.astype(np.float64) + 8.0  # (so that dark pixels' colours are not noise)
++        colour = [_light(np.log(shifted[..., c] / shifted[..., 1]), periodic)[0] for c in (0, 2)]
++        size = [float(np.sqrt((f ** 2).mean())) for f in (field, *colour)]
++        verdict["colour"] = float(np.hypot(size[1], size[2]) / max(size[0], 1e-9))
++        verdict["light"] = verdict["colour"] <= LIGHT_COLOUR
++    return lum, field, verdict
+ 
+-    def basis(rows, cols):
+-        v, u = np.meshgrid(rows / max(1, h - 1) - 0.5, cols / max(1, w - 1) - 0.5, indexing="ij")
+-        return np.stack([np.ones_like(u), u, v, u * u, u * v, v * v], axis=-1)
+ 
+-    step = max(1, max(h, w) // 128)  # (fitted on every step-th pixel)
+-    rows, cols = np.arange(0, h, step), np.arange(0, w, step)
+-    coef = np.linalg.lstsq(basis(rows, cols).reshape(-1, 6), log[::step, ::step].ravel(), rcond=None)[0]
+-    surface = basis(np.arange(h), np.arange(w)) @ coef
+-    return surface - surface.mean()
++def light_of(image, periodic: bool = True) -> dict:
++    """What :func:`equalise_light` makes of the light of ``image``: ``{"change": how much it changes the brightness
++    across the image (a factor, 1: none), "prominence": how much stronger it is than the image's own next slower
++    variations, "colour": how much the colours change with it, against the brightness (only worked out when the
++    other two pass), "light": whether it is taken out}``."""
++    return _judged(image_rgb(image), periodic)[2]
+ 
+ 
+ def equalise_light(image, periodic: bool = True, strength: float = 1.0,
+                    limits: tuple[float, float] = (0.5, 2.0)) -> np.ndarray:
+-    """``image`` with even light, as float32 RGB 0-255 (see the module docs): the light that varies across the whole
+-    image is divided out of all three channels alike, and the mean brightness stays. ``periodic``: the image tiles,
+-    and its light is the part of its log-luminance that varies once across it (Fourier modes, so it keeps tiling);
+-    otherwise a quadratic surface (a gradient, a vignette). ``strength``: how much of it to take out; ``limits``: the
+-    range of the gain."""
++    """``image`` with even light, as float32 RGB 0-255 (see the module docs). The light is estimated from how the
++    brightness changes from place to place, robustly, so motifs do not count (:func:`light_of`). It is divided out of
++    all three channels alike, keeping the colours and the mean brightness, only when it is light: when it changes
++    the brightness by more than :data:`LIGHT_MIN` across the image, is :data:`LIGHT_PROMINENCE` times stronger than
++    the image's own next slower variations, and leaves the colours alone (light changes the brightness, not the
++    colour: a slow change that comes with one is the pattern's, a tartan's sett, two-colour blotches). Otherwise the
++    image is returned as it is. ``periodic``: the image tiles (the light varies once across it, so it keeps tiling);
++    else a gradient or a vignette. ``strength``: how much of it to take out; ``limits``: the range of the gain.
++    Should the result clip, it is darkened a little instead."""
+     rgb = image_rgb(image)
+-    lum = (0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]) / 255.0
+-    log = np.log(lum.astype(np.float64) + 0.02)
+-    light = _light_periodic(log) if periodic else _light_open(log)
+-    gain = np.exp(-strength * light).astype(np.float32)
++    lum, light, verdict = _judged(rgb, periodic)
++    if not verdict["light"]:
++        return rgb.copy()
++    gain = np.exp(-strength * _full_size(light, *rgb.shape[:2], periodic)).astype(np.float32)
+     np.clip(gain, *limits, out=gain)
+     gain *= np.float32(lum.mean() / max(float((lum * gain).mean()), 1e-6))  # the same mean luminance as before
+-    return np.clip(rgb * gain[..., None], 0.0, 255.0)
++    out = rgb * gain[..., None]
++    top = float(np.percentile(out.max(axis=2), 99.9))
++    if top > 255.0:  # (darker, rather than light grounds clipping to white)
++        out *= np.float32(255.0 / top)
++    return np.clip(out, 0.0, 255.0)
+ 
+ 
+ def tiled(image, repeats: int = 2) -> np.ndarray:
+diff --git a/src/bifold_demo/people/generator.py b/src/bifold_demo/people/generator.py
+index 4ecb690..69f250e 100644
+--- a/src/bifold_demo/people/generator.py
++++ b/src/bifold_demo/people/generator.py
+@@ -6,6 +6,8 @@ The image model runs through Hugging Face ``diffusers``; install it with
+ :class:`ImageGenerator` is also what the fabric generator (``characters/outfit/fabric.py``) runs its models with.
+ :func:`shared_generator` loads each model once per process, so the components that use the same model share its
+ memory (FLUX.2 [klein] takes about 16 GB); a pipeline runs one call at a time, under :func:`pipeline_lock`.
++:func:`release_shared` lets go of the process's hold on them, and :func:`free_memory` gives the memory back once
++nothing else holds them (the fabric generator's ``release()`` does both for its models).
+ """
+ 
+ from __future__ import annotations
+@@ -159,13 +161,16 @@ class ImageGenerator:
+         return cv2.cvtColor(self.rgb(prompt, seed, width, height), cv2.COLOR_RGB2BGR)
+ 
+ 
+-_shared: dict = {}
++_shared: dict = {}  # (repo, pipeline, device) -> the pipeline, kept for the process (until release_shared)
++_alive: dict = {}  # the same keys -> a weak reference to every pipeline loaded, while anything still holds it
+ _shared_guard = threading.Lock()
+ 
+ 
+ def shared_generator(preset: ModelPreset | str, device: str = "auto", local_files_only: bool = False) -> ImageGenerator:
+     """An :class:`ImageGenerator` of ``preset`` whose pipeline is loaded once per process and device and shared by all
+-    who ask for it (each gets its own preset settings). A load that fails is not kept: the next call tries again."""
++    who ask for it (each gets its own preset settings). A load that fails is not kept: the next call tries again. A
++    pipeline that :func:`release_shared` let go of but something still holds is given out again, never loaded a
++    second time beside it."""
+     from ..detection.yolo import pick_device
+ 
+     preset = get_preset(preset) if isinstance(preset, str) else preset
+@@ -173,15 +178,44 @@ def shared_generator(preset: ModelPreset | str, device: str = "auto", local_file
+     key = (preset.repo, preset.pipeline, device)
+     with _shared_guard:
+         pipe = _shared.get(key)
++        if pipe is None and key in _alive:
++            pipe = _alive[key]()
+         if pipe is None:
+-            pipe = _shared[key] = ImageGenerator(preset, device=device, local_files_only=local_files_only).pipe
++            pipe = ImageGenerator(preset, device=device, local_files_only=local_files_only).pipe
++            try:
++                _alive[key] = weakref.ref(pipe)
++            except TypeError:  # (a pipeline that cannot be weakly referenced is only shared until released)
++                _alive.pop(key, None)
++        _shared[key] = pipe
+     return ImageGenerator(preset, device=device, pipeline=pipe)
+ 
+ 
+-def release_shared() -> None:
+-    """Let go of the shared pipelines (their memory is freed once nothing else holds them)."""
++def release_shared(pipe=None) -> None:
++    """Let go of the shared pipelines (``pipe``: only that one). Their memory is freed once nothing else holds them
++    (a generator made from them, a call still running): :func:`free_memory` then hands it back."""
+     with _shared_guard:
+-        _shared.clear()
++        for key in [k for k, p in _shared.items() if pipe is None or p is pipe]:
++            del _shared[key]
++        for key in [k for k, ref in _alive.items() if ref() is None]:
++            del _alive[key]
++
++
++def free_memory() -> None:
++    """Collect garbage and give the memory torch keeps for later back to the system (Apple's GPU, CUDA)."""
++    import gc
++    import sys
++
++    gc.collect()
++    torch = sys.modules.get("torch")  # (nothing to give back if torch was never imported)
++    if torch is None:
++        return
++    try:
++        if torch.backends.mps.is_available():
++            torch.mps.empty_cache()
++        if torch.cuda.is_available():
++            torch.cuda.empty_cache()
++    except (AttributeError, RuntimeError):  # (an old torch, or no device to empty)
++        pass
+ 
+ 
+ def check_cutout(cutouts: list[Cutout], image_height: int) -> tuple[Cutout | None, str]:
+diff --git a/tests/test_fabric.py b/tests/test_fabric.py
+index 8940889..2805b19 100644
+--- a/tests/test_fabric.py
++++ b/tests/test_fabric.py
+@@ -100,6 +100,56 @@ def repeat_of(tile, size, offset=(0, 0)):
+     return big[offset[0]:offset[0] + size, offset[1]:offset[1] + size].copy()
+ 
+ 
++def bands(kind, period, phase, size=512):
++    """Wide two-colour stripes, checks or gingham of ``period`` pixels: they tile only if the period divides
++    ``size``; otherwise one band at the wrap is the wrong width."""
++    x = np.arange(size)
++    on = (((x + phase) // (period / 2)) % 2).astype(bool)
++    navy, white, red = np.float32([30, 40, 90]), np.float32([240, 238, 230]), np.float32([170, 30, 40])
++    if kind == "stripes":
++        return np.where(on[None, :, None], navy, white) * np.ones((size, 1, 1), np.float32)
++    if kind == "check":
++        return np.where((on[None, :] ^ on[:, None])[..., None], red, white)
++    both = on[None, :].astype(np.float32) + on[:, None]
++    return white * (1 - both[..., None] / 2) + red * (both[..., None] / 2)
++
++
++def motifs(size, count, radius, ground, colour, seed, tiling=True):
++    """Ellipses of ``colour`` on a plain ``ground``, placed at random: a print, evenly lit. ``tiling``: drawn so that
++    they wrap round the edges (it tiles); else cut out of a larger piece (it does not)."""
++    rng = np.random.default_rng(seed)
++    side = size if tiling else 3 * size
++    image = np.full((side, side, 3), ground, np.float32)
++    shifts = (-size, 0, size) if tiling else (0,)
++    for _ in range(count if tiling else 9 * count):
++        cx, cy, angle = rng.uniform(0, side), rng.uniform(0, side), rng.uniform(0, 180)
++        for dx in shifts:
++            for dy in shifts:
++                cv2.ellipse(image, (int(cx + dx), int(cy + dy)), (radius, int(radius * 0.6)), angle, 0, 360, colour,
++                            -1, cv2.LINE_AA)
++    return image if tiling else image[size:2 * size, size:2 * size].copy()
++
++
++def lit(image, amount=0.4, seed=0):
++    """``image`` under light that varies once across it (tiling), ``exp(amount)`` from its darkest to its lightest."""
++    h, w = image.shape[:2]
++    y, x = (np.mgrid[0:h, 0:w] + 0.5) / np.float32([h, w])[:, None, None]
++    a = np.random.default_rng(seed).uniform(0, 2 * np.pi, 3)
++    field = np.cos(2 * np.pi * x + a[0]) + 0.6 * np.cos(2 * np.pi * y + a[1]) + 0.4 * np.cos(2 * np.pi * (x + y) + a[2])
++    return np.clip(image * np.exp(amount * field / np.ptp(field))[..., None], 0, 255).astype(np.float32)
++
++
++def spread(image, where):
++    """How unevenly the pixels ``where`` (the plain ground of a print) are lit: their 99th over 1st percentile."""
++    values = image[where].mean(axis=1)
++    return float(np.percentile(values, 99) / max(np.percentile(values, 1), 1e-3))
++
++
++def ground_of(image, colour):
++    """Where ``image`` is its plain ground of ``colour``."""
++    return np.all(np.abs(image - np.float32(colour)) < 1, axis=2)
++
++
+ # -- the description and the kiosk filter ------------------------------------------------------------------------
+ 
+ 
+@@ -121,10 +171,14 @@ def test_descriptions_are_tidied_and_put_in_the_template():
+ def test_the_kiosk_refuses_brands_characters_logos_and_offensive_words(tmp_path, monkeypatch):
+     words = PromptFilter.load()
+     refused = {"a Gucci print": ("brands", "gucci"), "LouisVuitton monogram": ("brands", "louisvuitton"),
+-               "g u c c i": ("brands", "g u c c i"), "gucc1 stripes": ("brands", "gucci"),
+-               "levi's denim": ("brands", "levi s"), "Hello Kitty pink": ("characters", "hello kitty"),
+-               "pokémon pattern": ("characters", "pokemon"), "with our logo": ("marks", "logo"),
+-               "brand™ stripes": ("marks", "™"), "nazi uniform": ("offensive", "nazi")}
++               "g u c c i": ("brands", "g u c c i"), "gucc1 stripes": ("brands", "gucci"), "gucci!": ("brands", "gucci"),
++               "levi's denim": ("brands", "levi"), "Dolce and Gabbana print": ("brands", "dolce and gabbana"),
++               "Saint Laurent monogram": ("brands", "saint laurent"), "Vuitton canvas": ("brands", "vuitton"),
++               "Hello Kitty pink": ("characters", "hello kitty"), "pokémon pattern": ("characters", "pokemon"),
++               "pikachus print": ("characters", "pikachus"), "Mickey print": ("characters", "mickey"),
++               "sex pistols tartan": ("characters", "sex pistols"), "with our logo": ("marks", "logo"),
++               "brand™ stripes": ("marks", "™"), "nazi uniform": ("offensive", "nazi"),
++               "f*ck you": ("offensive", "f*ck"), "fuk": ("offensive", "fuk"), "sh!t": ("offensive", "shit")}
+     for text, (kind, word) in refused.items():
+         problem = words.problem(text)
+         assert problem is not None and (problem.kind, problem.word) == (kind, word), text
+@@ -134,7 +188,8 @@ def test_the_kiosk_refuses_brands_characters_logos_and_offensive_words(tmp_path,
+     slur = codecs.decode("avttre", "rot13")  # (kept ROT13-encoded in the word list)
+     assert words.problem(f"{slur} print").kind == "offensive_rot13"
+     for fine in ("cocktail party print", "Sussex check", "off white linen", "peacock feathers", "gore tex shell",
+-                 "Ferrari red", "unisex jersey", "Scunthorpe tweed", "blue paisley silk", "#1f2a44 pinstripe"):
++                 "Ferrari red", "unisex jersey", "Scunthorpe tweed", "blue paisley silk", "#1f2a44 pinstripe",
++                 "titmouse birds", "polka dots!!", "100% cotton", "5* hotel stripes"):
+         assert words.problem(fine) is None, fine
+     with pytest.raises(PromptRefused, match="Brand names"):
+         FabricGenerator(None, cache=False).start("a nike swoosh")
+@@ -156,6 +211,27 @@ def test_the_kiosk_refuses_brands_characters_logos_and_offensive_words(tmp_path,
+     assert FabricGenerator(None, cache=False, words=None).prepare("gucci")[0] == "gucci"  # no filter at all
+ 
+ 
++def test_the_kiosk_takes_some_words_only_in_their_fabric_sense(tmp_path, monkeypatch):
++    words = PromptFilter.load()
++    for fine in ("nude satin", "nude pink chiffon", "nude and black stripes", "naked wool", "cock pheasant feathers",
++                 "hen and cock print", "bird print with blue tits", "great tits and robins", "long-tailed tits",
++                 "Dick Whittington", "nud3 satin"):
++        assert words.problem(fine) is None, fine
++    for text, word in (("nude", "nude"), ("nude woman satin", "nude"), ("nude photo silk", "nude"),
++                       ("nude landscape", "nude"), ("naked girl", "naked"), ("big tits", "tits"), ("cock", "cock"),
++                       ("dicks", "dicks"), ("n*de satin", "n*de"), ("c**k pheasant", "c**k")):
++        problem = words.problem(text)
++        assert problem is not None and (problem.kind, problem.word) == ("in context", word), text
++    assert words.problem("nudes").kind == "offensive"
++    nude = words.problem("nude").message
++    assert "does not accept" not in nude and "beige or blush" in nude and '"nude satin"' in nude
++    extra = tmp_path / "words.json"  # a user file can add words with a fabric sense too
++    extra.write_text(json.dumps({"in context": {"words": {"bolt": {"near": ["@materials"]}}}}))
++    monkeypatch.setenv(fabric.WORDS_ENV, str(extra))
++    mine = PromptFilter.load()
++    assert mine.problem("lightning bolt") is not None and mine.problem("a bolt of silk") is None
++
++
+ def test_fabric_scale_follows_the_kind_of_fabric():
+     silk, dots, paisley, palms = (fabric_scale(t) for t in ("navy silk", "polka dots", "blue paisley silk",
+                                                             "tropical palm leaves"))
+@@ -184,6 +260,17 @@ def test_the_seam_score_tells_swatches_that_tile_from_seams():
+     seams.append(repeat_of(P.polka_dots((240, 230, 210), (180, 40, 60), size=90), 512, (13, 31)))
+     for image in seams:
+         assert seam_score(image) > SEAM_THRESHOLD
++    # wide bands: one at the wrap is the wrong width (a narrow window has twins everywhere in a band)
++    for kind, period, phase in (("stripes", 136, 20), ("gingham", 100, 31), ("check", 190, 30), ("stripes", 250, 33)):
++        assert seam_score(bands(kind, period, phase)) > SEAM_THRESHOLD, (kind, period)
++    for kind, period in (("stripes", 128), ("gingham", 64), ("check", 256)):  # (they fit: they tile)
++        assert seam_score(bands(kind, period, 17)) <= SEAM_THRESHOLD, (kind, period)
++    base, other = periodic(512, 20, 2), periodic(512, 20, 52)  # a seam along a fifth of the edge only
++    part = base.copy()
++    part[:100, -40:] = other[:100, -40:]
++    assert seam_score(part) > SEAM_THRESHOLD >= seam_score(base)
++    for seed in range(3):  # prints that tile, whatever the layout of their motifs
++        assert seam_score(motifs(512, 20, 30, (235, 225, 205), (190, 40, 60), seed)) <= SEAM_THRESHOLD
+     parts = seam_scores(seams[-1])
+     assert set(parts) == {"step x", "band x", "rhythm x", "step y", "band y", "rhythm y"}
+     assert max(parts.values()) == pytest.approx(seam_score(seams[-1]))
+@@ -210,29 +297,60 @@ def test_the_repair_makes_any_image_tile_the_same_way_every_time():
+     profile = stripes[256, :, 0] > 128
+     widths = np.diff(np.flatnonzero(np.diff(profile.astype(int))))
+     assert widths.max() - widths.min() <= 4
+-
+-
+-def test_even_light_keeps_the_colours_and_the_tiling():
+-    tile = P.tile("tartan", (160, 30, 40), (20, 60, 40))  # 512 px, tiles
+-    y, x = np.mgrid[0:512, 0:512] / 512.0
+-    light = (1.0 + 0.35 * np.cos(2 * np.pi * (x - 0.3)) * np.cos(2 * np.pi * (y - 0.6)))[..., None]
+-    lit = np.clip(tile * light, 0, 255).astype(np.float32)
++    for image in (periodic(512, 6, 1), motifs(512, 7, 40, (25, 45, 90), (220, 120, 150), 3)):
++        assert seam_score(image) <= SEAM_THRESHOLD  # it tiles already: it comes back as it is
++        assert np.array_equal(make_seamless(image, even_light=False), image)
++        assert np.array_equal(make_seamless(image), image)  # (and its light is even)
++
++
++def test_the_repair_cuts_motifs_and_never_ghosts_them():
++    for seed in range(2):
++        for ground, colour, count, radius in (((235, 225, 205), (190, 40, 60), 20, 30),
++                                              ((14, 14, 14), (245, 245, 240), 12, 34)):
++            image = motifs(512, count, radius, ground, colour, seed, tiling=False)
++            fixed = make_seamless(image)
++            assert seam_score(fixed) <= SEAM_THRESHOLD < seam_score(image)
++            lab, palette = (cv2.cvtColor(np.float32(a) / 255, cv2.COLOR_RGB2Lab) for a in (fixed, [[ground, colour]]))
++            apart = np.linalg.norm(lab.reshape(-1, 1, 3) - palette.reshape(1, -1, 3), axis=2).min(axis=1)
++            assert (apart > 12).mean() < 0.02  # each pixel the ground or a motif (edges aside): nothing blended
++            assert spread(fixed, ground_of(fixed, ground) | (apart.reshape(512, 512) < 3)) < 1.05  # no light added
++    blotches = cut_out(512, 3, 1)  # smooth fabric that has nothing to cut along may be cross-faded instead
++
++
++def test_even_light_takes_out_light_and_leaves_prints_alone():
++    ground = (235, 225, 205)
++    for seed in range(3):  # a print's motifs spread unevenly are not light
++        image = motifs(512, 20, 30, ground, (190, 40, 60), seed)
++        assert np.array_equal(equalise_light(image), image) and not light_of(image)["light"]
++        uneven = lit(image, 0.4, seed)  # but real light is: the ground comes out even, the motifs keep their colour
++        where = ground_of(image, ground)
++        assert spread(uneven, where) > 1.3 and spread(equalise_light(uneven), where) < 1.08
++    tile = np.tile(P.tartan((160, 30, 40), (20, 60, 40), size=128), (4, 4, 1)).astype(np.float32)  # 4 setts, tiles
++    light = lit(tile, 0.6, 5)
+ 
+     def unevenness(image):
+         return float(cv2.GaussianBlur(image @ np.float32([0.2126, 0.7152, 0.0722]), (0, 0), 40).std())
+ 
+-    even = equalise_light(lit)
+-    assert unevenness(even) < 0.45 * unevenness(lit) and unevenness(even) < 1.2 * unevenness(tile)
++    even = equalise_light(light)
++    assert unevenness(even) < 0.45 * unevenness(light) and unevenness(even) < 1.5 * unevenness(tile) + 1
+     hue = [cv2.cvtColor(np.clip(i, 0, 255).astype(np.uint8), cv2.COLOR_RGB2HSV)[..., 0] for i in (tile, even)]
+     assert np.median(np.abs(hue[0].astype(int) - hue[1].astype(int))) == 0  # the colours stay
+-    lum = [float((i @ np.float32([0.2126, 0.7152, 0.0722])).mean()) for i in (lit, even)]
++    lum = [float((i @ np.float32([0.2126, 0.7152, 0.0722])).mean()) for i in (light, even)]
+     assert lum[1] == pytest.approx(lum[0], rel=0.02)  # and the brightness
+     assert seam_score(even) <= SEAM_THRESHOLD
++    verdict = light_of(light)
++    assert verdict["light"] and verdict["change"] > 1.5 and verdict["prominence"] > 2.5 and verdict["colour"] < 0.5
++    for blotchy in (periodic(512, 3, 1), periodic(512, 6, 2)):  # slow blotches are the fabric's own: left alone
++        assert np.array_equal(equalise_light(blotchy), blotchy)
++    sett = P.tartan((40, 90, 170), (240, 240, 236), size=512)  # one sett across: blue to white is colour, not light
++    assert light_of(sett)["colour"] > 0.5 and np.array_equal(equalise_light(sett), sett.astype(np.float32))
+     gradient = periodic(256, 12, 3) * (0.6 + 0.8 * np.arange(256) / 255)[None, :, None]
+     flat = equalise_light(gradient, periodic=False)  # an image that does not tile yet: a gradient goes too
+     columns = flat.mean(axis=(0, 2))
+     assert abs(columns[-32:].mean() - columns[:32].mean()) < 0.25 * abs(gradient.mean(axis=(0, 2))[-32:].mean()
+                                                                        - gradient.mean(axis=(0, 2))[:32].mean())
++    cut = motifs(512, 20, 30, ground, (190, 40, 60), 4, tiling=False)
++    assert np.array_equal(equalise_light(cut, periodic=False), cut)  # (nor is a cut-out print's layout)
+ 
+ 
+ def test_resizing_a_repeat_wraps_round_its_edges():

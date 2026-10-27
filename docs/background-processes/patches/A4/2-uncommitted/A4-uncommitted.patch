@@ -1,0 +1,287 @@
+diff --git a/src/bifold_demo/characters/headtex/__init__.py b/src/bifold_demo/characters/headtex/__init__.py
+index bf95e76..2d92fae 100644
+--- a/src/bifold_demo/characters/headtex/__init__.py
++++ b/src/bifold_demo/characters/headtex/__init__.py
+@@ -13,20 +13,28 @@ body. Eight stages:
+    landmarks, or the head's outline for photos without a face), a thin-plate warp that puts the person's eyes, brows,
+    nose and mouth on the avatar's, segmentation masks, a quality score and warnings: a :class:`~.register.View`.
+ 2. Normalise the photos (optional, generative): even light, neutral expression, no glasses.
+-3. Project and fuse the views in the head texture's UV layout (:mod:`..uvbake` knows each texel's 3D point).
+-4. Take the photos' lighting out and set the skin tone.
++3. **Project and fuse** (:mod:`.fuse`): every texel of the head texture (:mod:`..uvbake` knows its 3D point) is
++   depth-tested against the head as each photo's camera sees it and read from the photo through the face warp,
++   weighted by the viewing angle, the segmenter's classes, the distance from the masks' edges, the view's quality
++   and the photo pixels per texel; the photos' gains are evened out on their overlaps and the photos are blended in
++   five bands, island by island. A confidence per texel and a keep / refine / generate trimap come with it.
++4. **Light and skin tone** (:mod:`.light`): each photo's light (spherical harmonics of the normal, fitted to its face
++   skin) divided out, the avatar's own painted soft light put back, the person's skin tone (a trimmed Lab median of
++   the cheeks and forehead) for stage 6, and the avatar's own texture tone-matched to it where no photo reaches.
+ 5. Complete what no photo shows (generative, with a deterministic fallback).
+ 6. Match the body's skin, the neck seam and the hair colour.
+ 7. Check the identity (face recognition on renders) and save.
+ 
+-This package has stages 0 and 1 so far; the later stages build on their output (``View.photo_pixels`` maps any point
+-of the head to the photo pixel showing it).
++This package has stages 0, 1, 3 and 4 so far: :func:`~.texture.head_texture` turns photos into a
++:class:`~.texture.HeadTexture` and :func:`~.texture.wear` puts it on a scene character; the later stages build on its
++confidence, trimap and skin tone.
+ 
+ The pieces: :mod:`.camera` (a pinhole camera in character space; the head's yaw, pitch and roll), :mod:`.detect`
+ (MediaPipe's Face Landmarker and selfie segmenter, an optional dependency), :mod:`.canonical` (which landmark is which;
+-MediaPipe's canonical face), :mod:`.raycast` (rays and nearest points on a mesh), :mod:`.warp` (thin-plate splines)
+-and :mod:`.cli` (``bifold-faces landmarks`` and ``bifold-faces register``). Photos and textures made from them are
+-personal data: keep them in git-ignored folders.
++MediaPipe's canonical face), :mod:`.raycast` (rays and nearest points on a mesh), :mod:`.raster` (a z-buffer of a
++mesh in numpy), :mod:`.warp` (thin-plate splines), :mod:`.texture` (the stages end to end, previews, wearing the
++result) and :mod:`.cli` (``bifold-faces landmarks``, ``register`` and ``headtex``). Photos and textures made from
++them are personal data: keep them in git-ignored folders.
+ """
+ 
+ from .camera import PhotoCamera
+@@ -34,8 +42,10 @@ from .fuse import HeadAtlas, Projection, head_atlas
+ from .landmarks import HeadLandmarks, head_landmarks
+ from .light import Shading, Tone
+ from .register import View, draw_registration, head_regions, register_photo, register_photos
+-from .texture import HeadTexture, fuse_views, head_texture, head_texture_async, preview, take_off, wear
++from .texture import (HeadTexture, fuse_views, head_texture, head_texture_async, neck_seam, preview, skin_gap,
++                      take_off, wear)
+ 
+ __all__ = ["HeadAtlas", "HeadLandmarks", "HeadTexture", "PhotoCamera", "Projection", "Shading", "Tone", "View",
+            "draw_registration", "fuse_views", "head_atlas", "head_landmarks", "head_regions", "head_texture",
+-           "head_texture_async", "preview", "register_photo", "register_photos", "take_off", "wear"]
++           "head_texture_async", "neck_seam", "preview", "register_photo", "register_photos", "skin_gap", "take_off",
++           "wear"]
+diff --git a/src/bifold_demo/characters/headtex/fuse.py b/src/bifold_demo/characters/headtex/fuse.py
+index 15c7c04..d3a1f62 100644
+--- a/src/bifold_demo/characters/headtex/fuse.py
++++ b/src/bifold_demo/characters/headtex/fuse.py
+@@ -4,17 +4,23 @@
+ (:mod:`..uvbake`) gives every texel of the head texture its point and normal on the head in the bind pose. Each
+ texel is also given a part (:data:`PARTS`):
+ 
+-* ``eye``: the eyeballs. Both eyes share one patch of the texture (the bake's overlap), and a photo's eyes look
+-  wherever the person looked: projected, they would paint a second, misplaced iris on both eyeballs. The avatar's own
+-  eyeballs stay (stage 6 recolours the irises).
++* ``eye``: the eyeballs (the eye bones' texels and the bake's overlap: both eyes share one patch of the texture) and
++  the eye openings (inside the lids' contour seen from the front: the eyeballs and the lids' inner rims). A photo's
++  eyes look wherever the person looked: projected, they would paint a second, misplaced iris on both eyeballs, and
++  the white of the eye on the rims. The avatar's own eyes stay, exactly (stage 6 recolours the irises).
+ * ``inner``: what no camera outside the head ever sees: the inside of the mouth (teeth, gums, tongue, behind closed
+-  lips in the bind pose), the inside of the nostrils and the neck. Found by the z-buffer (:mod:`.raster`) from 34
+-  directions around the head; the avatar's own texture stays there too.
+-* ``neck``: texels the neck and spine bones move (the head mesh reaches down to the collar). The segmenter calls a
+-  person's neck body skin, so body skin counts there.
+-* ``scalp``: what the segmenter calls hair on renders of the avatar (:func:`~.register.head_regions`, per triangle),
+-  or, without them, the texels whose colour is far from the avatar's skin. The *hairline* is the scalp and the face
+-  skin within :data:`HAIRLINE` of it: the only texels a photo's hair may go to.
++  lips in the bind pose), the inside of the nostrils and of the neck. Found by z-buffers (:mod:`.raster`) from 33
++  directions around the head, with the body's triangles in them (they close the head mesh's open neck, through which
++  a camera from below would see the mouth from inside), and none from straight below; the avatar's own texture stays
++  there, tone-matched where it looks like skin.
++* ``neck``: texels the neck and spine bones move (the head mesh reaches down to the collar), and what the segmenter
++  calls body skin on renders of the avatar below the mouth (under the jaw). The segmenter calls a person's neck body
++  skin, so body skin counts there.
++* ``scalp``: what the segmenter calls hair on renders of the avatar (:func:`~.register.head_regions`, per triangle;
++  specks voted away by the neighbouring triangles, and spread into the strands of long hair outside the head's
++  outline), or, without those labels, the texels whose colour is far from the avatar's skin. A UV island that is
++  mostly scalp is all scalp (a strand of hair the segmenter partly took for skin). The *hairline* is the scalp and
++  the face skin within :data:`HAIRLINE` of it.
+ * ``face``: the rest: the face, the ears, the skin of the head.
+ 
+ Features (:data:`FEATURES`: brows, eyes, lips, nostrils) and the cheeks and forehead (the skin tone's texels) come
+@@ -33,20 +39,28 @@ the photo (no aliasing in a 12-megapixel photo). Its weight is the product of:
+ * the viewing angle: the cosine between the normal and the direction to the camera, to the power
+   :data:`ANGLE_POWER` (0 below :data:`MIN_FACING`);
+ * the segmentation class at the pixel: the segmenter's confidence of face skin on face texels (and of hair in the
+-  hairline), of hair, face skin and, at half weight, "others" (blond hair seen from behind) on the scalp, of face and
+-  body skin on the neck; never background or clothes, and only the person whose head the camera was fitted to (the
+-  connected parts of the masks that the avatar's head covers): other people in the photo do not count;
+-* the distance from the edge of those masks and from the photo's border: rising from 0 to 1 over
+-  :data:`EDGE_RAMP` of the face's size, so a slightly misregistered edge does not bleed hair or background in;
+-* the view's quality (stage 1) and the photo pixels per texel (:data:`GOOD_FOOTPRINT` for full marks, seen squarely);
++  hairline: the only face texels a photo's hair may go to, as hairlines differ), of hair and, at half weight,
++  "others" (blond hair seen from behind) on the scalp (never face skin: a person's forehead under a receding
++  hairline must not paint skin over the avatar's hair), of face and body skin on the neck; never background or
++  clothes, and only the person whose head the camera was fitted to (the connected parts of the masks that the
++  avatar's head covers): other people in the photo do not count;
++* the distance from the edge of those masks, from the photo's border and from the head's outlines as the camera
++  sees them (where the z-buffer's depth jumps: just behind the jaw a texel passes the depth test while its pixel,
++  a little misregistered, shows the neck below): rising from 0 to 1 over :data:`EDGE_RAMP`, :data:`BORDER_RAMP` and
++  :data:`OUTLINE_RAMP` of the face's size, so a slightly misregistered edge does not bleed hair or background in;
++* the view's quality (stage 1) and the photo pixels per texel (:data:`GOOD_FOOTPRINT` for full marks, seen squarely;
++  smoothed over a few texels, as it is constant per triangle);
+ * a tenth on the lips of a photo with an open mouth.
+ 
+-Stage 4 (:mod:`.light`) then divides each projection by its photo's fitted light and multiplies the weight by how
+-well lit each texel was.
++Stage 4 (:mod:`.light`) then divides each projection by its photo's fitted light and, after the gains, multiplies the
++weight by how well lit each texel was.
+ 
+ **Gain compensation** (:func:`gains`). Exposure and white balance differ between photos. Each photo gets a gain per
+ channel from a least-squares fit on the overlaps of the face skin (Brown and Lowe's, as in OpenCV's stitcher): the
+-mean colours two photos show in their overlap are made to agree, with a pull towards a gain of 1.
++mean colours two photos show in their overlap (relative to the overlaps' mean) are made to agree. The most frontal
++photo (turned less than :data:`ANCHOR_YAW`) is the anchor, held near a gain of 1, and the others follow it: de-lit,
++a photo of the shadowed side of a face is scaled to the brightest light it saw, which is shadow, and its gain is
++what puts it back at the level of the light. Without an anchor every gain is pulled towards 1 alike.
+ 
+ **The blend** (:func:`blend`). A multi-band blend (Burt and Adelson; :data:`BANDS` bands at 1024 texels) island by
+ island: in each UV island's box every source is filled outside where it has colours by push-pull (:func:`push_pull`),
+@@ -54,17 +68,19 @@ so no colour of another island or of the empty gutter ever enters a blur, and it
+ the Gaussian pyramid of its soft winner-takes-all weight (the weights to the power :data:`WINNER_POWER`, normalised).
+ The finest band thus comes from the best photo at each texel (no ghosted double edges where the registrations differ
+ by a texel or two), the coarse ones mix the photos over wide areas (no visible seams in tone). The avatar's own
+-texture is one more source with a small constant weight (:data:`BASE_WEIGHT`), tone-matched to the person's skin, so
+-texels no photo shows keep it and the photos' tone feathers into it.
++texture is one more source with a small constant weight (:data:`BASE_WEIGHT`: what a good photo gives a texel turned
++65 degrees away), tone-matched to the person's skin, so texels no photo shows keep it, the photos' tone feathers
++into it, and the last, grazing texels of a photo's reach, where its colours are least sure, lean on it.
+ 
+ **Padding** (:func:`pad`). Around the islands the texture is filled by push-pull from the islands' own texels, so
+ bilinear filtering and the renderer's mipmaps never pull in other colours (the avatars' own textures are black there,
+ which shows as dark seams on far-away heads).
+ 
+ **Confidence and trimap** (:func:`confidence`, :func:`trimap`). A texel's confidence is ``1 - exp(-W / 0.25)`` of the
+-total photo weight ``W`` (one squarely seen photo gives about 0.9); from it the trimap for stage 5 (the generative
+-completion): ``keep`` (confidence :data:`KEEP_AT` and up, and the eyes and the inside of the mouth, which stay the
+-avatar's own), ``refine`` (from :data:`REFINE_AT`), ``generate`` (the rest).
++total photo weight ``W`` (a good photo that sees a texel squarely gives it 0.9 or more, one turned 60 degrees away
++about 0.4); from it the trimap for stage 5 (the generative completion): ``keep`` (confidence :data:`KEEP_AT` and up,
++and the eyes and the inside of the mouth, which stay the avatar's own), ``refine`` (from :data:`REFINE_AT`, about
++where the avatar's own texture starts to outweigh the photos in the blend), ``generate`` (the rest).
+ """
+ 
+ from __future__ import annotations
+diff --git a/src/bifold_demo/characters/headtex/light.py b/src/bifold_demo/characters/headtex/light.py
+index b88f41b..69a3b70 100644
+--- a/src/bifold_demo/characters/headtex/light.py
++++ b/src/bifold_demo/characters/headtex/light.py
+@@ -5,35 +5,50 @@ away depends, to within a few per cent, only on which way the surface faces: a s
+ normals that the nine spherical harmonics of orders 0 to 2 describe (Ramamoorthi and Hanrahan 2001; the lighting model
+ of DECA and Deep3DFaceRecon). Stage 3 knows the normal of every texel and the colour a photo shows there, so each
+ photo's light is fitted to its face-skin texels (cheeks, forehead, nose, chin; the brows, eyes, lips and nostrils,
+-which have colours of their own, are left out): the luminance as nine coefficients times the harmonics of the normal,
+-by weighted least squares with a little ridge on orders 1 and 2 (a photo sees only half of the sphere of normals),
++which have colours of their own, are left out, and so are texels whose chroma is far from the rest's, such as a
++beard or make-up: :func:`like_skin`): the luminance as nine coefficients times the harmonics of the normal, by
++weighted least squares with a little ridge on orders 1 and 2 (a photo sees only half of the sphere of normals),
+ re-weighted three times (Tukey's biweight) so that cast shadows, highlights, stray hair and misregistered texels drop
+-out. Dividing the photo's colours by the fitted shading, scaled to a mean of 1 over the fitted texels, takes the
+-photo's low-frequency light out and keeps its mean colour: a face lit from one side comes out evenly lit, as bright on
+-average as it was. :class:`Shading` is such a fit.
++out. :class:`Shading` is such a fit, scaled to 1 at the 99th percentile of the fitted texels' shading: the brightest
++light the skin shows. Dividing the photo's colours by it takes the photo's low-frequency light out and leaves the
++skin as bright as where the light fell squarely: a face lit from one side comes out evenly lit, as if all of it
++faced the light (and the avatar's own shading, below, is scaled the same way, so the levels agree where photos and
++the avatar's texture meet). Only the shading the fitted texels showed is trusted (:meth:`Shading.clamped`): away
++from the normals it was fitted to (under the chin, for a photo from the front) the harmonics are an extrapolation,
++and dividing by a value darker than any the skin showed makes bright patches.
+ 
+ Only the luminance is fitted, the same shading divides all three channels. Fitting each channel on its own would also
+ take out the skin's own colour where it follows the shape of the face (redder cheeks, a paler forehead), which matters
+ more for a likeness than a coloured light does; a photo's overall colour cast is what the gain compensation of stage 3
+-evens out between the views, and stage 6 matches to the body.
++evens out between the views, and stage 6 matches to the body. The photos' levels differ after de-lighting (each is
++scaled to the brightest light it saw: in a photo of the shadowed side of a face, that is shadow); the gains of stage
++3, anchored on the most frontal photo, put them on its level.
+ 
+ **What it cannot take out.** Shadows that one part of the face casts on another (the nose's on the cheek under a
+ spotlight), sharp highlights, and light so harsh that the shadowed side is lost in the dark or in JPEG noise: the
+-harmonics are a function of the normal only. Texels a photo shows in deep shadow therefore count less in stage 3's
+-blend (:func:`light_weight`), so another photo that shows them lit takes over.
++harmonics are a function of the normal only, and nine of them cannot follow the sharp edge between a lit and an
++unlit side (they ring by about a tenth there). Texels a photo shows in deep shadow therefore count less in stage 3's
++blend (:func:`light_weight`, after the gains), so another photo that shows them lit takes over. Measured on renders
++of an avatar lit from one side (the README has the table): with the ambient light at half of the total, the
++difference between the two halves of the face falls from about 20 to 3 (Lab lightness); at a third, from 30 to 9;
++with less ambient light about 10 stays, and the face's lit half comes out up to 9 darker than it should. A photo
++whose fitted light is that harsh (:attr:`Shading.contrast` over 8) gets a warning.
+ 
+ **The avatar's own soft light.** A Rocketbox head texture has soft light and ambient occlusion painted in (lighter
+ on top, darker under the chin), and the body texture has the same; a de-lit face on that body would look pasted on.
+ The same fit on the avatar's own texture (its face and neck skin) gives its painted shading as a function of the
+-normal (:func:`own_shading`). Stage 3 blends in "albedo" (each photo divided by its shading, the avatar's own texture
+-divided by its own) and the result is multiplied by the avatar's shading again, so the new head is lit as the old
+-one was. Its texels no photo shows come back exactly as they were (times the tone change below).
++normal (:func:`own_shading`; scaled to 1 at the brightest of the face skin a photo from the front sees, and kept
++within :data:`OWN_RANGE`, as the fit is extrapolated over the back of the head). Stage 3 blends in "albedo" (each
++photo divided by its shading, the avatar's own texture divided by its own) and the result is multiplied by the
++avatar's shading again, so the new head is lit as the old one was. Its texels no photo shows come back exactly as they
++were (times the tone change below).
+ 
+ **The skin tone.** The person's skin target is a trimmed median, in Lab, of the cheeks and the forehead (where the
+ landmarks put them on the head) over all the photos, after de-lighting and the gain compensation, as the finished
+-texture will show them (:func:`skin_tone`): the lightest and darkest fifth of the samples (highlights, shadows,
+-stray hair) and those far from the median colour are dropped first. Stage 6 matches the body's skin to it. The same
+-median of the avatar's own texture, on the same texels, gives the change that tone-matches the texels no photo shows.
++texture will show them (:func:`tone`, a :class:`Tone`): the lightest and darkest fifth of the samples (highlights,
++shadows, stray hair) and those far from the median colour are dropped first. Stage 6 matches the body's skin to it.
++The same median of the avatar's own texture, on the same texels, gives the change that tone-matches the texels no
++photo shows.
+ """
+ 
+ from __future__ import annotations
+@@ -130,8 +145,9 @@ ORDERS = np.array([0, 1, 1, 1, 2, 2, 2, 2, 2])
+ @dataclass
+ class Shading:
+     """Low-frequency light as a function of the surface's normal: ``coefficients`` of :func:`sh_basis`, scaled so
+-    the shading is 1 on average over the texels it was fitted to. ``residual``: the robust spread of the relative
+-    residuals of the fit (0.05: the light explains the colours to within 5 %)."""
++    the shading is 1 where the texels it was fitted to were lit most (its 99th percentile there, see the module
++    docs). ``residual``: the robust spread of the relative residuals of the fit (0.05: the light explains the colours
++    to within 5 %)."""
+ 
+     coefficients: np.ndarray  # (9,)
+     residual: float = math.nan
+diff --git a/src/bifold_demo/characters/headtex/texture.py b/src/bifold_demo/characters/headtex/texture.py
+index c973aa4..5cccf8e 100644
+--- a/src/bifold_demo/characters/headtex/texture.py
++++ b/src/bifold_demo/characters/headtex/texture.py
+@@ -16,12 +16,22 @@ and the keep / refine / generate trimap for stage 5, the person's skin tone for
+ warnings and the timings.
+ 
+ The order of the work, per photo: project (the depth test, the photo read through the face warp, the weights), fit
+-and divide out its light, then the gains between the photos; then the skin tone, the avatar's own texture
+-tone-matched to it, the multi-band blend in "albedo" (light divided out), the avatar's soft light multiplied back in,
+-sRGB, padding.
+-
+-The work takes a few seconds and holds Python's interpreter lock only part of the time (most of it is in numpy and
+-OpenCV): :func:`head_texture_async` runs it on a worker thread and returns a :class:`~concurrent.futures.Future`.
++and divide out its light; then the gains between the photos (anchored on the most frontal one) and the weights scaled
++by how well lit each texel was; then the skin tone, the avatar's own texture tone-matched to it, the multi-band blend
++in "albedo" (light divided out), the eyes and the inside of the mouth back as they were, the avatar's soft light
++multiplied back in, sRGB, padding.
++
++To check a result: :func:`preview` renders the avatar wearing it from the front, three-quarter and the side;
++:func:`debug_images` shows the parts, the confidence, the trimap and each photo's colours and weights in the layout;
++:func:`neck_seam` and :func:`skin_gap` measure how far the head's skin is from the body's (what stage 6 closes).
++
++The work takes about five seconds for four 1280x960 photos on four cores (and about ten more once per avatar, for
++its landmarks, regions and atlas, which are then cached on disk). Most of it is numpy and OpenCV, which let go of
++Python's interpreter lock while they compute: :func:`head_texture_async` runs it on a worker thread and returns a
++:class:`~concurrent.futures.Future`. Beside a render loop paced to 30 frames a second the frames stay as they were
++(16 ms against 14) and the texture takes twice as long; a render loop that never waits (one slower than 30 frames a
++second, on the software renderer) keeps the lock while the renderer draws, and the worker then takes ten times as
++long.
+ """
+ 
+ from __future__ import annotations
+@@ -110,10 +120,8 @@ class HeadTexture:
+             lines.append(f"  hair {self.hair}")
+         for p in self.projections:
+             if p.shading is not None:
+-                d = p.shading.direction
+-                lines.append(f"  {p.name}: light from ({d[0]:+.2f}, {d[1]:+.2f}, {d[2]:+.2f}), contrast "
+-                             f"{p.shading.contrast:.1f}, fit within {100 * p.shading.residual:.0f} %, gains "
+-                             + " ".join(f"{g:.2f}" for g in p.gain))
++                lines.append(f"  {p.name}: light {describe_light(p.shading)}, fit within "
++                             f"{100 * p.shading.residual:.0f} %, gains " + " ".join(f"{g:.2f}" for g in p.gain))
+         lines += [f"  warning: {w}" for w in self.warnings]
+         lines.append("  timings: " + ", ".join(f"{k} {v:.2f} s" for k, v in self.timings.items()))
+         return "\n".join(lines)
+@@ -530,4 +538,4 @@ def describe_light(shading: light.Shading | None) -> str:
+ 
+ 
+ __all__ = ["HeadTexture", "debug_images", "describe_light", "fuse_views", "head_texture", "head_texture_async",
+-           "preview", "take_off", "wear"]
++           "neck_seam", "preview", "skin_gap", "take_off", "wear"]

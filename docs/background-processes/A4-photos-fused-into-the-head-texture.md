@@ -9,6 +9,8 @@
   - `792d09e` "WIP ...: avatar tests, neck seam, exact eyes".
 - **Uncommitted edits** in `fuse.py`, `light.py`, `texture.py` and `headtex/__init__.py` (+110/-60 lines).
 - **Not reviewed** and not on the branch.
+- **Saved:** the WIP commits are in [patches/A4/1-wip-commits](patches/A4/1-wip-commits/) and the uncommitted edits in
+  [patches/A4/2-uncommitted](patches/A4/2-uncommitted/).
 
 The step's brief is the scratch file `briefs/A4_fuse.md` and its progress log is `steps/A4_fuse/progress.md`. The
 approach is stages 3 and 4 of [the literature review](../research/face_head_texture.md) (section 3). It builds on A3

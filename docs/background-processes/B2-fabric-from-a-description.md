@@ -11,6 +11,8 @@
 - **Fix:** the builder was fixing them, with the work uncommitted in the worktree, when it was stopped: 6 files,
   +778/-227 lines (see [the fix, part way](#the-fix-part-way)).
 - **To finish:** tests for the last three findings, the full suite, lint, commits, then integration.
+- **Saved:** the commits are in [patches/B2/1-commits](patches/B2/1-commits/) and the uncommitted fix in
+  [patches/B2/2-uncommitted-review-fix](patches/B2/2-uncommitted-review-fix/).
 
 The approach is Stage 2 of [the outfit literature review](../research/outfit_textures.md) (section 3), with its
 fallback ladder. **No real text-to-image model can run here** (Hugging Face is not reachable). The generative path is

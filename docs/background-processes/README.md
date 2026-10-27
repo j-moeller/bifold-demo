@@ -47,6 +47,8 @@ cannot be downloaded here, the safety and privacy rules, and findings that matte
   for data that is not here: raw Rocketbox files and wave clips.
 - **Only in local worktrees:** the work of B2, C2 and A4. Worktrees live under `.claude/worktrees/` in this
   container's checkout and are **not pushed**, so they are lost if the container is reclaimed.
+- **Saved as patches:** this work, commits and uncommitted edits alike, is in [patches/](patches/), one patch per
+  directory, with how to apply each. Applied to their bases, the patches give exactly the worktrees' trees.
 
 | Step | Worktree (branch) | Commits not on the branch | Uncommitted |
 |---|---|---|---|

@@ -17,6 +17,7 @@
   [the recheck, stopped part way](#the-recheck-stopped-part-way)).
 - **To finish:** the recheck's last items, a decision on its new findings, then integration: replay the five commits
   onto the branch, run the full suite there and push.
+- **Saved:** the five commits are in [patches/C2/1-commits](patches/C2/1-commits/).
 
 **State when paused.** Implemented in three commits in the worktree `.claude/worktrees/wf_17f4d8c3-caf-1`:
 
