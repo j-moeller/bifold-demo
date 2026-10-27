@@ -7,7 +7,7 @@ from bifold_morph.warp import TEMPLATES
 from bifold_morph.faces import FaceDetector
 from bifold_morph.gfpgan import GFPGANv1, to_input, to_bgr
 from bifold_morph.nets import ArcFace, FairFace, GenderAge
-from bifold_morph.directions import ridge, unit, without, logit
+from bifold_morph.distill import ridge, unit, without, logit  # (bifold_morph.directions when it ran)
 M, I, OUT = sys.argv[2], sys.argv[3], sys.argv[4]
 torch.set_num_threads(4)
 d = np.load(f"{OUT}/samples.npz"); W, F, A = d["w"].astype(np.float64), d["female"], d["age"]
