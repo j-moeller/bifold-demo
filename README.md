@@ -183,8 +183,9 @@ or a pattern per garment, and short descriptions such as "navy pinstripe" or
 "white polka dots on black". The folds, seams, buttons and stitching of the
 avatar's own clothes stay. This is the first step of the character creator
 (component 2 in
-[docs/research/outfit_textures.md](docs/research/outfit_textures.md)). The
-generative fabric, the creator screen and saving come later.
+[docs/research/outfit_textures.md](docs/research/outfit_textures.md)).
+Fabrics made from a description by a text-to-image model are in the next
+section; the creator screen comes later.
 
 ```python
 from bifold_demo.characters.outfit import dress, undress
@@ -287,8 +288,8 @@ the middle of the back, under the arm, the inside leg. So a pattern keeps one
 size, runs on across UV cuts and matches front and back. Stripes run down the
 body and along the sleeves. `Pattern("tartan", "red", "navy", scale=0.15,
 rotation=45)` sets the repeat in metres and the angle. A `Swatch("fabric.png",
-scale=0.2)` tiles any seamless image the same way, and so will the generated
-fabrics.
+scale=0.2)` tiles any seamless image the same way, and so do the fabrics made
+from a description (next section).
 
 **Descriptions.** Keywords make the fills, and the same words always give the
 same result:
@@ -333,6 +334,148 @@ person's photos. The texels the outfit leaves alone keep that texture, and
 texture to start from.
 [docs/previews/outfits.jpg](docs/previews/outfits.jpg) shows six avatars in
 four presets and two descriptions.
+
+## Fabrics from a description
+
+[`characters/outfit/fabric.py`](src/bifold_demo/characters/outfit/fabric.py)
+turns a description such as "blue paisley silk" into a seamless fabric swatch
+with a text-to-image model, and puts it on a garment like any other fill: the
+avatar's folds and stitching stay. This is stage 2 of the outfits in
+[docs/research/outfit_textures.md](docs/research/outfit_textures.md). Without
+a model it falls back to the keyword fabric of the section above.
+
+```python
+from bifold_demo.characters.outfit import FabricGenerator, dress, fabric_fill
+
+dress(person, {"top": fabric_fill("blue paisley silk")})  # the best of 4 swatches
+
+generator = FabricGenerator()               # FLUX.2 [klein] 4B, 4 seeds of 512 px
+job = generator.start("blue paisley silk")  # returns at once; the work is on a thread
+new = job.poll()                            # the swatches so far, the keyword preview first
+job.cancel()                                # stops at the end of the next denoising step
+dress(person, {"top": job.best.fill()})
+```
+
+```bash
+bifold-characters fabric "blue paisley silk" -o swatch.png --sheet all.png
+bifold-characters fabric "green linen" --avatar Business_Male_02 --region top --views views.png
+bifold-characters fabric "red tartan" --model none   # no model: the keyword fabric
+```
+
+**How a swatch is made.** The description is tidied (spacing, "please make me
+a", the words the prompt already says) and checked against the kiosk's word
+lists. It goes into the prompt `seamless tileable fabric texture, flat lay,
+top-down, even diffuse light, no folds, <description>`. A preview comes first,
+at once: what the keyword parser makes of the words it knows. Then the seeds
+(four by default) go down the fallback ladder until some come out seamless:
+
+1. FLUX.2 [klein] 4B with latent rolling, at its 4 steps;
+2. the same at 12 steps;
+3. SD-Turbo with circular padding;
+4. the model-free repair of the best image the models made;
+5. the keyword fabric (`parse_fill`);
+6. a plain colour: the colour word nearest to one in the text, or grey.
+
+Each step down says why: a seam on every seed, or a model that failed (out of
+memory, an error; it is then not tried at more steps either). Missing
+packages, weights that are not downloaded or no network go straight to the
+keyword fabric, with the command that installs or fetches what is missing.
+`--model z-image-turbo` puts Z-Image-Turbo in klein's place; `--model
+sd-turbo` starts at SD-Turbo.
+
+**Making a model paint a repeat.** FLUX.2 [klein] and Z-Image are diffusion
+transformers: they see the picture as patches at fixed positions, with no
+padding to change. So after every denoising step, the pipeline's
+`callback_on_step_end` rolls the latents round the image (what leaves the
+right edge comes back in at the left), and the next step paints across the old
+edge. The roll is random, up to half the image at first and shrinking to none
+for the last step, and the last callback rolls the latents back to where they
+began. FLUX.2 keeps its latents as a packed sequence of tokens, one per 16 x 16
+pixels, row by row: they are unpacked to the grid, rolled by whole tokens and
+packed again. Z-Image keeps the latent grid, rolled by whole 2 x 2 patches.
+The VAE decoder pads circularly, so the decoded edges match. SD-Turbo is a
+convolutional UNet: circular padding of its UNet and VAE makes it paint on a
+torus. Both patches last for one call only and are undone afterwards, also
+after an error or a cancel, so the same loaded pipeline still makes other
+pictures; the pipeline's lock is held meanwhile.
+
+**Checking and repairing seams.** Every image gets a seam score: how much its
+wrap (right edge against left, bottom against top) stands out from the inside
+of the image, as a step, as a line along the edge, or as a broken rhythm of a
+regular pattern. About 1 means it tiles; above 1.25 a seam shows and the seed
+is left out. When no seed of any model tiles, the best image is repaired
+without a model: it is rolled by half so its seams cross in the middle, and
+the strips either side of each seam are overlaid and cut where they agree
+best (image quilting's minimum-error cut), the fine detail switching at the
+cut and the coarse colour cross-fading round it. On synthetic textures that do
+not tile, the repair brings 46 of 48 below 1.25; the two left are the
+smoothest, with three blobs across. `make_seamless(image)` repairs any image
+and `seam_score(image)` scores one. Kept swatches get even light: the light
+that varies once across the swatch is divided out and the colours stay, since
+the tailor adds the garment's own shading. On this project's 4-CPU sandbox the
+score takes 40 ms, the light 10-20 ms and the repair 0.13 s at 512 px (0.25 s
+at 768).
+[docs/previews/fabric.jpg](docs/previews/fabric.jpg) shows the repair, the
+ladder's keyword rungs and three avatars in repaired synthetic swatches; no
+model could run where it was made.
+
+**Size on the body.** A swatch's repeat in metres depends on the kind of
+fabric its words name: a material alone (silk, denim, wool) is a close-up of
+its weave, 8 cm; small prints (dots, gingham, pinstripes) 10 cm; prints
+(paisley, florals, checks, plaids) 20 cm; large prints (camouflage, tropical,
+animal prints) 35 cm. Size words (`tiny`, `large`, ...) scale them, and
+`scale=` (or `--scale`) sets it.
+
+**The kiosk filter.** A public fair gets every kind of request. Brand names,
+characters and logos ("Gucci", "Hello Kitty", "with our logo") and offensive
+words are refused with a message to show, whatever their case, accents,
+spacing ("g u c c i") or digits standing in for letters ("gucc1"). Only whole
+words count, so "cocktail" and "Sussex" are fine. The lists are small and live
+in `characters/outfit/fabric_words.json`. A file of the same form named by
+`$BIFOLD_FABRIC_WORDS` adds words or lists, and its `"allow"` list lets words
+through.
+
+**For the creator screen.** `FabricGenerator.start()` returns a `FabricJob` at
+once. The model loads on the job's worker thread the first time, after the
+preview (that can take a minute). `job.poll()` gives the new swatches without
+waiting, `job.progress` the step of the image being made and `job.messages`
+what happened; `on_result` and `on_message` callbacks run on the worker. Torch
+lets go of the GIL in its operations and the Python work between them is
+short: while a job ran here, a main thread ticking every 5 ms was at most 0.8
+ms late in 99 ticks of 100 (13 ms at worst during a repair). `pace=` takes a
+callable that is called after every denoising step, to slow the worker down
+further.
+
+**Cache and saved outfits.** Finished swatches, kept or left out, are cached in
+`fabrics/` (git-ignored; `$BIFOLD_FABRIC_CACHE` moves it) by prompt, model,
+seed, size and method, so the same description comes back at once without
+loading the model. A swatch becomes a `Fabric` fill (`swatch.fill()`). Its spec
+holds the description, the prompt, the model, the seed, the method and the
+image itself (lossless WebP), so an outfit recipe, also one saved with a
+created character, rebuilds it without the model. A spec without an image,
+`{"fabric": "red tartan"}`, is the keyword fabric of its words.
+
+**On the Mac.** Install the image packages and download the weights before
+the fair, so that the kiosk never starts a download:
+
+```bash
+pip install -e ".[people]"
+hf download black-forest-labs/FLUX.2-klein-4B   # about 15 GB of weights, Apache-2.0
+hf download stabilityai/sd-turbo                # the fallback rung, a few GB
+bifold-characters fabric "blue paisley silk" --offline --sheet all.png   # only what is downloaded
+```
+
+If a model's page says it is gated, accept its terms there and run `hf auth
+login` first. `--device auto` picks Apple's GPU (MPS), and FLUX.2 [klein] runs
+in bfloat16. It needs about 16 GB, so a 24 GB+ Mac is recommended; SD-Turbo,
+loaded only if the ladder reaches it, needs about 4 GB more, and both stay
+loaded. On a 16 GB Mac start at `--model sd-turbo`. The review's estimates for
+an M-series Pro, not measured (no model ran in this project's sandbox): 5-15 s
+for a 512-768 px swatch at 4 steps, 20-60 s for four variations shown as each
+finishes, and about three times as long per swatch on the 12-step rung. The
+default 512 px is the quickest. `--offline` (or `FabricGenerator(download=False)`)
+never downloads; a model that is not there goes straight to the keyword
+fabric.
 
 ## Funny faces
 
@@ -1383,7 +1526,9 @@ src/bifold_demo/
                face_photo.py (a photo's face painted on a 3D person),
                uvbake.py (what each texel of a texture is on the body),
                outfit/ (garment regions, cloth coordinates, fabrics, prompts,
-                        presets.json, the compositor: new clothes on an avatar),
+                        presets.json, the compositor: new clothes on an avatar;
+                        fabric.py: fabrics from a description, with seamless.py
+                        (seam score, repair, light) and tiling.py (rolling, padding)),
                headtex/ (head textures from photos: landmarks on the mesh, photos registered,
                          projected, fused, de-lit; the skin tone),
                created.py (characters from the character creator, saved),
@@ -1404,6 +1549,7 @@ uploads/       drop textures here while the demo runs
 people/        2D cut-outs (used by the fair scene when no 3D people are prepared)
 faces/         photos of the people the face recognition knows (a folder per person)
 created/       characters made in the character creator (a folder per character; kept out of git)
+fabrics/       the cache of fabric swatches made from descriptions
 tests/         pytest suite
 ```
 
@@ -1431,6 +1577,11 @@ Some tests also check real data when you point them at it, and skip otherwise:
   registers real photos to an avatar's head (with `BIFOLD_CHARACTERS_TEST_DIR`
   and MediaPipe installed). The MediaPipe tests download the models into the
   face models folder unless `BIFOLD_NO_DOWNLOADS` is set.
+
+The fabric tests never load a text-to-image model: they run stand-in
+pipelines with the latent layouts of the real ones, and tiny randomly
+initialised diffusers models that they build themselves (no downloads; skipped
+without diffusers). Their swatch cache is a temporary folder.
 
 ## Troubleshooting
 

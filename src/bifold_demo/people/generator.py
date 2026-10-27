@@ -2,11 +2,17 @@
 
 The image model runs through Hugging Face ``diffusers``; install it with
 ``pip install -e ".[people]"``. Weights are downloaded from Hugging Face on first use.
+
+:class:`ImageGenerator` is also what the fabric generator (``characters/outfit/fabric.py``) runs its models with.
+:func:`shared_generator` loads each model once per process, so the components that use the same model share its
+memory (FLUX.2 [klein] takes about 16 GB); a pipeline runs one call at a time, under :func:`pipeline_lock`.
 """
 
 from __future__ import annotations
 
+import threading
 import time
+import weakref
 from dataclasses import dataclass, replace
 
 import cv2
@@ -62,15 +68,36 @@ def get_preset(model: str) -> ModelPreset:
                        dtype="bfloat16", memory="unknown", license="see the model card")
 
 
+_locks: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_locks_guard = threading.Lock()
+_any_lock = threading.RLock()  # for a pipeline that cannot be weakly referenced
+
+
+def pipeline_lock(pipe) -> threading.RLock:
+    """The lock of a loaded pipeline: held while it makes an image (diffusers pipelines run one call at a time), and by
+    code that patches it for one call."""
+    with _locks_guard:
+        try:
+            lock = _locks.get(pipe)
+            if lock is None:
+                lock = _locks[pipe] = threading.RLock()
+            return lock
+        except TypeError:
+            return _any_lock
+
+
 class ImageGenerator:
-    """Text-to-image with a diffusers pipeline; returns BGR images.
+    """Text-to-image with a diffusers pipeline; returns BGR images (:meth:`rgb` gives RGB).
 
     ``pipeline`` lets you pass an already loaded pipeline (or any callable with the
-    diffusers call signature) instead of loading ``preset.repo``.
+    diffusers call signature) instead of loading ``preset.repo``. ``local_files_only``: use only weights that are
+    already downloaded (no network).
     """
 
-    def __init__(self, preset: ModelPreset | str = DEFAULT_PRESET, device: str = "auto", pipeline=None):
+    def __init__(self, preset: ModelPreset | str = DEFAULT_PRESET, device: str = "auto", pipeline=None,
+                 local_files_only: bool = False):
         self.preset = get_preset(preset) if isinstance(preset, str) else preset
+        self.local_files_only = local_files_only
         if pipeline is None:
             from ..detection.yolo import pick_device
 
@@ -79,6 +106,11 @@ class ImageGenerator:
         else:
             self.device = device
         self.pipe = pipeline
+
+    @property
+    def lock(self) -> threading.RLock:
+        """:func:`pipeline_lock` of this generator's pipeline."""
+        return pipeline_lock(self.pipe)
 
     def _load(self):
         import diffusers
@@ -92,6 +124,8 @@ class ImageGenerator:
         kwargs = {"dtype": torch.float32 if on_cpu else getattr(torch, p.dtype)}
         if p.variant and not on_cpu:
             kwargs["variant"] = p.variant
+        if self.local_files_only:
+            kwargs["local_files_only"] = True
         print(f"[people] loading {p.repo} ({p.memory}) on {self.device} ...")
         pipe = cls.from_pretrained(p.repo, **kwargs)
         if self.device == "cuda" and hasattr(pipe, "enable_model_cpu_offload"):
@@ -101,20 +135,53 @@ class ImageGenerator:
         pipe.set_progress_bar_config(disable=True)
         return pipe
 
-    def __call__(self, prompt: str, seed: int, width: int | None = None, height: int | None = None) -> np.ndarray:
+    def rgb(self, prompt: str, seed: int, width: int | None = None, height: int | None = None,
+            steps: int | None = None, **kwargs) -> np.ndarray:
+        """The image of ``prompt`` and ``seed`` as RGB ``uint8``. ``steps`` overrides the preset's; other keyword
+        arguments go to the pipeline (``callback_on_step_end``, ...)."""
         import torch
 
         p = self.preset
-        result = self.pipe(
-            prompt=prompt,
-            width=width or p.width,
-            height=height or p.height,
-            num_inference_steps=p.steps,
-            guidance_scale=p.guidance,
-            generator=torch.Generator("cpu").manual_seed(seed),  # same image for a seed on every device
-        )
+        with self.lock:
+            result = self.pipe(
+                prompt=prompt,
+                width=width or p.width,
+                height=height or p.height,
+                num_inference_steps=steps or p.steps,
+                guidance_scale=p.guidance,
+                generator=torch.Generator("cpu").manual_seed(seed),  # same image for a seed on every device
+                **kwargs,
+            )
         image = result.images[0]
-        return cv2.cvtColor(np.asarray(image.convert("RGB")), cv2.COLOR_RGB2BGR)
+        return np.asarray(image.convert("RGB")) if hasattr(image, "convert") else np.asarray(image)
+
+    def __call__(self, prompt: str, seed: int, width: int | None = None, height: int | None = None) -> np.ndarray:
+        return cv2.cvtColor(self.rgb(prompt, seed, width, height), cv2.COLOR_RGB2BGR)
+
+
+_shared: dict = {}
+_shared_guard = threading.Lock()
+
+
+def shared_generator(preset: ModelPreset | str, device: str = "auto", local_files_only: bool = False) -> ImageGenerator:
+    """An :class:`ImageGenerator` of ``preset`` whose pipeline is loaded once per process and device and shared by all
+    who ask for it (each gets its own preset settings). A load that fails is not kept: the next call tries again."""
+    from ..detection.yolo import pick_device
+
+    preset = get_preset(preset) if isinstance(preset, str) else preset
+    device = pick_device(device)
+    key = (preset.repo, preset.pipeline, device)
+    with _shared_guard:
+        pipe = _shared.get(key)
+        if pipe is None:
+            pipe = _shared[key] = ImageGenerator(preset, device=device, local_files_only=local_files_only).pipe
+    return ImageGenerator(preset, device=device, pipeline=pipe)
+
+
+def release_shared() -> None:
+    """Let go of the shared pipelines (their memory is freed once nothing else holds them)."""
+    with _shared_guard:
+        _shared.clear()
 
 
 def check_cutout(cutouts: list[Cutout], image_height: int) -> tuple[Cutout | None, str]:

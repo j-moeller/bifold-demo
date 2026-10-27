@@ -24,4 +24,6 @@ faces/*
 !faces/README.md
 created/*
 !created/README.md
+fabrics/*
+!fabrics/README.md
 .DS_Store

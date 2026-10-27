@@ -194,9 +194,18 @@ def image_rgb(image) -> np.ndarray:
     return np.clip(np.nan_to_num(rgb), 0.0, 255.0)
 
 
-def data_uri(rgb: np.ndarray) -> str:
-    """A PNG ``data:`` URI of an RGB 0-255 image (see :func:`image_rgb`)."""
-    ok, png = cv2.imencode(".png", cv2.cvtColor(np.clip(rgb + 0.5, 0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR))
+def data_uri(rgb: np.ndarray, format: str = "png") -> str:
+    """A ``data:`` URI of an RGB 0-255 image (see :func:`image_rgb`): PNG, or lossless WebP (``format="webp"``, about
+    half the size for a photograph of fabric; PNG when this OpenCV cannot write WebP)."""
+    bgr = cv2.cvtColor(np.clip(np.asarray(rgb, np.float32) + 0.5, 0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+    if format == "webp":
+        try:
+            ok, data = cv2.imencode(".webp", bgr, [cv2.IMWRITE_WEBP_QUALITY, 101])  # above 100: lossless
+        except cv2.error:
+            ok = False
+        if ok:
+            return "data:image/webp;base64," + base64.b64encode(data.tobytes()).decode("ascii")
+    ok, png = cv2.imencode(".png", bgr)
     if not ok:
         raise ValueError("cannot encode the image")
     return "data:image/png;base64," + base64.b64encode(png.tobytes()).decode("ascii")
@@ -290,10 +299,16 @@ def from_spec(spec) -> Fill:
     """A fill from a spec: a :class:`Fill`, ``"keep"``, a colour (name, hex, ``[r, g, b]``), a short description
     (``"navy pinstripe"``, see :func:`.prompts.parse_fill`), or a dict: ``{"color": ...}``,
     ``{"pattern": "tartan", "colors": ["red", "navy"], "scale": 0.15, "rotation": 45}``,
-    ``{"swatch": "fabric.png", "scale": 0.2}`` (a path or a ``data:`` URI) or ``{"atlas": "painted.png"}``."""
+    ``{"swatch": "fabric.png", "scale": 0.2}`` (a path or a ``data:`` URI), ``{"atlas": "painted.png"}`` or a fabric
+    made from a description, ``{"fabric": "blue paisley silk", "swatch": ..., "model": ..., "seed": ...}`` (see
+    :class:`.fabric.Fabric`; without its image it is the keyword fabric of its words)."""
     if isinstance(spec, Fill):
         return spec
     if isinstance(spec, dict):
+        if "fabric" in spec:
+            from .fabric import Fabric
+
+            return Fabric.from_spec(spec)
         if "color" in spec:
             return Solid(spec["color"])
         if "pattern" in spec:
@@ -328,11 +343,15 @@ def from_spec(spec) -> Fill:
 
 def _pyramid(rgb: np.ndarray) -> list[np.ndarray]:
     """The tile at full size and halved down to one pixel (box filtered), for mipmapped sampling. The tile is first
-    resized to a square power of two (at most 1024)."""
+    resized to a square power of two (at most 1024), as a repeat: its edges wrap round, so a seamless tile stays
+    seamless."""
+    from .seamless import resize_periodic
+
     h, w = rgb.shape[:2]
     side = 1 << int(min(10, max(2, round(math.log2(max(h, w))))))
-    base = cv2.resize(np.ascontiguousarray(rgb, np.float32), (side, side),
-                      interpolation=cv2.INTER_AREA if max(h, w) > side else cv2.INTER_LINEAR)
+    base = np.ascontiguousarray(rgb, np.float32)
+    if (h, w) != (side, side):
+        base = np.ascontiguousarray(np.clip(resize_periodic(base, side, side), 0.0, 255.0), np.float32)
     levels = [base]
     while levels[-1].shape[0] > 1:
         a = levels[-1]

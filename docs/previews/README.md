@@ -161,3 +161,13 @@ work goes on. The people are avatars from the
   empty, and 5.1 s later the visitor of the place comes back while Dan (green)
   walks in front of her. Plain colour outfits on the avatars' own clothes (no
   real faces).
+- `fabric.jpg`: fabrics from a description (`characters/outfit/fabric.py`),
+  without a model, since none can run where it was made. Top: the model-free
+  seam repair on synthetic textures that do not tile (smooth blotches, blotches
+  on a twill weave, grain lit from one side, a tartan and dots whose repeat
+  does not fit the swatch), each tiled 2 x 2 as it is and repaired, with its
+  seam score. Middle: the fallback ladder, and what its keyword rungs give for
+  six descriptions (the procedural fabric of the words the keyword parser
+  knows, or a plain colour); the model rungs are grey because they did not
+  run. Bottom: three avatars wearing repaired synthetic swatches (not
+  generated) on a jacket, a blouse and a blazer, front and back.

@@ -1,0 +1,31 @@
+{
+  "about": "Words a fabric description may not use at a public kiosk (see fabric.py, PromptFilter). Each list has a message shown when a description is refused. Matching ignores case, accents, spaces and digits standing in for letters. A file of the same form named by $BIFOLD_FABRIC_WORDS adds words, lists or 'allow' entries. The words of 'offensive_rot13' are ROT13-encoded, so the repository does not show them in plain text.",
+  "brands": {
+    "message": "Brand names can't be made into a fabric here ({word}). Describe the colours, the pattern and the material instead, for example \"beige and black check wool\".",
+    "words": ["adidas", "armani", "balenciaga", "burberry", "calvin klein", "chanel", "dior", "dolce gabbana", "fendi",
+              "gucci", "givenchy", "hermes", "lacoste", "louis vuitton", "lv", "marimekko", "missoni", "moschino", "nike",
+              "prada", "ralph lauren", "reebok", "tommy hilfiger", "valentino", "versace", "yves saint laurent", "ysl",
+              "north face", "levis", "stussy", "bape"]
+  },
+  "characters": {
+    "message": "Characters and other trademarks can't be made into a fabric here ({word}). Describe the colours, the pattern and the material instead, for example \"white stars on navy cotton\".",
+    "words": ["disney", "mickey mouse", "minnie mouse", "marvel", "spiderman", "spider man", "batman", "superman",
+              "star wars", "pokemon", "pikachu", "hello kitty", "barbie", "harry potter", "minecraft", "fortnite", "lego",
+              "coca cola", "pepsi", "mcdonalds"]
+  },
+  "marks": {
+    "message": "Logos and trademarks can't be made into a fabric here ({word}). Describe the colours, the pattern and the material instead.",
+    "words": ["logo", "logos", "trademark", "trademarks", "trademarked", "copyrighted"]
+  },
+  "offensive": {
+    "message": "That description uses a word this kiosk does not accept. Please describe the colours, the pattern and the material of the fabric.",
+    "words": ["nazi", "nazis", "swastika", "hitler", "kkk", "porn", "porno", "pornographic", "nude", "nudes", "naked",
+              "nsfw", "sex", "sexual", "penis", "vagina", "boobs", "tits", "nipples", "genitals", "fuck", "fucking",
+              "shit", "bitch", "cunt", "dick", "cock", "asshole", "bastard", "whore", "slut", "rape"]
+  },
+  "offensive_rot13": {
+    "message": "That description uses a word this kiosk does not accept. Please describe the colours, the pattern and the material of the fabric.",
+    "words": ["avttre", "avttn", "snttbg", "snt", "ergneq", "puvax", "fcvp", "xvxr", "genaal", "jrgonpx"]
+  },
+  "allow": []
+}
