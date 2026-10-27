@@ -36,8 +36,8 @@ meets its own left edge and its bottom its top. Three tools work on any image, a
   across), a third overlaps instead and the coarse colour cross-fades over all of it. The result is smaller by the
   overlaps and is resampled back to the original size (as a repeat, so the resampling wraps round its edges). Before
   any of it the light is evened out (a quadratic surface, since the image does not tile yet), so a lighting gradient
-  does not turn into a step at the cut. It needs no model and gives the same image every time: about 0.13 s at 512
-  pixels, 0.25 s at 768 (twice that when the cross-fade is tried too). On the synthetic textures above it brings
+  does not turn into a step at the cut. It needs no model and gives the same image every time: 0.1-0.15 s at 512
+  pixels, about 0.3 s at 768 (twice that when the cross-fade is tried too). On the synthetic textures above it brings
   46 of 48 cut-out ones to 1.25 or less; the two left are the smoothest (three blobs across).
 
 * :func:`equalise_light`: even light. A flat-lay photo of fabric, or a generated one, has light falling off towards
@@ -191,20 +191,28 @@ def seam_score(image) -> float:
 # -- repair ---------------------------------------------------------------------------------------------------------
 
 
-def _path(cost: np.ndarray, start: int | None = None) -> tuple[float, np.ndarray]:
-    """The top-to-bottom path through ``cost`` (H, w) of least total cost that moves at most one column per row
+def _path(cost: np.ndarray, start: int | None = None, reach: int = 1) -> tuple[float, np.ndarray]:
+    """The top-to-bottom path through ``cost`` (H, w) of least total cost that moves at most ``reach`` columns per row
     (starting at column ``start`` when given): ``(its cost, its column in each row)``."""
     h, w = cost.shape
     total = cost[0].astype(np.float64).copy()
     if start is not None:
         total[np.arange(w) != start] = np.inf
+    shifts = np.arange(-reach, reach + 1)
+    options = np.full((len(shifts), w), np.inf)
+    columns = np.arange(w)
     back = np.zeros((h, w), np.int8)
     for y in range(1, h):
-        left = np.r_[np.inf, total[:-1]]
-        right = np.r_[total[1:], np.inf]
-        choice = np.argmin(np.stack([left, total, right]), axis=0)
-        back[y] = choice - 1
-        total = cost[y] + np.choose(choice, [left, total, right])
+        for k, s in enumerate(shifts):  # option k: from column x + s of the row before
+            if s < 0:
+                options[k, -s:] = total[:s]
+            elif s > 0:
+                options[k, :-s] = total[s:]
+            else:
+                options[k] = total
+        choice = np.argmin(options, axis=0)
+        back[y] = shifts[choice]
+        total = cost[y] + options[choice, columns]
     if start is not None:  # it ends next to where it started: a closed path round a cylinder
         total[np.abs(np.arange(w) - start) > 1] = np.inf
     cut = np.empty(h, np.int64)
@@ -216,16 +224,22 @@ def _path(cost: np.ndarray, start: int | None = None) -> tuple[float, np.ndarray
 
 def _min_cut(cost: np.ndarray, closed: bool = False) -> np.ndarray:
     """The column, row by row, of the cheapest top-to-bottom path through ``cost`` (H, w); ``closed``: its two ends
-    meet (at most a column apart), so that the image it cuts still tiles top to bottom."""
-    _, cut = _path(cost)
-    if not closed:
-        return cut
-    found = None
-    for start in dict.fromkeys([int(cut[0]), int(cut[-1]), int(np.argmin(cost[0]))]):
-        candidate = _path(cost, start)
-        if found is None or candidate[0] < found[0]:
-            found = candidate
-    return found[1]
+    meet (at most a column apart), so that the image it cuts still tiles top to bottom. The path is found on pairs of
+    rows (moving up to two columns a pair), so the loop over rows, Python's part of the work, is half as long; a
+    closed path is the cheapest one that starts where the cheapest open one does."""
+    h = cost.shape[0]
+    pairs = h // 2
+    if pairs < 32:
+        _, cut = _path(cost)
+        return _path(cost, int(cut[0]))[1] if closed else cut
+    small = cost[:2 * pairs:2] + cost[1:2 * pairs:2]
+    if h % 2:
+        small[-1] += cost[-1]
+    _, cut = _path(small, reach=2)
+    if closed:
+        cut = _path(small, int(cut[0]), reach=2)[1]
+    cut = np.repeat(cut, 2)
+    return np.r_[cut, cut[-1]] if h % 2 else cut
 
 
 def _quilt_columns(rgb: np.ndarray, guide: np.ndarray, closed: bool, wide: bool) -> np.ndarray:

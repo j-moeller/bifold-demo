@@ -413,8 +413,8 @@ smoothest, with three blobs across. `make_seamless(image)` repairs any image
 and `seam_score(image)` scores one. Kept swatches get even light: the light
 that varies once across the swatch is divided out and the colours stay, since
 the tailor adds the garment's own shading. On this project's 4-CPU sandbox the
-score takes 40 ms, the light 10-20 ms and the repair 0.13 s at 512 px (0.25 s
-at 768).
+score takes 30-60 ms, the light 10-20 ms and the repair 0.1-0.15 s at 512 px
+(about 0.3 s at 768; twice that when it also tries the wide cross-fade).
 [docs/previews/fabric.jpg](docs/previews/fabric.jpg) shows the repair, the
 ladder's keyword rungs and three avatars in repaired synthetic swatches; no
 model could run where it was made.
@@ -441,9 +441,13 @@ preview (that can take a minute). `job.poll()` gives the new swatches without
 waiting, `job.progress` the step of the image being made and `job.messages`
 what happened; `on_result` and `on_message` callbacks run on the worker. Torch
 lets go of the GIL in its operations and the Python work between them is
-short: while a job ran here, a main thread ticking every 5 ms was at most 0.8
-ms late in 99 ticks of 100 (13 ms at worst during a repair). `pace=` takes a
-callable that is called after every denoising step, to slow the worker down
+short (the repair's search for its cut, the longest, runs on pairs of rows).
+Measured here with a main thread that ticks every 5 ms: while a job ran, 99
+ticks of 100 were at most 0.8 ms late; while a worker repaired swatches
+nonstop, at most about 1 ms, the worst 3-9 ms (5-7 ms with the worker idle).
+With other processes keeping all four CPUs busy, those were 3.4-4.1 ms and
+8-20 ms, about what the load gives alone. `pace=` takes a callable that is
+called after every denoising step and between images, to slow the worker down
 further.
 
 **Cache and saved outfits.** Finished swatches, kept or left out, are cached in
