@@ -39,7 +39,8 @@ recognition's YuNet detector must be at least 0.8 sure of a face there (on the r
 to 45 degrees got 0.92 or more, the real test photos 0.89-0.95, the false faces on the backs of heads 0.17-0.74; YuNet
 misses many faces turned 60 degrees, so it is not asked about those). With these checks no made-up face on the back of a
 head was used, with masks or without. MediaPipe also finds the faces of profiles turned 50 to 70 degrees whether they
-are turned 60 or 90, and an unnamed photo of a profile is registered that way, with a warning and a lower quality. In a
+are turned 60 or 90, and an unnamed photo of a profile is registered that way, with a lower quality and (when the face
+is turned more than 50 degrees) a warning. In a
 photo the caller names as a side or the back, the face is used only when the head's outline (below) turns the camera
 within 15 degrees of it, or, without masks, when it is within 20 degrees of the named view. In a side photo whose face
 is turned less than its outline (by up to 50 degrees), the truth mostly lies between the two: MediaPipe turns profiles
@@ -58,11 +59,11 @@ towards the named view. Another person's hair never has the avatar's outline, an
 turn, so the fit also lines up the face skin: :func:`head_regions` finds once per head model which parts of the
 avatar's head the segmenter calls face skin and hair (renders from 12 sides, segmented; about 6 s, cached like the
 landmarks), and the overlap of the avatar's face skin with the photo's (blurred, so that a small patch compares
-smoothly) counts as much as the head's. The turn may then go up to 45 degrees from the named view; the tilt out of the
-picture's plane (the nod seen from behind, the lean from a side) stays within 20 degrees, as the skin would tip a back
-view over to hide the avatar's ears where the person's hair covers theirs, the one in it within 30. Below a head IoU
-of 0.8 (0.9 without the distance) the photo is reported unusable, and angles the overlap hardly changes with are named
-in a warning.
+smoothly) counts as much as the head's (a bald scalp is face skin to the segmenter, which misleads it). The turn may
+then go up to 45 degrees from the named view; the tilt out of the picture's plane (the nod seen from behind, the lean
+from a side) stays within 20 degrees, as the skin would tip a back view over to hide the avatar's ears where the
+person's hair covers theirs, the one in it within 30. Below a head IoU of 0.8 (0.9 without the distance) the photo is
+reported unusable, and angles the overlap hardly changes with are named in a warning.
 
 Measured on renders of six avatars turned 60 to 180 degrees (14 turns), each named after the nearest side or the back
 and registered to the head of another avatar (as a person's photos are): on Male_Adult_05's head (short hair) 69 of 83

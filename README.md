@@ -813,16 +813,17 @@ another avatar's head as a person's photos are):
 - Made-up faces: at its default confidence MediaPipe found a "face" in 16 of
   220 renders turned 75° to 180°; none of those on the backs of heads was
   used, with masks or without. An unnamed profile turned 75° was registered
-  by its half face 8 times, 12-25° short, with a warning and a low quality:
-  name side photos and segment them.
+  by its half face 8 times, 12-25° short, with a low quality (0.05-0.12) and,
+  7 times, a warning: name side photos and segment them.
 - Stage 1 by the outline (photos named as a side or the back, with masks and
   a front photo of the session): of the 20 avatars' renders turned 75° to
   180° on Male_Adult_05's head, 111 of 200 came out usable, turned within 4°
   of the truth (the median; 90 % within 17°), but 6 were 25° to 50° off,
   mostly photos turned 135° (half way between a side and the back) pulled to
   the back; the rest were reported unusable, mostly where the hair differs
-  too much from the head's (long hair, a headscarf). The nod and the lean
-  came out within 5° (the median; 90 % within 13°, the worst 20° and 30°).
+  too much from the head's (long hair, a headscarf; the segmenter also calls
+  a bald scalp face skin, which misleads the fit). The nod and the lean came
+  out within 5° (the median; 90 % within 13°, the worst 20° and 30°).
   Of the photos turned 60° and named as a side, 28 of 40 were usable: by the
   face when the outline agreed with it, else by the outline, within 6° (the
   median; the worst 15°). On a long-haired head (Business_Female_02) it is
