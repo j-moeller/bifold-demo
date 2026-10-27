@@ -65,3 +65,42 @@ Only the commits integrated into the branch are.
 Since the pause, the account's usage limit cut off the A3 review, the B1 fix and C2's checkers once more. All three
 resumed the same way once the limit reset. Since then, every review, check and fix stage writes its findings or a
 progress log to its scratch folder as it goes, so the next interruption loses none of it.
+
+## Status log
+
+**27 October, 00:45 UTC.** The container restarted and stopped all running work. The repository, the step worktrees
+and the scratch folders survived, and every finished stage had saved its result, so nothing was lost:
+
+- **A3:** the review is finished: 2 high, 3 medium and 8 low findings. Its fix stage is running.
+  - **High:**
+    - `View.masks` point into buffers that MediaPipe frees or reuses on its next call: garbage or a segmentation
+      fault, and the focal refit of a session reads them;
+    - side photos where MediaPipe makes up a face are registered as usable, with absurd poses.
+  - **Medium:**
+    - a session loses its reference distance and focal length for such photos;
+    - outline fits come back "usable" 15-30 degrees off for back-three-quarter photos and other people's hair;
+    - `facing()` uses one flat triangle's normal, so visible nose and lip landmarks drop out of the warp in
+      three-quarter views.
+- **C2:** four independent checkers tested the fixed step (what a viewer sees, robustness, frame timing,
+  regressions). Its second fix stage is running, followed by a recheck.
+  - **High:**
+    - swaps still happen in plain view: a person in the middle of the picture turns into someone else between two
+      frames;
+    - a `character.json` with a field of the wrong shape (`"items": 5`, a file that is `[]`, `"created": null`)
+      ends the demo or stops it from starting.
+  - **Medium:**
+    - leaving the fair is a jump in view;
+    - an "unseen" swap can turn the person round;
+    - newcomers made at the same time do not keep 0.6 m from each other;
+    - start-up waits on the paced worker;
+    - exact swaps are not paced;
+    - item pictures are decoded on the main thread;
+    - saving a character again deletes its item pictures;
+    - a half-written PNG keeps a character out for good;
+    - 16-bit PNG textures are drawn white;
+    - a sign drops to the hip a second after a character appears.
+  - **No regressions** in existing features: the default fair, its renders, camera play, selection mode, faces, R and
+    scene reload are unchanged.
+- **B2:** the text-to-fabric step started on top of B1 and goes on in its worktree
+  `.claude/worktrees/agent-a195ea3e9885912b8`. It has read the diffusers source, settled its design and started three
+  modules.
