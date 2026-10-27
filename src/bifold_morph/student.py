@@ -6,7 +6,8 @@ years. Output: the same face changed by that much. The network predicts the *cha
 amounts steer every level through FiLM (feature-wise scale and shift). With both at 0 the change is learned to be
 nothing.
 
-About 5 million parameters: a few milliseconds per face on a laptop GPU.
+It works on 2 x 2 pixel blocks folded into channels (pixel unshuffle), so its first level is at 128 px; the change
+it predicts is unfolded back to 256 px. About 6 million parameters: a few milliseconds per face on a laptop GPU.
 """
 
 from __future__ import annotations
@@ -42,7 +43,8 @@ class Block(nn.Module):
 class Student(nn.Module):
     def __init__(self, widths=(32, 64, 128, 192, 256)):
         super().__init__()
-        self.stem = nn.Conv2d(3 + 2, widths[0], 3, padding=1)  # the amounts also as constant maps
+        # 2 x 2 pixel blocks folded into channels: the network works from 128 px, its output is unfolded to 256
+        self.stem = nn.Conv2d(4 * 3 + 2, widths[0], 3, padding=1)  # the amounts also as constant maps
         self.down = nn.ModuleList()
         self.enc = nn.ModuleList()
         c = widths[0]
@@ -56,7 +58,7 @@ class Student(nn.Module):
         for w in reversed(widths[:-1]):
             self.dec.append(Block(c + w, w))
             c = w
-        self.head = nn.Conv2d(c, 3, 3, padding=1)
+        self.head = nn.Conv2d(c, 4 * 3, 3, padding=1)
         nn.init.zeros_(self.head.weight)
         nn.init.zeros_(self.head.bias)
 
@@ -67,8 +69,9 @@ class Student(nn.Module):
 
     def forward(self, x: torch.Tensor, gender: torch.Tensor, years: torch.Tensor) -> torch.Tensor:
         cond = self.cond(gender, years).to(x.dtype)
-        maps = cond[:, :, None, None].expand(-1, -1, *x.shape[2:])
-        h = self.stem(torch.cat([x, maps], dim=1))
+        folded = F.pixel_unshuffle(x, 2)
+        maps = cond[:, :, None, None].expand(-1, -1, *folded.shape[2:])
+        h = self.stem(torch.cat([folded, maps], dim=1))
         skips = []
         for i, block in enumerate(self.enc):
             if i > 0:
@@ -79,7 +82,7 @@ class Student(nn.Module):
         for block, skip in zip(self.dec, reversed(skips[:-1])):
             h = F.interpolate(h, size=skip.shape[2:], mode="bilinear", align_corners=False)
             h = block(torch.cat([h, skip], dim=1), cond)
-        return (x + self.head(h)).clamp(-1, 1)
+        return (x + F.pixel_shuffle(self.head(h), 2)).clamp(-1, 1)
 
 
 def load(path, device="cpu") -> Student:
