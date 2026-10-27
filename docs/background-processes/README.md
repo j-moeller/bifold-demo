@@ -18,7 +18,7 @@ describe the code itself.
 |---|---|---|---|
 | A: face → head texture | A1 literature review | on the branch (`e06e165`) | [docs/research/face_head_texture.md](../research/face_head_texture.md) |
 | A | A2 UV bake (shared with B) | on the branch (`1d962c7`) | `src/bifold_demo/characters/uvbake.py` |
-| A | **A3 landmarks on the head mesh, photos registered** (stages 0-1) | implemented (`04faecd`); the review was interrupted | [A3-head-landmarks-and-registration.md](A3-head-landmarks-and-registration.md) |
+| A | **A3 landmarks on the head mesh, photos registered** (stages 0-1) | implemented (`04faecd`); the review was interrupted. Since then reviewed, fixed (`d4d7031`, `3f1a6d1`) and on the branch as `e33a8ee`, `76edcc9`, `412fc48` | [A3-head-landmarks-and-registration.md](A3-head-landmarks-and-registration.md) |
 | B: character creator | B0 literature review | on the branch (`e494da2`) | [docs/research/outfit_textures.md](../research/outfit_textures.md) |
 | B | **B1 garment regions, fills, patterns, presets** (stages 0-1) | implemented (`3b1be67`, `17a2137`) and reviewed; the fix was interrupted, partly done. Since then fixed (`917ae88`) and on the branch as `b2adef8`, `dc46e51`, `2c75ec0` | [B1-outfit-regions-and-fills.md](B1-outfit-regions-and-fills.md) |
 | C: saved characters in the scene | C1 the saved format and the book | on the branch (`5054840`) | `src/bifold_demo/characters/created.py` |
@@ -104,3 +104,14 @@ and the scratch folders survived, and every finished stage had saved its result,
 - **B2:** the text-to-fabric step started on top of B1 and goes on in its worktree
   `.claude/worktrees/agent-a195ea3e9885912b8`. It has read the diffusers source, settled its design and started three
   modules.
+
+**27 October, 05:45 UTC.** The usage limit stopped everything once more, and the container restarted twice. Each time
+the runs went on from their saved results and progress logs, and no work was lost.
+
+- **A3:** fixed and on the branch (see its page).
+- **B2:** built in two commits, `c608f1f` (fabrics from a description, a seamless swatch as a fill) and `7c5a26b` (the
+  repair's cut search holds the GIL far less). The builder reports 528 passed and 9 skipped. An independent review
+  is running. No real text-to-image model can run here, so the generative path is tested with fakes and with tiny
+  random diffusers models built locally.
+- **C2:** its second fix is still running; the recheck follows.
+- **A4** (project and fuse the photos in the head texture, then take out their lighting) is briefed and starts next.

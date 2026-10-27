@@ -4,6 +4,14 @@
 photos registered", in the worktree `.claude/worktrees/wf_9c8d2dc1-3c2-1`. The review had started and was
 interrupted; it starts again. The commit is not on the branch yet.
 
+**Update: on the branch.** The review found 2 high, 3 medium and 8 low issues. After four interrupted runs (the usage
+limit, container restarts), the fix finished in two commits:
+
+- `d4d7031` "Head textures: registration review fixes (masks, made-up faces, sessions, outline)";
+- `3f1a6d1` "Head textures: what misleads the outline fit, said precisely".
+
+All three commits are on the branch as `e33a8ee`, `76edcc9` and `412fc48`. See [review and fix](#review-and-fix).
+
 ## What it builds
 
 The new package `src/bifold_demo/characters/headtex/` holds the first two of the eight stages agreed in
@@ -195,6 +203,61 @@ Building blocks:
   - side and back photos placed by their outline;
   - the real test photos: errors under 4 % of the face size.
 - **Lint:** the same ruff findings as before.
+
+## Review and fix
+
+What the review confirmed: stage 0 holds up on all 20 avatars (MediaPipe found the face in 5 of 5 renders; the
+landmarks lie where they should and follow expressions), stage 1 works up to about 60 degrees of yaw, and the suite,
+lint, the optional-MediaPipe path and the install recipe are as claimed.
+
+The findings and their fixes:
+
+- **High: masks pointed into MediaPipe's buffers,** which its next call frees or reuses: garbage or a segmentation
+  fault, and a session's focal refit read them. The segmenter now copies every mask, inside its lock, into a compact
+  `uint8` mask of at most 1024 px. `View.mask(name)` gives it back at the photo's size, and each photo is segmented
+  once.
+- **High: side photos with a made-up face** were registered as usable with absurd poses. MediaPipe's confidence is
+  back at its default of 0.5. A face is rejected when:
+  - it leans over 45 degrees;
+  - it looks up or down over 35 degrees;
+  - it is over 25 degrees from MediaPipe's own pose;
+  - with masks: less than 30 % of its oval is face skin, or the outline overlap is under 0.2;
+  - without masks: it is turned under 35 degrees and YuNet scores its nose under 0.8.
+
+  In a photo named as a side or the back, the face is kept only if the outline agrees within 15 degrees.
+- **Medium:**
+  - sessions keep their reference distance and focal length for such photos (two passes);
+  - outline fits also line up the face skin (a soft overlap of `head_regions`), so the median turn error on another
+    avatar's head dropped from 13 to 4 degrees (Male_Adult_05) and from 20 to 10 (Business_Female_02);
+  - `facing()` uses interpolated vertex normals, plus an occlusion test for the warp.
+- **Low:**
+  - the focal length is called "assumed" when it is the 50-degree prior;
+  - a given or EXIF focal length is shared within a session;
+  - views are light: masks of about 5 MB instead of 293 MB for a 12 MP photo, and 1M points through the warp in
+    0.3-0.5 s instead of 10-13 s;
+  - the accuracy claims now come from other avatars' renders on a head;
+  - the CLI reports a mistyped avatar name without a traceback;
+  - a damaged cache is rebuilt;
+  - test thresholds leave margin;
+  - small faces are found down to 1.5 % of a 4032 px photo, with YuNet's help;
+  - while measuring, a crash of `solvePnP` on small faces was found and fixed (it falls back to EPnP).
+
+Checks reported:
+
+- 35 unit tests and 24 real-avatar tests pass;
+- the full suite gave 494 passed, 9 skipped;
+- lint is unchanged;
+- all 16 real test photos register, with an error of 1.1-2.7 % of the face size.
+
+When integrating, I re-ran the reviewer's own scripts on the branch:
+
+- the masks stay intact after later `segment()` calls and equal a fresh segmentation of their photo;
+- 0 of 11 side photos with a face are registered as usable while more than 15 degrees off, against 10 of 25 before.
+
+What is left, as documented: an outline fit uses another head's outline. Back-three-quarter photos named "back", and
+heads whose hair differs a lot (long hair, a headscarf, a bald scalp), can still come out 25-50 degrees off: 6 of 111
+usable outline fits, always with a low quality (at most 0.34) and a warning. Another cue (the ears, the shoulders)
+would be needed.
 
 ## Open issues the builder admits
 
