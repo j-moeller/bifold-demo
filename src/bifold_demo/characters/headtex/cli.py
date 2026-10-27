@@ -38,20 +38,25 @@ def _photo_and_view(text: str) -> tuple[str, str | None]:
     return text, None
 
 
-def _library(args):
+def _library(args, names=()):
+    """The prepared characters, checked to have the avatars ``names`` (a mistyped name: a message, not a crash)."""
     from ..library import CharacterLibrary
 
     library = CharacterLibrary(args.characters)
-    if not library.available():
+    available = library.available()
+    if not available:
         raise ValueError(f"no prepared avatars in {library.folder} (run: bifold-characters fetch --set small)")
+    for name in names:
+        if name not in available:
+            raise ValueError(library.explain(name))
     return library
 
 
 def cmd_landmarks(args) -> int:
     from .detect import Landmarker
-    from .landmarks import head_landmarks
+    from .landmarks import VIEWS, head_landmarks
 
-    library = _library(args)
+    library = _library(args, args.avatars)
     names = args.avatars or sorted(library.available())
     with Landmarker(args.models) as landmarker:
         for name in names:
@@ -59,8 +64,10 @@ def cmd_landmarks(args) -> int:
             marks = head_landmarks(model, landmarker, cache_dir=args.characters, refresh=args.refresh,
                                    method="canonical" if args.fallback else "auto")
             unsure = int((marks.reliability < 0.5).sum())
-            how = (f"MediaPipe on {marks.views} of 5 renders" if marks.method == "mediapipe"
-                   else "fitted canonical face (MediaPipe found no face)")
+            if marks.method == "mediapipe":
+                how = f"MediaPipe on {marks.views} of {len(VIEWS)} renders"
+            else:
+                how = "fitted canonical face (" + ("--fallback" if args.fallback else "MediaPipe found no face") + ")"
             print(f"{name}: {how}; reliability {marks.reliability.mean():.2f} on average, {unsure} of 478 below 0.5")
     return 0
 
@@ -70,9 +77,9 @@ def cmd_register(args) -> int:
 
     from .detect import Landmarker, Segmenter
     from .landmarks import head_landmarks
-    from .register import draw_registration, register_photos
+    from .register import draw_registration, head_regions, register_photos
 
-    library = _library(args)
+    library = _library(args, [args.avatar])
     model = library.load(args.avatar)
     photos, views = zip(*(_photo_and_view(p) for p in args.photos))
     out = Path(args.out) if args.out else None
@@ -80,6 +87,8 @@ def cmd_register(args) -> int:
         head = head_landmarks(model, landmarker, cache_dir=args.characters)
         segmenter = Segmenter(args.models) if args.segment else None
         try:
+            if segmenter is not None:  # where the avatar's face skin and hair are, for the outline fit (cached)
+                head_regions(model, head.primitive, segmenter, cache_dir=args.characters)
             results = register_photos(list(photos), head, model, views=views, landmarker=landmarker,
                                       segmenter=segmenter)
         finally:

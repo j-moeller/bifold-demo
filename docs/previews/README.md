@@ -132,12 +132,14 @@ work goes on. The people are avatars from the
   (`characters/headtex`). Top: MediaPipe's 478 face landmarks found on renders
   of three avatars and lifted onto their head meshes, coloured by how well the
   five renders agree (green: well, red: poorly), seen straight on and turned
-  30°. Middle: renders of an avatar from known cameras standing in for photos
-  (focal length given, as a phone's EXIF data would), registered back to its
-  head model, with the true and the found yaw, pitch and roll: three by their
-  landmarks, the side and the back (no face) by the head's outline; the blue
-  wireframe is the head mesh as the found camera sees it. Bottom: the
-  Ultralytics sample photo registered to an avatar (focal length searched),
-  the warp that moves the avatar's features onto his (arrows three times as
-  long), the avatar seen by the photo's camera, and the man on the left, whose
-  profile MediaPipe does not find.
+  30°. Middle: renders of one avatar (Business_Male_02) from known cameras
+  standing in for a session's photos, registered to another avatar's head
+  model (Male_Adult_05's), as a person's photos are, with the true and the
+  found yaw, pitch and roll: three by their landmarks (the front photo's focal
+  length given, as a phone's EXIF data would, and shared with the others),
+  the right side and a back view turned 150° (named, no face) by the head's
+  outline and face skin; the blue wireframe is the head mesh as the found
+  camera sees it. Bottom: the Ultralytics sample photo registered to an avatar
+  (focal length assumed), the warp that moves the avatar's features onto his
+  (arrows three times as long), the avatar seen by the photo's camera, and the
+  man on the left, whose profile MediaPipe does not find.

@@ -6,7 +6,9 @@ mixed light) become a texture for the avatar's *existing* head mesh (no new geom
 body. Eight stages:
 
 0. **Landmarks on the head mesh** (:mod:`.landmarks`), once per head model: MediaPipe's 478 face landmarks found on
-   renders of the avatar and lifted onto its mesh, so every photo's landmarks have 3D partners; cached on disk.
+   renders of the avatar and lifted onto its mesh, so every photo's landmarks have 3D partners; cached on disk. With
+   them, which parts of the head the segmenter calls face skin and hair (:func:`~.register.head_regions`, for photos
+   placed by the head's outline).
 1. **Register each photo** (:mod:`.register`): the photo's camera relative to the head in its bind pose (PnP on the
    landmarks, or the head's outline for photos without a face), a thin-plate warp that puts the person's eyes, brows,
    nose and mouth on the avatar's, segmentation masks, a quality score and warnings: a :class:`~.register.View`.
@@ -29,7 +31,7 @@ personal data: keep them in git-ignored folders.
 
 from .camera import PhotoCamera
 from .landmarks import HeadLandmarks, head_landmarks
-from .register import View, draw_registration, register_photo, register_photos
+from .register import View, draw_registration, head_regions, register_photo, register_photos
 
-__all__ = ["HeadLandmarks", "PhotoCamera", "View", "draw_registration", "head_landmarks", "register_photo",
-           "register_photos"]
+__all__ = ["HeadLandmarks", "PhotoCamera", "View", "draw_registration", "head_landmarks", "head_regions",
+           "register_photo", "register_photos"]

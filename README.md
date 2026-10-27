@@ -749,42 +749,86 @@ section 3), in eight stages; stages 0 and 1 are done:
    disagree, then the camera is fitted to the rest, again without those on
    the far side of the face. The camera is relative to the head in its bind
    pose, with the head's yaw, pitch and roll. The focal length comes from the
-   photo's EXIF data, or is searched for with a firm preference for a 50°
-   view: MediaPipe's landmarks tell the perspective poorly, so photos of one
-   session share the most frontal photo's focal length. A thin-plate warp then
-   moves the photo so the person's eyes, brows, nose and mouth land on the
-   avatar's; it fades out around the face, so hair and background stay put.
-   Projected onto the mesh, the person's features then move with the avatar's
-   face bones. A photo without a face (the side or the back of the head) needs
-   its view named (`left`, `right`, `back`). The camera is then placed there,
-   at the distance of the photos with a face, and refined by fitting the
-   outline of the avatar's head and hair to the photo's head mask from
-   MediaPipe's segmenter; if the outline does not fit, the photo is reported
-   unusable with the reason. Every view has the segmentation masks (hair, face
-   and body skin, clothes), a quality score and warnings: an open mouth,
-   closed eyes, low resolution, blur, a large reprojection error, an unknown
-   focal length, a pose MediaPipe may get wrong.
+   caller or the photo's EXIF data. Without either, a 50° view is in effect
+   assumed: MediaPipe's landmarks tell the perspective so poorly that a search
+   ends near 50° whatever the lens, so the camera of a wide-angle selfie comes
+   out too far away (its pose hardly suffers), and the view says the focal
+   length was assumed. Photos of one session share one camera: a focal length
+   known for one photo holds for the others of the same picture shape, and
+   the most frontal photo's for those still without one. A thin-plate warp
+   then moves the photo so the person's eyes, brows, nose and mouth land on
+   the avatar's; it fades out around the face, so hair and background stay
+   put. Only landmarks the camera sees steer it (the surface faces the camera,
+   by the mesh's smooth normals, and no other part of the head, such as the
+   nose, is in front). Projected onto the mesh, the person's features then
+   move with the avatar's face bones.
 
-How well it works (`tests/test_headtex_avatars.py`; renders of avatars from
-known cameras stand in for photos):
+   MediaPipe makes up faces in profiles and on the backs of heads. A face is
+   not used when its pose cannot be right (leaning more than 45°, looking up
+   or down more than 35°, more than 25° from MediaPipe's own estimate of the
+   pose), when the segmenter finds hardly any face skin in it or the avatar's
+   head lands where the photo has none, or, without masks, when a nearly
+   frontal face is no face to YuNet (the face recognition's detector). In a
+   photo named as a side or the back, the face is used only when the head's
+   outline (below) agrees with it.
+
+   A photo without a usable face (the side or the back of the head) needs its
+   view named (`left`, `right`, `back`) and the segmenter's masks. The camera
+   is then placed there, at the distance of the session's photo with a face,
+   and refined by fitting the avatar's head to the photo's: its outline (head
+   and hair) to the segmenter's head mask, and its face skin to the photo's
+   (where the segmenter sees face skin on the avatar is found once per head
+   model from renders, about 6 s, and cached). If they do not fit, the photo
+   is reported unusable with the reason. Every view has the segmentation masks
+   (hair, face and body skin, clothes; small copies, `view.mask(name)` gives
+   one at the photo's size), a quality score and warnings: an open mouth,
+   closed eyes, low resolution, blur, a large reprojection error, an assumed
+   focal length, a pose MediaPipe may get wrong, a view placed by its outline.
+   With YuNet's model (`bifold-faces fetch`), faces down to about 60 pixels
+   wide are found in a 12-megapixel photo.
+
+How well it works (`tests/test_headtex_avatars.py` and measurements: renders
+of the 20 avatars from known cameras stand in for photos, registered to
+another avatar's head as a person's photos are):
 
 - Stage 0: on all 20 avatars of the test library MediaPipe found the face in
   all five renders, including glasses, a headscarf and a keffiyeh; mean
   reliabilities were 0.72-0.83. The fallback, forced on all 20, lands 6.9 mm
   from MediaPipe's landmarks on average: about 5 mm at the eyes, mouth and
   nose, 8 mm at the brows, 17 mm on the face's outline.
-- Stage 1 with landmarks: renders up to 30° of yaw come back within 3° and
-  3 pixels (median), at 60° within about 6° and 6 pixels. With the focal
-  length searched for, one more degree. Beyond about 65° MediaPipe still finds
-  a face but its pose can be 10-15° off, and the view gets a warning. The
-  test photos of real people (16 portraits from the web, not in the
-  repository) registered with plausible poses and reprojection errors of 1-3 %
-  of the face's size. A photo takes about 0.1 s.
-- Stage 1 by the outline (the avatars' own hair, so the best case): side views
-  within 6° of turn and 3° of nod, back views within 8° of turn but up to 13°
-  of nod; the segmenter took one child's ponytail for clothes from behind, and
-  those photos were rejected. A real person's hair is never the avatar's, so
-  expect it to be as good as the outlines agree. A fit takes 1-3 s.
+- Stage 1 with landmarks, focal length known: renders of the 20 avatars on
+  Male_Adult_05's head turned 30° and 45° came back within 2° of their turn
+  (the median; all within 6.2°); of those turned 60°, MediaPipe found 35 of
+  40, within 4° (90 % within 8°, the worst 19° short). The faces differ from
+  the head's, so the nod is a few degrees off (the median 2.4°, 90 % within
+  6.6°; a child's face on an adult's head looks 5-7° further down), but
+  through the warp each of the avatar's landmarks reads the photo within 2 %
+  of the face's size of the person's (the median). An avatar on its own head:
+  within 2.5° and 1.5 pixels up to 30°, 7° and 5 pixels at 60°. With the
+  focal length assumed, about a degree more, and the camera's distance is off
+  by as much as the lens differs from a 50° one. The test photos of real
+  people (16 portraits from the web, not in the repository) registered with
+  plausible poses and reprojection errors of 1-3 % of the face's size. A
+  photo takes about 0.1 s.
+- Made-up faces: at its default confidence MediaPipe found a "face" in 16 of
+  220 renders turned 75° to 180°; none of those on the backs of heads was
+  used, with masks or without. An unnamed profile turned 75° was registered
+  by its half face 8 times, 12-25° short, with a warning and a low quality:
+  name side photos and segment them.
+- Stage 1 by the outline (photos named as a side or the back, with masks and
+  a front photo of the session): of the 20 avatars' renders turned 75° to
+  180° on Male_Adult_05's head, 111 of 200 came out usable, turned within 4°
+  of the truth (the median; 90 % within 17°), but 6 were 25° to 50° off,
+  mostly photos turned 135° (half way between a side and the back) pulled to
+  the back; the rest were reported unusable, mostly where the hair differs
+  too much from the head's (long hair, a headscarf). The nod and the lean
+  came out within 5° (the median; 90 % within 13°, the worst 20° and 30°).
+  Of the photos turned 60° and named as a side, 28 of 40 were usable: by the
+  face when the outline agreed with it, else by the outline, within 6° (the
+  median; the worst 15°). On a long-haired head (Business_Female_02) it is
+  worse: half of the photos usable, within 10° (the median; the worst 41°).
+  Nothing in a fit tells a bad one from a good one, so a view placed by its
+  outline gets a quality of at most 0.6 and a warning. A fit takes 1-3 s.
 
 [docs/previews/headtex_register.jpg](docs/previews/headtex_register.jpg) shows
 both stages.
@@ -797,7 +841,8 @@ for `opencv-contrib-python`, which must not be installed beside the project's
 ```bash
 pip install -e ".[headtex]"                 # what MediaPipe needs besides numpy and OpenCV
 pip install --no-deps "mediapipe>=1.0"      # MediaPipe itself
-bifold-faces fetch --headtex                # the face landmarker (3.8 MB) and segmenter (16.4 MB), into models/
+bifold-faces fetch --headtex                # face recognition's models, MediaPipe's face landmarker (3.8 MB)
+                                            # and segmenter (16.4 MB), into models/
 ```
 
 On Linux MediaPipe also needs libEGL and libGLESv2

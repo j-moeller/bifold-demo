@@ -231,11 +231,11 @@ def head_landmarks(model, landmarker=None, *, cache_dir=None, render=None, canon
         if path is not None and path.is_file():
             try:
                 found = HeadLandmarks.load(path)
-                if found.key == key:
-                    _memory[key] = found
-                    return found
-            except (OSError, ValueError, KeyError):
-                pass  # damaged: made again
+            except Exception:  # noqa: BLE001 - a damaged or foreign file (zipfile and zlib raise several kinds)
+                found = None  # made again
+            if found is not None and found.key == key:
+                _memory[key] = found
+                return found
     result = None
     if method != "canonical":
         if landmarker is None:

@@ -5,6 +5,7 @@ fake Face Landmarker for MediaPipe: the "landmarker" knows the 478 true landmark
 with the camera of the view it is shown.
 """
 
+import itertools
 import math
 import struct
 import sys
@@ -33,7 +34,7 @@ RADIUS = 0.09
 
 def _sphere(rows=40, cols=64):
     v, u = np.meshgrid(np.linspace(0.0, 1.0, rows + 1), np.linspace(0.0, 1.0, cols + 1), indexing="ij")
-    theta, phi = v * math.pi, u * 2 * math.pi  # theta from the top
+    theta, phi = v * math.pi, (u - 0.5) * 2 * math.pi  # theta from the top; the texture's seam at the back
     d = np.stack([np.sin(theta) * np.sin(phi), np.cos(theta), np.sin(theta) * np.cos(phi)], axis=-1).reshape(-1, 3)
     p = d * RADIUS
     nose = np.exp(-((p[:, 0] / 0.012) ** 2 + ((p[:, 1] + 0.012) / 0.016) ** 2)) * (p[:, 2] > 0)
@@ -113,30 +114,71 @@ def true_landmarks(model) -> np.ndarray:
 
 
 @pytest.fixture(autouse=True)
-def no_downloads(monkeypatch):
-    """Unit tests never download MediaPipe's models."""
+def isolated(monkeypatch, tmp_path):
+    """Unit tests never download MediaPipe's models, render with OpenGL or touch the user's cache."""
 
     def refuse(model, *args, **kwargs):
         raise FileNotFoundError(f"{model.name}: no downloads in the unit tests")
 
+    def no_renders(*args, **kwargs):
+        raise RuntimeError("no renders in the unit tests")
+
     monkeypatch.setattr(detect, "model_path", refuse)
+    monkeypatch.setattr(stage0, "render_views", no_renders)
+    monkeypatch.setenv(stage0.CACHE_ENV, str(tmp_path / "headtex-cache"))
 
 
 class FakeLandmarker:
-    """Projects known 3D landmarks with the camera of the view whose number the (fake) render holds."""
+    """Projects known 3D landmarks with the camera of the view whose number the (fake) render holds. ``pose``: give
+    MediaPipe's facial transformation matrix too, with the head's rotation in that view (``True``) or this one;
+    ``score``: YuNet's opinion of the face (``FaceMarks.detector_score``)."""
 
-    def __init__(self, points, cameras=None, person=None):
-        self.points, self.cameras, self.person, self.calls = points, cameras, person, 0
+    def __init__(self, points, cameras=None, person=None, pose=None, score=None):
+        self.points, self.cameras, self.person, self.pose, self.score = points, cameras, person, pose, score
+        self.calls = 0
 
     def detect(self, image):
         self.calls += 1
-        if self.cameras is None:
+        camera = None if self.cameras is None else self.cameras[int(image[0, 0, 0])]
+        if camera is None:
             return []
-        camera = self.cameras[int(image[0, 0, 0])]
         pixels = camera.project(self.points)
         if self.person is not None:
             pixels = self.person(pixels)
-        return [FaceMarks(pixels, np.zeros(len(pixels)))]
+        matrix = None
+        if self.pose is not None:
+            matrix = np.eye(4)
+            matrix[:3, :3] = camera.rotation if self.pose is True else self.pose
+        return [FaceMarks(pixels, np.zeros(len(pixels)), matrix, detector_score=self.score)]
+
+
+def _inside(points, polygon):
+    """Whether each of ``points`` (``(N, 2)``) lies inside ``polygon`` (``(M, 2)``), by the even-odd rule."""
+    x, y = points[:, :1], points[:, 1:]
+    x0, y0 = polygon[:, 0], polygon[:, 1]
+    x1, y1 = np.roll(x0, -1), np.roll(y0, -1)
+    crossing = ((y0 > y) != (y1 > y)) & (x < x0 + (x1 - x0) * (y - y0) / np.where(y1 == y0, 1e-12, y1 - y0))
+    return crossing.sum(axis=1) % 2 == 1
+
+
+class FakeSegmenter:
+    """The segmenter's masks of the synthetic head seen by the camera of the view whose number the photo holds: face
+    skin where the head's surface lies inside the true landmarks' face oval (seen from the front), hair elsewhere."""
+
+    def __init__(self, model, points, cameras):
+        outline = stage1.Outline.of(model, 0)
+        middle = outline.triangles.mean(axis=1)
+        face = _inside(middle[:, :2], points[list(cf.FACE_OVAL), :2]) & (middle[:, 2] > CENTRE[2])
+        self.truth = stage1.Outline(outline.triangles, outline.normals,
+                                    np.where(face, stage1.SKIN, stage1.HAIR).astype(np.int8))
+        self.cameras = cameras
+
+    def segment(self, image):
+        drawn = self.truth.labelled(self.cameras[int(image[0, 0, 0])], image.shape[:2])
+        masks = {name: np.zeros(drawn.shape, np.float32) for name in detect.SEGMENT_CLASSES}
+        for name, label in (("face", stage1.SKIN), ("hair", stage1.HAIR), ("background", 0)):
+            masks[name] = (drawn == label).astype(np.float32)
+        return masks
 
 
 def fake_render(model, cameras):
@@ -151,6 +193,18 @@ def head_model():
 @pytest.fixture(scope="module")
 def truth(head_model):
     return true_landmarks(head_model)
+
+
+@pytest.fixture(scope="module")
+def labelled(truth):
+    """A synthetic head model of its own (the outline keeps its labels) with its landmarks and head regions."""
+    model = synthetic_head_model()
+    frame = stage0.face_frame(model)
+    marks = stage0.head_landmarks(model, FakeLandmarker(truth, stage0.views(frame)), render=fake_render,
+                                  cache_dir=False, refresh=True)
+    regions = stage1.head_regions(model, 0, FakeSegmenter(model, truth, stage1.region_views(model)),
+                                  render=fake_render, cache_dir=False)
+    return model, marks, regions
 
 
 @pytest.fixture(scope="module")
@@ -234,6 +288,17 @@ def test_pnp_gives_up_on_nonsense():
     assert stage1.solve_camera(rng.uniform(0, 800, (len(points), 2)), points, (800, 600), focal=700.0) is None
 
 
+def test_pnp_copes_with_a_small_face_in_a_big_photo():
+    """A face 60 pixels wide in a 4000-pixel photo: at the long focal lengths the search tries its points look nearly
+    alike from the camera, which OpenCV's SQPnP refuses with an error."""
+    points = _face_points()
+    truth = PhotoCamera.around(CENTRE, 9.0, 20.0, 5.0, fov=40.0, size=(4000, 3000))
+    pixels = truth.project(points)
+    assert np.ptp(pixels[:, 0]) < 80
+    fit = stage1.solve_camera(pixels, points, (4000, 3000))
+    assert fit is not None and np.allclose(fit.camera.angles(), (20.0, 5.0, 0.0), atol=3.0)
+
+
 def test_the_focal_length_from_exif(tmp_path):
     from PIL import Image
 
@@ -286,6 +351,22 @@ def test_the_face_warp_moves_the_face_and_leaves_the_rest_alone():
     assert ThinPlateWarp.identity().apply(image).shape == image.shape
 
 
+def test_many_points_go_through_the_face_warp_on_a_grid():
+    rng = np.random.default_rng(3)
+    projected = 1500 + rng.normal(0, 40, (cf.COUNT, 2))  # a face in a big photo
+    found = projected + rng.normal(0, 2.0, (cf.COUNT, 2))
+    warp = stage1.face_warp(projected, found, np.ones(cf.COUNT, bool), stage1.face_size(projected))
+    centre, _inner, outer = warp.falloff
+    points = centre + rng.uniform(-1.5 * outer, 1.5 * outer, (200_000, 2))
+    fast = warp.on_grid(points)
+    exact = warp(points[:5000])
+    error = np.linalg.norm(fast[:5000] - exact, axis=1)
+    assert np.percentile(error, 99) < 0.1 and error.max() < 0.5
+    beyond = np.linalg.norm(points - centre, axis=1) >= outer
+    assert beyond.any() and np.array_equal(fast[beyond], points[beyond])  # the photo beyond the ring stays put
+    assert np.array_equal(warp.on_grid(projected[:10]), warp(projected[:10]))  # a few points: exactly
+
+
 # -- ray casting -------------------------------------------------------------------------------------------------
 
 
@@ -326,6 +407,7 @@ def test_landmarks_are_lifted_onto_the_mesh(head_model, truth, head):
 
 
 def test_landmarks_are_cached_by_the_head_geometry(head_model, truth, tmp_path, monkeypatch):
+    monkeypatch.delenv(stage0.CACHE_ENV, raising=False)
     frame = stage0.face_frame(head_model)
     fake = FakeLandmarker(truth, stage0.views(frame))
     first = stage0.head_landmarks(head_model, fake, render=fake_render, cache_dir=tmp_path, refresh=True)
@@ -334,6 +416,12 @@ def test_landmarks_are_cached_by_the_head_geometry(head_model, truth, tmp_path, 
     stage0._memory.clear()
     again = stage0.head_landmarks(head_model, fake, render=fake_render, cache_dir=tmp_path)
     assert fake.calls == len(stage0.VIEWS) and np.array_equal(again.points, first.points)  # from the file
+    whole = files[0].read_bytes()
+    for damaged in (whole[:len(whole) // 2], whole[:-1], b"not a cache file"):  # cut off, or someone else's
+        files[0].write_bytes(damaged)
+        stage0._memory.clear()
+        made = stage0.head_landmarks(head_model, fake, render=fake_render, cache_dir=tmp_path)
+        assert np.array_equal(made.points, first.points) and files[0].read_bytes() != damaged  # made again
     monkeypatch.setenv(stage0.CACHE_ENV, str(tmp_path / "elsewhere"))
     assert stage0.cache_folder(tmp_path) == tmp_path / "elsewhere"
 
@@ -391,6 +479,83 @@ def test_a_photo_with_a_face_is_registered(head_model, truth, head):
     assert drawn.shape == photo.shape and (drawn != photo).any()
 
 
+def test_what_a_camera_sees_of_the_face(head_model, head):
+    """facing() reads the surface's normal from the vertex normals (one triangle's normal at the tip of a nose points
+    sideways), and visible() also leaves out the landmarks the nose hides in a turned face."""
+    nose = [stage1.facing(head, head_model, PhotoCamera.around(CENTRE, 0.6, yaw, fov=40.0))[cf.NOSE_TIP]
+            for yaw in (0.0, 30.0, 45.0, 60.0)]
+    assert nose[0] > 0.85 and all(a > b for a, b in itertools.pairwise(nose)) and nose[-1] > 0.15
+    camera = PhotoCamera.around(CENTRE, 0.6, 45.0, fov=40.0)  # shows the right side of the head (-X)
+    seen = stage1.visible(head, head_model, camera)
+    hidden = (stage1.facing(head, head_model, camera) > 0) & ~seen
+    assert seen[cf.NOSE_TIP] and hidden.sum() > 5 and (head.points[hidden, 0] > 0).all()  # behind the nose
+    corners = raycast.corners_of(head_model.primitives[0].positions, head_model.primitives[0].indices)
+    rays = head.points[hidden] - camera.position
+    distance = np.linalg.norm(rays, axis=1)
+    assert (raycast.intersect(camera.position, rays / distance[:, None], corners)[0] < distance - 0.002).all()
+
+
+def test_a_face_that_cannot_be_what_the_photo_shows_is_not_used(head_model, truth, head):
+    """MediaPipe "finds" faces in profiles and on the backs of heads. A face is not used when its camera fit has an
+    absurd pose, disagrees with MediaPipe's own estimate of the pose, contradicts the view the caller named, lies
+    where the segmenter finds no face skin or, without masks, is nearly frontal but no face to YuNet; a real face
+    passes all of these."""
+    size = (640, 480)
+    photo = np.zeros((480, 640, 3), np.uint8)
+    good = PhotoCamera.around(CENTRE, 0.6, 15.0, 5.0, fov=40.0, size=size)
+
+    def register(camera, pose=True, masks=None, score=None, **options):
+        if masks is True:
+            masks = FakeSegmenter(head_model, truth, [camera]).segment(photo)
+        landmarker = FakeLandmarker(truth, [camera], pose=pose, score=score)
+        return stage1.register_photo(photo, head, head_model, landmarker=landmarker, focal=camera.focal, masks=masks,
+                                     **options)
+
+    real = register(good, masks=True)
+    assert real.usable and real.method == "landmarks", real.summary()
+    lying = register(PhotoCamera.around(CENTRE, 0.6, 10.0, 0.0, 70.0, fov=40.0, size=size))
+    assert not lying.usable and "on its side" in lying.reason
+    looking_up = register(PhotoCamera.around(CENTRE, 0.6, 0.0, -50.0, fov=40.0, size=size))
+    assert not looking_up.usable and "further up or down" in looking_up.reason
+    disagreeing = register(good, pose=head_rotation(15.0 + 40.0, 5.0))
+    assert not disagreeing.usable and "MediaPipe's own estimate" in disagreeing.reason
+    named = register(good, view="right")  # a face turned 15 degrees in a photo of the right side of the head
+    assert not named.usable and "does not show the right" in named.reason and "head mask" in named.reason
+    masks = FakeSegmenter(head_model, truth, [good]).segment(photo)
+    masks["hair"], masks["face"] = masks["hair"] + masks["face"], np.zeros_like(masks["face"])  # hair all over it
+    no_skin = register(good, masks=masks)
+    assert not no_skin.usable and "hardly skin" in no_skin.reason and "name the view" in no_skin.reason
+    # without masks, YuNet's opinion of a nearly frontal face (the false faces on the backs of heads are)
+    not_seen = register(good, score=0.3)
+    assert not not_seen.usable and "no face to YuNet" in not_seen.reason
+    assert register(good, score=0.95).usable
+    assert register(good, score=0.3, masks=True).usable  # the segmenter's masks tell instead
+    turned = register(PhotoCamera.around(CENTRE, 0.6, 50.0, 0.0, fov=40.0, size=size), score=0.0)
+    assert turned.usable and abs(turned.angles[0] - 50.0) < 2.0  # YuNet misses many turned faces: not asked
+
+
+def test_a_named_photo_with_a_false_face_is_placed_at_the_sessions_distance(head_model, truth, head):
+    """register_photos(): a photo named 'right' in which MediaPipe finds a face that cannot be the right side of the
+    head is placed by its outline, with the distance and focal length of the session's front photo."""
+    size = (480, 400)
+    front_camera = PhotoCamera.around(CENTRE, 0.8, 0.0, fov=35.0, size=size)
+    side_camera = PhotoCamera.around(CENTRE, 0.8, 90.0, fov=35.0, size=size)
+    false_face = PhotoCamera.around(CENTRE, 0.8, 5.0, fov=35.0, size=size)  # what MediaPipe makes of the side
+    photos = [np.full((400, 480, 3), k, np.uint8) for k in range(2)]
+    front, side = stage1.register_photos(photos, head, head_model, views=[None, "right"],
+                                         focals=[front_camera.focal, None],  # (EXIF data of the front photo only)
+                                         landmarker=FakeLandmarker(truth, [front_camera, false_face], pose=True),
+                                         segmenter=FakeSegmenter(head_model, truth, [front_camera, side_camera]))
+    assert front.usable and front.method == "landmarks" and front.name == "front"
+    assert side.usable and side.method == "silhouette", side.summary()
+    assert any(w.startswith("the face MediaPipe found (yaw +5") and w.endswith(": ignored") for w in side.warnings)
+    assert any("distance and focal length of the front photo" in w for w in side.warnings)
+    assert side.camera.focal == pytest.approx(front.camera.focal) and side.focal_from == "the front photo's, given"
+    pivot = stage0.face_frame(head_model).pivot
+    assert np.linalg.norm(side.camera.position - pivot) == pytest.approx(np.linalg.norm(front.camera.position - pivot))
+    assert abs(side.angles[0] - 90.0) < 10.0 and np.linalg.norm(side.camera.position - side_camera.position) < 0.1
+
+
 def test_photos_without_a_face_need_a_view_name_and_a_head_mask(head_model, truth, head):
     photo = np.zeros((300, 400, 3), np.uint8)
     nobody = FakeLandmarker(truth, cameras=None)
@@ -423,6 +588,84 @@ def test_a_side_photo_is_placed_by_the_head_outline(head_model, truth, head):
                                landmarker=FakeLandmarker(truth, cameras=None), reference=front).usable
 
 
+def test_the_segmenters_regions_of_the_head_are_found_once_and_cached(labelled, truth, tmp_path):
+    model, _marks, regions = labelled
+    expected = FakeSegmenter(model, truth, []).truth.labels
+    seen = regions != stage1.UNSEEN
+    assert seen.mean() > 0.9 and (regions[seen] == expected[seen]).mean() > 0.97
+    assert stage1.head_regions(model, 0) is regions  # kept on the model's outline
+    # on disk, for a model loaded again: read back without a segmenter
+    first, again = synthetic_head_model(), synthetic_head_model()
+    assert stage1.head_regions(first, 0, cache_dir=tmp_path) is None  # not cached, and no segmenter to find them
+    made = stage1.head_regions(first, 0, FakeSegmenter(first, truth, stage1.region_views(first)), render=fake_render,
+                               cache_dir=tmp_path)
+    assert np.array_equal(made, regions) and len(list(stage0.cache_folder(tmp_path).glob("regions-*.npz"))) == 1
+    assert np.array_equal(stage1.head_regions(again, 0, cache_dir=tmp_path), regions)
+
+
+@pytest.mark.parametrize("yaw,name", [(60.0, "right"), (-65.0, "left"), (115.0, "right"), (-120.0, "left")])
+def test_the_face_skin_tells_the_turn_of_a_photo_between_the_named_views(labelled, truth, yaw, name):
+    """Named 'right' or 'left' but taken 25 to 30 degrees from that: where the segmenter finds face skin, or none,
+    tells the turn, which the outline of a round head does not."""
+    model, marks, _regions = labelled
+    size = (480, 400)
+    front_camera = PhotoCamera.around(CENTRE, 0.8, 0.0, fov=35.0, size=size)
+    camera = PhotoCamera.around(CENTRE, 0.8, yaw, fov=35.0, size=size)
+    photos = [np.full((400, 480, 3), k, np.uint8) for k in range(2)]
+    _front, view = stage1.register_photos(photos, marks, model, views=[None, name], focals=[front_camera.focal, None],
+                                          landmarker=FakeLandmarker(truth, [front_camera, None]),
+                                          segmenter=FakeSegmenter(model, truth, [front_camera, camera]))
+    assert view.usable and view.method == "silhouette" and view.skin > 0.8, view.summary()
+    assert abs((view.angles[0] - yaw + 180.0) % 360.0 - 180.0) < 5.0, view.summary()
+    assert abs(view.angles[1]) < 8.0 and abs(view.angles[2]) < 8.0, view.summary()
+
+
+def test_a_face_in_a_photo_named_as_a_side_is_checked_by_the_outline(labelled, truth, monkeypatch):
+    """MediaPipe finds the faces of profiles turned less than they are: in a photo named 'right' the face is used
+    when the head's outline agrees with its turn; when the face is turned less than the outline, the camera is
+    turned half way (a real person's outline is pulled towards the named view); else the outline's camera is used."""
+    model, marks, _regions = labelled
+    size = (480, 400)
+    front = PhotoCamera.around(CENTRE, 0.8, 0.0, fov=35.0, size=size)
+    photos = [np.full((400, 480, 3), k, np.uint8) for k in range(2)]
+
+    def register(seen, face):  # the photo's true camera, and the one the face MediaPipe finds fits
+        return stage1.register_photos(photos, marks, model, views=[None, "right"], focals=[front.focal, None],
+                                      landmarker=FakeLandmarker(truth, [front, face], pose=True),
+                                      segmenter=FakeSegmenter(model, truth, [front, seen]))[1]
+
+    def turned(yaw):
+        return PhotoCamera.around(CENTRE, 0.8, yaw, fov=35.0, size=size)
+
+    view = register(turned(60.0), turned(60.0))  # named 'right' but turned 60 degrees: the face is right
+    assert view.usable and view.method == "landmarks" and abs(view.angles[0] - 60.0) < 2.0, view.summary()
+    assert any("outline agrees" in w for w in view.warnings)
+    view = register(turned(60.0), turned(80.0))  # a face found turned 20 degrees further than it is
+    assert view.usable and view.method == "silhouette" and abs(view.angles[0] - 60.0) < 5.0, view.summary()
+    assert any("from where the head's outline turns it: ignored" in w for w in view.warnings)
+    # a profile MediaPipe turns too little (in a photo its landmarks lie on the face's skin, which the synthetic
+    # face turned 25 degrees too little does not: the segmenter's check is told so)
+    monkeypatch.setattr(stage1, "_skin_share", lambda *args: 1.0)
+    view = register(turned(75.0), turned(50.0))
+    assert view.usable and view.method == "silhouette" and abs(view.angles[0] - 62.5) < 4.0, view.summary()
+    assert any("disagree: turned half way" in w for w in view.warnings)
+
+
+def test_masks_are_kept_small_and_given_back_at_the_photos_size():
+    h, w = 1500, 2000
+    yy, xx = np.mgrid[0:h, 0:w]
+    soft = np.clip(1.5 - np.hypot(xx - 1000.0, yy - 700.0) / 300.0, 0.0, 1.0).astype(np.float32)  # a soft disc
+    kept = detect.compact_mask(soft)
+    assert kept.dtype == np.uint8 and max(kept.shape) == detect.MASK_SIZE and kept.flags.owndata
+    back = detect.mask_at(kept, (w, h))
+    assert back.shape == (h, w) and back.dtype == np.float32 and np.abs(back - soft).max() < 0.02
+    small = (soft[::4, ::4] * 255).astype(np.uint8)  # bytes, smaller than the photo: kept as they are, copied
+    same = detect.compact_mask(small)
+    assert np.array_equal(same, small) and not np.shares_memory(same, small)
+    view = stage1.View(np.zeros((h, w, 3), np.uint8), "front", True, masks={"hair": kept})
+    assert view.mask("hair").shape == (h, w) and view.mask("face") is None
+
+
 def test_photos_of_one_session_share_the_focal_length(head_model, truth, head):
     size = (640, 480)
     cameras = [PhotoCamera.around(CENTRE, 0.6, yaw, 0.0, fov=40.0, size=size) for yaw in (0.0, 40.0)]
@@ -431,6 +674,18 @@ def test_photos_of_one_session_share_the_focal_length(head_model, truth, head):
     assert all(v.usable for v in views) and views[0].name == "front"
     assert views[1].camera.focal == pytest.approx(views[0].camera.focal)
     assert any("focal length of the front photo" in w for w in views[1].warnings)
+    # a focal length known for the front photo only (EXIF, or given) goes to the others of the same camera, turned
+    # (portrait) or scaled too; a photo of another shape (cropped, or another camera) keeps its own
+    cameras.append(PhotoCamera.around(CENTRE, 0.6, -30.0, 0.0, fov=40.0, size=(240, 320)))
+    cameras.append(PhotoCamera.around(CENTRE, 0.6, -20.0, 0.0, fov=40.0, size=(500, 500)))
+    photos += [np.full((320, 240, 3), 2, np.uint8), np.full((500, 500, 3), 3, np.uint8)]
+    views = stage1.register_photos(photos, head, head_model, focals=[cameras[0].focal, None, None, None],
+                                   landmarker=FakeLandmarker(truth, cameras))
+    assert all(v.usable for v in views) and views[0].focal_from == "given"
+    for view, scale in ((views[1], 1.0), (views[2], 0.5)):
+        assert view.camera.focal == pytest.approx(scale * cameras[0].focal)
+        assert view.focal_known and view.focal_from == "the front photo's, given"
+    assert not views[3].focal_known and views[3].focal_from == "assumed"
 
 
 # -- the canonical face, the downloads, MediaPipe missing ---------------------------------------------------------

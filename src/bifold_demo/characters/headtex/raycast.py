@@ -31,9 +31,11 @@ def intersect(origins, directions, corners: np.ndarray, two_sided: bool = True):
     where a ray hits nothing. ``origins`` is one point or one per ray; ``directions`` ``(R, 3)``. Without
     ``two_sided`` only triangles facing the ray (counter-clockwise seen from its origin) count."""
     directions = np.asarray(directions, np.float64).reshape(-1, 3)
-    origins = np.broadcast_to(np.asarray(origins, np.float64), directions.shape)
     v0 = corners[:, 0]
     e1, e2 = corners[:, 1] - v0, corners[:, 2] - v0
+    if np.size(origins) == 3:  # one origin (a camera): the products below become matrix products
+        return _intersect_from(np.asarray(origins, np.float64).reshape(3), directions, v0, e1, e2, two_sided)
+    origins = np.broadcast_to(np.asarray(origins, np.float64), directions.shape)
     n = len(directions)
     best_t = np.full(n, np.inf)
     best_tri = np.full(n, -1, np.int64)
@@ -52,6 +54,40 @@ def intersect(origins, directions, corners: np.ndarray, two_sided: bool = True):
         eps = -1e-9
         hit = ok & (u >= eps) & (v >= eps) & (u + v <= 1.0 - eps) & (t > 1e-9)
         t = np.where(hit, t, np.inf)
+        k = t.argmin(axis=1)
+        rows = np.arange(len(k))
+        tk = t[rows, k]
+        found = np.isfinite(tk)
+        idx = np.arange(s, s + len(k))[found]
+        best_t[idx] = tk[found]
+        best_tri[idx] = k[found]
+        best_uv[idx] = np.c_[u[rows, k], v[rows, k]][found]
+    bary = np.c_[1.0 - best_uv.sum(axis=1), best_uv]
+    bary[best_tri < 0] = 0.0
+    return best_t, best_tri, np.clip(bary, 0.0, 1.0)
+
+
+def _intersect_from(origin, directions, v0, e1, e2, two_sided):
+    """:func:`intersect` for rays from one point. Moller-Trumbore's triple products rearranged so the ray direction
+    comes out: ``det = d . (e2 x e1)``, ``u = d . (e2 x (o - v0)) / det``, ``v = d . ((o - v0) x e1) / det`` and
+    ``t = e2 . ((o - v0) x e1) / det``, each a matrix product of the directions with one vector per triangle."""
+    tvec = origin - v0
+    q = np.cross(tvec, e1)
+    m_det, m_u = np.cross(e2, e1).T, np.cross(e2, tvec).T
+    t_num = np.einsum("tk,tk->t", e2, q)
+    n = len(directions)
+    best_t = np.full(n, np.inf)
+    best_tri = np.full(n, -1, np.int64)
+    best_uv = np.zeros((n, 2))
+    step = max(1, (1 << 22) // max(len(v0), 1))  # rays per batch: about 4M ray-triangle pairs
+    for s in range(0, n, step):
+        d = directions[s:s + step]
+        det = d @ m_det
+        ok = np.abs(det) > 1e-14 if two_sided else det > 1e-14
+        inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+        u, v, t = (d @ m_u) * inv, (d @ q.T) * inv, t_num * inv
+        eps = -1e-9
+        t = np.where(ok & (u >= eps) & (v >= eps) & (u + v <= 1.0 - eps) & (t > 1e-9), t, np.inf)
         k = t.argmin(axis=1)
         rows = np.arange(len(k))
         tk = t[rows, k]

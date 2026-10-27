@@ -7,9 +7,16 @@ control points, so ``falloff=(centre, inner, outer)`` fades the movement out bet
 the warp is the spline within ``inner`` and leaves everything beyond ``outer`` where it is. Stage 1 uses it as a
 backward map: from where the avatar's landmarks are in a photo to where the person's are, so sampling the photo
 through it puts the person's eyes, brows, nose and mouth on the avatar's and leaves the hair and the background alone.
+
+The spline costs a sum over all control points for each point it moves, so it is only evaluated inside the fall-off
+ring; :meth:`ThinPlateWarp.on_grid` reads many points (a texture's texels) off the spline evaluated once on a grid
+inside the ring instead, within a few hundredths of a pixel of the exact warp: a million points take about half a
+second instead of ten.
 """
 
 from __future__ import annotations
+
+import math
 
 import cv2
 import numpy as np
@@ -35,6 +42,7 @@ class ThinPlateWarp:
         if len(source) < 3:  # too few points for a spline: the identity, or a shift
             self._shift = (target - source).mean(axis=0) if len(source) else np.zeros(2)
             self._weights = None
+            self._grid = None
             return
         # in normalised coordinates, so the system is well conditioned whatever the image size
         self._centre = source.mean(axis=0)
@@ -54,6 +62,7 @@ class ThinPlateWarp:
             solution = np.linalg.lstsq(a, b, rcond=None)[0]
         self._weights, self._affine = solution[:k], solution[k:]
         self._points = s
+        self._grid = None  # (step, origin, displacement field) for on_grid
 
     @classmethod
     def identity(cls) -> ThinPlateWarp:
@@ -62,13 +71,49 @@ class ThinPlateWarp:
     def __call__(self, points) -> np.ndarray:
         """Where the warp takes ``points`` (``(N, 2)``)."""
         points = np.asarray(points, np.float64).reshape(-1, 2)
-        moved = self._spline(points)
         if self.falloff is None:
-            return moved
+            return self._spline(points)
         centre, inner, outer = self.falloff
-        u = np.clip((np.linalg.norm(points - centre, axis=1) - inner) / max(outer - inner, 1e-9), 0.0, 1.0)
-        keep = 1.0 - u * u * (3.0 - 2.0 * u)  # 1 within inner, 0 beyond outer, smooth in between
-        return points + (moved - points) * keep[:, None]
+        distance = np.linalg.norm(points - centre, axis=1)
+        out = points.copy()
+        near = distance < outer  # beyond the ring the warp leaves points where they are: no spline needed there
+        if near.any():
+            u = np.clip((distance[near] - inner) / max(outer - inner, 1e-9), 0.0, 1.0)
+            keep = 1.0 - u * u * (3.0 - 2.0 * u)  # 1 within inner, 0 beyond outer, smooth in between
+            out[near] += (self._spline(points[near]) - points[near]) * keep[:, None]
+        return out
+
+    def on_grid(self, points, step: float | None = None) -> np.ndarray:
+        """Where the warp takes ``points`` (``(N, 2)``), read off the warp evaluated every ``step`` pixels inside the
+        fall-off ring (once, then kept; default: 2 pixels, coarser for a face over 500 pixels wide, so the grid is at
+        most 260 points across) and interpolated bilinearly. For many points, such as a texture's texels, it is much
+        faster than :meth:`__call__` and within a few hundredths of a pixel of it (99 %; under half a pixel at
+        worst, next to a control point). When the points inside the ring are fewer than the grid's, or there is no
+        fall-off, it is :meth:`__call__`."""
+        points = np.asarray(points, np.float64).reshape(-1, 2)
+        if self._weights is None or self.falloff is None:
+            return self(points)
+        centre, _inner, outer = self.falloff
+        step = float(step) if step else max(2.0, outer / 128.0)
+        near = np.linalg.norm(points - centre, axis=1) < outer
+        cells = math.ceil(2.0 * outer / step) + 2
+        if near.sum() < cells * cells:
+            return self(points)
+        if self._grid is None or self._grid[0] != step:
+            origin = centre - outer - step / 2.0
+            axis = np.arange(cells) * step
+            gx, gy = np.meshgrid(origin[0] + axis, origin[1] + axis)
+            grid = np.c_[gx.ravel(), gy.ravel()]
+            self._grid = (step, origin, (self(grid) - grid).reshape(cells, cells, 2))
+        step, origin, field = self._grid
+        out = points.copy()
+        f = np.clip((points[near] - origin) / step, 0.0, cells - 1.000001)
+        i = f.astype(np.int64)
+        fx, fy = (f - i)[:, :1], (f - i)[:, 1:]
+        x, y = i[:, 0], i[:, 1]
+        out[near] += ((field[y, x] * (1 - fx) + field[y, x + 1] * fx) * (1 - fy)
+                      + (field[y + 1, x] * (1 - fx) + field[y + 1, x + 1] * fx) * fy)
+        return out
 
     def _spline(self, points: np.ndarray) -> np.ndarray:
         if self._weights is None:
