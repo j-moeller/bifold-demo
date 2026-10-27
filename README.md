@@ -38,10 +38,11 @@ Python 3.10–3.13. An Apple-silicon Mac runs the student on its GPU (MPS).
 ```bash
 git clone -b claude/stoic-hopper-9fdrhr https://github.com/j-moeller/bifold-demo.git bifold-morph
 cd bifold-morph
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e .
-bifold-morph            # the webcam; the first run downloads YuNet and the two judges (about 90 MB)
+make                    # once: venv, install, models, tests; then the webcam demo. Run it again any time.
 ```
+
+`make` skips what is already done. Without it: `python3 -m venv .venv && source .venv/bin/activate &&
+pip install -e . && bifold-morph`. The first run downloads YuNet and the two judges (about 90 MB).
 
 The student network comes with the package (`src/bifold_morph/weights/student.pt`). Drag the sliders, or:
 
