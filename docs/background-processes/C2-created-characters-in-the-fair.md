@@ -1,5 +1,23 @@
 # C2: created characters take over places in the fair
 
+**State when stopped (27 October, about 06:40 UTC, on request).**
+
+- **Commits:** five, in the worktree `.claude/worktrees/wf_17f4d8c3-caf-1` (branch `worktree-wf_17f4d8c3-caf-1`; the
+  tree is clean):
+  - `a9ea9c2`, `58749f6`, `ba58d8c`: the step;
+  - `f88536b`: the first fix;
+  - `2d0a1c3` "Created characters in the fair: changes nobody sees, a book that never stops the demo": the second
+    fix.
+- **Not on the branch:** none of these commits.
+- **Second check:** four independent checkers tested the step after the first fix and found 2 high and about 20 other
+  issues (see [verified a second time](#verified-a-second-time)).
+- **Second fix:** it reports all of them fixed (see [the second fix](#the-second-fix)). The fixer's own full suite run
+  with the real avatars gave 532 passed and 9 skipped.
+- **Recheck:** it had confirmed every reproduction it re-ran and found three small new issues when it was stopped (see
+  [the recheck, stopped part way](#the-recheck-stopped-part-way)).
+- **To finish:** the recheck's last items, a decision on its new findings, then integration: replay the five commits
+  onto the branch, run the full suite there and push.
+
 **State when paused.** Implemented in three commits in the worktree `.claude/worktrees/wf_17f4d8c3-caf-1`:
 
 - `a9ea9c2` "Camera play: one more player can join those who play already";
@@ -243,6 +261,117 @@ What the fixer leaves as designed:
 - a character whose `character.json` becomes unreadable leaves the fair instead of keeping its last good version;
 - in places with a loop of another length (a child's avatar, walker6, wanderer2), 7-31 % of ready times still end in
   a jump of up to 2 m, or a pop, in view after 60 s.
+
+## Verified a second time
+
+After the first fix, four independent checkers each tested the step through one lens: what a viewer sees, robustness,
+frame timing, and regressions. Their scripts are in the scratch folders `steps/C2_scene_verify_{viewer,robust,perf,regress}/`.
+
+- **No regressions:** the default fair, its renders, camera play, selection mode, faces, R and scene reload behaved
+  exactly as before the step.
+- **High:**
+  - **Swaps happened in plain view.** An exact swap was made on the first frame after its job was ready. A visitor
+    330-353 px tall in the middle of the picture turned into someone else between two frames.
+  - **A `character.json` with a field of the wrong shape ended the demo,** or stopped it from starting: 8 of 11 shapes
+    tried (`"items": 5`, a file that is `[]`, `"created": null`). An unlistable or vanishing `created/` folder did the
+    same. Three of the four checkers found this.
+- **Medium:**
+  - leaving the fair (a delete) put the original person back at once: jumps of metres, pops and a one-frame flash;
+  - "unseen" swaps compared only where people stood, so they could turn a person round or swap walking for standing;
+  - the forced jump of up to 2 m after 60 s was visible, and avoidable;
+  - a sign held by a created character dropped to the hip a second after it appeared;
+  - newcomers made at the same time did not keep 0.6 m from each other;
+  - start-up and scene reload waited about 4.5 times longer than the work took (the wait ran paced);
+  - exact swaps were not paced at all, and every job ended with an unpaced stretch, so several characters joining at
+    once made the video stutter;
+  - item pictures were decoded on the main thread, a stall of about 0.3 s;
+  - saving a character again deleted the item pictures in its folder;
+  - a PNG half written when the demo looked kept the character out for good;
+  - 16-bit PNG textures were drawn white;
+  - a broken file was reported only once.
+- **Low:**
+  - the wrong notice when the fair is full;
+  - notices in consecutive frames replaced each other;
+  - quitting took about 2 s while a job ran;
+  - a delete during a job was reported as an error;
+  - two names that map to the same folder replaced each other silently;
+  - copied folders and textures for missing parts were ignored silently;
+  - created textures had no size limit and were uploaded on the main thread at the first draw;
+  - README timings came from a loop without drawing;
+  - two test gaps: join's planning around players who already play, and the rank of people doing yoga.
+
+## The second fix
+
+Commit `2d0a1c3`. The fixer reports every finding fixed:
+
+- **Changes nobody sees.**
+  - `Renderer.visible_pixels` (occlusion queries, depth only) counts how many pixels the person leaving and the
+    newcomer would have in the frame just drawn, worn items, props and shadow included.
+  - A person is taken out at a frame where they show 0 px, and the place stays empty until the newcomer would show
+    0 px too. The same rule covers new looks and leaving.
+  - After `LINE_UP` (20 s), at most `SMALL` (0.05 % of the picture) may change in view. The forced jumps are gone.
+  - Measured waits: a walker 0.2 s median (max 17 s), a wanderer 12 s (max 46 s), a visitor 25 s (max about 96 s).
+- **A book that never stops the demo:**
+  - `load()` checks every field and raises a `ValueError` with the reason;
+  - `refresh()` catches anything per folder, and OSErrors on the folder itself;
+  - a character that could be read before stays as it was while its file does not read;
+  - problems are told when new and again when they come back;
+  - every file of a character's folder is stamped, so a PNG that is completed later is read again;
+  - a failed job is retried after 10 s;
+  - `save()` keeps the folder's other files and refuses a folder that holds another character;
+  - images are scaled to at most 1024 px when read, and 16-bit, grey and palette PNGs are read right.
+- **Frames:**
+  - looks, textures and item pictures are made on the worker;
+  - textures go to the GPU one step a frame before the change;
+  - exact jobs are paced too;
+  - `update(wait=True)` hurries its jobs: start-up takes 0.5 s for 4 characters and 1.4 s for 13, against 3.6-7.8 s;
+  - quitting takes 0.1 s.
+- **The rest:**
+  - newcomers made together are planned around each other: 0 conflicts for 13 children;
+  - a sign is held from the start;
+  - the right notice when the fair is full, and notices merge;
+  - the two test gaps are closed (their mutants now fail);
+  - the README gives timings from the demo's own loop.
+
+The fixer's checks:
+
+- the full suite with the real avatars: 532 passed, 9 skipped;
+- no new ruff findings;
+- a live check of 9000 frames: 22 changes, 19 at 0 px and 3 within the 0.05 % allowance; 2 more were over only at the
+  R reset.
+
+## The recheck, stopped part way
+
+An independent recheck re-ran every checker's reproductions on `2d0a1c3`. Its notes are in
+`steps/C2_scene_recheck/notes.md`.
+
+Everything it re-ran held:
+
+- malformed files in 43 shapes, the app crash cases, folder races;
+- unreadable and half-copied files, retries, item files kept;
+- 16-bit PNGs, the looks stall (at most 4-6 ms per update), a fast quit;
+- newcomers keeping apart, the start-up wait, the sign, the notices;
+- the two mutants;
+- lint;
+- the equivalence of the faster start search in `behaviour._plan`.
+
+What it found that is new or still open:
+
+- **Low: after R the changed places pop one frame late.** The first frame after the reset is drawn with the old
+  people, and only then are the pending changes made at once (5,774 px at 640x360). A scene reload does it right.
+- **Low: the 0.05 % allowance is visible in places that are never hidden.** After 20 s, an exact swap far down the
+  aisle changes a visitor 48 px tall in one frame (404 of the 461 px allowed). "Nobody sees it" is an aim, as the
+  README now says, not a guarantee.
+- **Low: the README's late-frame figures for joins leave out a cost.** The fixer's timing series stubbed all draw
+  calls, which also stubs the occlusion counting, so every change was made as soon as its uploads were done. The
+  figures leave out the wait for an unseen moment and the counting of about 7 ms a frame during it. The README states
+  that cost separately.
+- **Wording only:** a `created/` folder that is gone at a look empties the book (the characters leave and come back as
+  new 3D people). The commit message says a vanishing folder "leaves the characters as they are", which holds only for
+  a race or a permission error.
+
+Its live run at 1280x720 had finished: 22 changes, all 15 made before `LINE_UP` at 0 px. It was still to run the full
+suite with the real avatars.
 
 ## Open issues the builder admits
 

@@ -59,3 +59,36 @@
   fusion) and B2-B4 (fills in the creator) should run their heavy work paced, or in a separate process.
 - **Mixing MediaPipe and moderngl in one process** crashed once (a segmentation fault) in about 10 runs. Keep an eye on
   it when the creator screen runs both live.
+
+## Learned since the first pause
+
+- **Interruptions are frequent.** Three things stopped running agents: the account's usage limit (reset times
+  2026-10-26 22:40 UTC and 2026-10-27 03:40 UTC), container restarts (00:44, about 04:51 and 05:16 UTC on 27
+  October) and the final stop on request. What survives:
+  - the repository, the worktrees and the scratch folder survive a restart;
+  - processes do not (test runs, evaluations, live checks);
+  - workflow runs keep each finished stage's result in their journal, and resume at the stage that was cut off.
+
+  So every stage writes its findings or a progress log to its scratch folder as it goes, and long agents commit
+  working pieces early (A4 used WIP commits to squash later).
+- **All four face models in one folder.** MediaPipe's `face_landmarker.task` and `selfie_multiclass_256x256.tflite`
+  must sit next to YuNet and SFace in `BIFOLD_FACE_MODELS` (here the scratch folder `models_all/`). Otherwise
+  A3's segmenter and its MediaPipe tests cannot find them.
+- **`pkill -f PATTERN` matches the shell that runs it** when the pattern is in its own command line, and it killed a
+  background test run. Stop processes by PID.
+- **Integration conflicts are in the docs.** Every step adds a README section, a line in the project layout and an
+  entry in `docs/previews/README.md`, so replaying a step onto the branch conflicts there. Keeping both sides is
+  right each time; code has not conflicted.
+- **A measuring pitfall (C2's recheck).** Stubbing `moderngl.VertexArray.render` to time a loop "without drawing" also
+  stubs the occlusion queries that decide when a change is unseen. Measure with real drawing, or say what the stub
+  leaves out.
+- **No Hugging Face here, precisely:** `from_pretrained` fails with `httpx2.ProxyError` (not an `OSError`) after about
+  11 s, and with `local_files_only` at once. B2's ladder handles both.
+- **More notes from the steps:**
+  - there is no scipy in the environment;
+  - `cv2.remap` maps must be under 32767 px wide;
+  - `INTER_AREA` resizing takes at most 4 channels;
+  - some agents' shells refused `source` and compound commands, so A4 used a wrapper script;
+  - `Renderer.render` did not enter its own GL context: fixed in A4's worktree, not on the branch yet.
+- **An unbounded cache to fix with the face work:** `face_photo._layouts` keeps every model and its small head layout
+  alive forever (found by B1's fix).
