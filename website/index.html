@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>7×7 Movable Table</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; color: #111; background: #fafafa; }
+  h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
+  p.hint { color: #555; font-size: .9rem; margin: 0 0 1rem; }
+  table { border-collapse: collapse; background: #fff; }
+  th, td { border: 1px solid #ccc; padding: 0; }
+  th { background: #f3f4f6; font-weight: 500; font-size: .85rem; color: #555; min-width: 80px; }
+  th.handle { cursor: grab; user-select: none; padding: .45rem .6rem; text-align: center; }
+  th.handle:active { cursor: grabbing; }
+  th.dragging { opacity: .4; }
+  th.over { box-shadow: inset 0 0 0 2px #3b82f6; }
+  td input { width: 100%; box-sizing: border-box; border: 0; padding: .5rem; font: inherit; background: transparent; }
+  td input:focus { outline: 2px solid #3b82f6; outline-offset: -2px; background: #eef5ff; }
+  .corner { min-width: 0; }
+</style>
+</head>
+<body>
+  <h1>7×7 Table</h1>
+  <p class="hint">Drag a column header (A–G) or a row number (1–7) onto another one to move it. Click any cell to type.</p>
+  <table id="grid"></table>
+
+<script>
+  const N = 7;
+  const data = Array.from({ length: N }, () => Array(N).fill(''));
+  let drag = null; // { kind: 'row' | 'col', from: index }
+
+  const colName = i => String.fromCharCode(65 + i);
+
+  function move(kind, from, to) {
+    if (from === to) return;
+    if (kind === 'row') {
+      const [row] = data.splice(from, 1);
+      data.splice(to, 0, row);
+    } else {
+      for (const row of data) {
+        const [value] = row.splice(from, 1);
+        row.splice(to, 0, value);
+      }
+    }
+    render();
+  }
+
+  // Header or row-label cell that can be dragged and dropped onto another one of the same kind
+  function makeHandle(kind, index, label) {
+    const th = document.createElement('th');
+    th.className = 'handle';
+    th.textContent = label;
+    th.draggable = true;
+
+    th.addEventListener('dragstart', e => {
+      drag = { kind, from: index };
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', label); // Firefox needs some data to start a drag
+      th.classList.add('dragging');
+    });
+    th.addEventListener('dragend', () => {
+      drag = null;
+      th.classList.remove('dragging');
+    });
+    th.addEventListener('dragover', e => {
+      if (!drag || drag.kind !== kind) return;
+      e.preventDefault();
+      th.classList.add('over');
+    });
+    th.addEventListener('dragleave', () => th.classList.remove('over'));
+    th.addEventListener('drop', e => {
+      if (!drag || drag.kind !== kind) return;
+      e.preventDefault();
+      move(kind, drag.from, index);
+    });
+    return th;
+  }
+
+  function render() {
+    const table = document.getElementById('grid');
+    table.innerHTML = '';
+
+    const headRow = table.createTHead().insertRow();
+    const corner = document.createElement('th');
+    corner.className = 'corner';
+    headRow.appendChild(corner);
+    for (let c = 0; c < N; c++) {
+      headRow.appendChild(makeHandle('col', c, colName(c)));
+    }
+
+    const tbody = table.createTBody();
+    for (let r = 0; r < N; r++) {
+      const tr = tbody.insertRow();
+      tr.appendChild(makeHandle('row', r, String(r + 1)));
+      for (let c = 0; c < N; c++) {
+        const input = document.createElement('input');
+        input.value = data[r][c];
+        input.addEventListener('input', e => { data[r][c] = e.target.value; });
+        tr.insertCell().appendChild(input);
+      }
+    }
+  }
+
+  render();
+</script>
+</body>
+</html>
