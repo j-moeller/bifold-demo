@@ -22,7 +22,7 @@
 </head>
 <body>
   <h1>7×7 Table</h1>
-  <p class="hint">Drag a column header (A–G) or a row number (1–7) onto another one to move it. Click any cell to type.</p>
+  <p class="hint">Drag a column header (A–G) or a row number (1–7) onto another one to move it. Click any cell to type whole numbers. Larger values are darker, scaled between the smallest and largest value in the table.</p>
   <table id="grid"></table>
 
 <script>
@@ -96,10 +96,42 @@
       for (let c = 0; c < N; c++) {
         const input = document.createElement('input');
         input.value = data[r][c];
-        input.addEventListener('input', e => { data[r][c] = e.target.value; });
-        tr.insertCell().appendChild(input);
+        input.addEventListener('input', e => {
+          const text = e.target.value;
+          if (!/^-?\d*$/.test(text)) {
+            e.target.value = data[r][c]; // reject anything that is not an integer
+            return;
+          }
+          data[r][c] = text;
+          shade();
+        });
+        const td = tr.insertCell();
+        td.appendChild(input);
       }
     }
+    shade();
+  }
+
+  // Integer cells get a gray level from white (smallest value) to black (largest value)
+  function shade() {
+    const isInt = s => /^-?\d+$/.test(s);
+    const values = data.flat().filter(isInt).map(Number);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+
+    document.querySelectorAll('tbody td').forEach((td, i) => {
+      const input = td.querySelector('input');
+      const text = data[Math.floor(i / N)][i % N];
+      if (!isInt(text)) {
+        td.style.backgroundColor = '';
+        input.style.color = '';
+        return;
+      }
+      const t = max === min ? 0 : (Number(text) - min) / (max - min);
+      const gray = Math.round(255 * (1 - t));
+      td.style.backgroundColor = `rgb(${gray}, ${gray}, ${gray})`;
+      input.style.color = t > 0.5 ? '#fff' : '#111';
+    });
   }
 
   render();
