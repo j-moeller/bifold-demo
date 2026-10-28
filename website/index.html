@@ -22,7 +22,7 @@
 </head>
 <body>
   <h1>7×7 Table</h1>
-  <p class="hint">Drag a column header (A–G) or a row number (1–7) onto another one to move it. Click any cell to type whole numbers. Larger values are darker, scaled between the smallest and largest value in the table.</p>
+  <p class="hint">Drag a column header (A–G) or a row number (1–7) onto another one to move it. Rows and columns always move together, and the table stays symmetric. Click any cell to type whole numbers. Larger values are darker, scaled between the smallest and largest value in the table.</p>
   <table id="grid"></table>
 
 <script>
@@ -32,16 +32,14 @@
 
   const colName = i => String.fromCharCode(65 + i);
 
-  function move(kind, from, to) {
+  // Row i always belongs to column i, so a move reorders rows and columns with the same permutation
+  function move(from, to) {
     if (from === to) return;
-    if (kind === 'row') {
-      const [row] = data.splice(from, 1);
-      data.splice(to, 0, row);
-    } else {
-      for (const row of data) {
-        const [value] = row.splice(from, 1);
-        row.splice(to, 0, value);
-      }
+    const [row] = data.splice(from, 1);
+    data.splice(to, 0, row);
+    for (const r of data) {
+      const [value] = r.splice(from, 1);
+      r.splice(to, 0, value);
     }
     render();
   }
@@ -72,7 +70,7 @@
     th.addEventListener('drop', e => {
       if (!drag || drag.kind !== kind) return;
       e.preventDefault();
-      move(kind, drag.from, index);
+      move(drag.from, index);
     });
     return th;
   }
@@ -103,6 +101,7 @@
             return;
           }
           data[r][c] = text;
+          data[c][r] = text; // keep the table symmetric
           shade();
         });
         const td = tr.insertCell();
@@ -122,6 +121,7 @@
     document.querySelectorAll('tbody td').forEach((td, i) => {
       const input = td.querySelector('input');
       const text = data[Math.floor(i / N)][i % N];
+      if (input.value !== text) input.value = text; // show mirrored values too
       if (!isInt(text)) {
         td.style.backgroundColor = '';
         input.style.color = '';
