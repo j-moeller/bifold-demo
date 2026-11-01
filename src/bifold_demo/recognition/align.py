@@ -15,7 +15,9 @@ signal.
 **Big faces.** A face much bigger than the crop (an enrolment photo with 200 pixels between the eyes, a scale of
 0.18) would alias badly if only warped: bilinear sampling then skips most pixels. With ``antialias`` the part of the
 image the crop shows is first shrunk with area averaging to the crop's scale, then warped (only when the crop is
-smaller than :data:`ANTIALIAS_BELOW` of the face's size). The landmarks still go exactly onto the template.
+smaller than :data:`ANTIALIAS_BELOW` of the face's size). The landmarks still go exactly onto the template. Measured
+on avatar renders and a few photos, it makes no difference beyond noise to how well the recognisers separate people
+(docs/research/face_recognition_f1_results.md); it is kept as the sound way to shrink an image several times.
 """
 
 from __future__ import annotations

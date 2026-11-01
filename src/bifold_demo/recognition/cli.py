@@ -6,6 +6,8 @@
     bifold-faces list [--only models|people]   the face models (licences, profiles, fetched or not) and the known
                                                people with how many photos each
     bifold-faces who photo.jpg                 who the faces in a photo are
+    bifold-faces check [--profile P | --model ID ... | --all] [--speed] [--photos DIR] [--pack lfw.bin ...]
+                                               check the models: files, graphs, speed, colour order, accuracy
     bifold-faces landmarks [AVATAR ...]        MediaPipe's face landmarks on avatars' heads (head textures, stage 0)
     bifold-faces register PHOTO[:VIEW] ... --avatar NAME [--out DIR] [--segment]
                                                register photos of a head to an avatar's head (stage 1)
@@ -23,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 import cv2
 
@@ -33,7 +36,10 @@ from .gallery import Gallery
 def _gallery(args) -> Gallery:
     from .engine import FaceEngine
 
-    return Gallery(args.faces, FaceEngine(args.models), threshold=args.threshold)
+    engine = FaceEngine(args.models, profile=args.face_profile)
+    for note in engine.notes:
+        print(f"[faces] {note}", file=sys.stderr)
+    return Gallery(args.faces, engine, threshold=args.threshold)
 
 
 def cmd_fetch(args) -> int:
@@ -78,12 +84,15 @@ def cmd_list(args) -> int:
     gallery = _gallery(args)
     gallery.refresh(force=True)
     people = gallery.people()
+    print(f"Known people ({gallery.engine.describe()}; a face is someone from a score of {gallery.threshold:.2f})")
     if not people:
         print(f"nobody known yet: put photos in {gallery.folder}/<name>/ (or run: bifold-faces add NAME PHOTOS)")
     for name, count in people.items():
-        print(f"{name}: {count} photo(s)")
-    for path in gallery.problems():
-        print(f"no face found in {path}", file=sys.stderr)
+        poses = ", ".join(f"{n} {pose}" for pose, n in sorted(gallery.poses(name).items()))
+        print(f"{name}: {count} photo(s) ({poses})")
+    for path, status, problems in gallery.report():
+        where = path if status == "near-twin" else path.relative_to(gallery.folder)
+        print(f"{status}: {where}: {'; '.join(problems)}", file=sys.stderr)
     return 0
 
 
@@ -105,9 +114,62 @@ def _list_models(args) -> None:
     print()
 
 
+def cmd_check(args) -> int:
+    import json
+
+    from .. import downloads
+    from . import checks
+    from .detect import ScrfdDetector, YuNetDetector
+
+    folder = models.models_dir(args.models)
+    if args.model:
+        ids = args.model
+    elif args.all:
+        ids = [i for i, spec in registry.MODELS.items() if downloads.present(spec.file, folder) is not None]
+    else:
+        ids = list(registry.profile(args.profile or args.face_profile).models())
+    crops = labels = None
+    if args.photos:
+        detector = None
+        for spec, make in ((registry.SCRFD, ScrfdDetector), (registry.YUNET, YuNetDetector)):
+            if downloads.present(spec.file, folder) is not None:
+                detector = make(folder / spec.file.name, spec)
+                break
+        if detector is None:
+            raise FileNotFoundError("the colour-order check needs a face detector: bifold-faces fetch")
+        crops, labels = checks.labelled_faces(args.photos, detector)
+        print(f"{len(labels)} faces of {len(set(labels.tolist()))} people in {args.photos}")
+    reports = []
+    for model_id in ids:
+        spec = registry.model(model_id)
+        mine = [checks.check_file(spec, folder)]
+        path = folder / spec.file.name
+        if path.is_file():
+            mine.append(checks.check_graph(spec, path))
+            if args.speed:
+                timing = checks.speed(spec, path)
+                mine.append(checks.Report(f"{spec.id}: speed", lines=[", ".join(
+                    f"{k}: {v:.1f} ms" for k, v in timing.items())], values=timing))
+            if spec.task == "embedder" and spec.form == "onnxruntime" and crops is not None:
+                mine.append(checks.colour_order(spec, path, crops, labels))
+            if spec.task == "embedder":
+                mine += [checks.published_accuracy(spec, path, pack) for pack in args.pack or ()]
+        for report in mine:
+            print(report)
+        reports += mine
+    if args.json:
+        Path(args.json).write_text(json.dumps({r.name: {"ok": r.ok, "lines": r.lines, "values": r.values}
+                                               for r in reports}, indent=1, default=str))
+    failed = [r.name for r in reports if not r.ok]
+    print(f"{len(reports) - len(failed)} of {len(reports)} checks passed" + (f"; failed: {', '.join(failed)}"
+                                                                            if failed else ""))
+    return 1 if failed else 0
+
+
 def cmd_who(args) -> int:
     gallery = _gallery(args)
     gallery.refresh(force=True)
+    print(f"({gallery.engine.describe()}; a face is someone from a score of {gallery.threshold:.2f})")
     status = 0
     for photo in args.photos:
         image = cv2.imread(photo, cv2.IMREAD_COLOR)
@@ -132,7 +194,8 @@ def main(argv=None) -> int:
     parser.add_argument("--faces", default="faces", help="the folder of known people (default: faces)")
     parser.add_argument("--models", default=None, help="where the face models are kept (default: models)")
     parser.add_argument("--threshold", type=float, default=None,
-                        help="similarity a face needs to count as someone (default: 0.363)")
+                        help="similarity a face needs to count as someone (default: the model's own, e.g. 0.363 for "
+                             "SFace)")
     parser.add_argument("--face-profile", default=None, choices=tuple(registry.PROFILES),
                         help=f"the face models to use (default: ${registry.PROFILE_ENV}, else best)")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -154,14 +217,23 @@ def main(argv=None) -> int:
     who = sub.add_parser("who", help="who is in these photos")
     who.add_argument("photos", nargs="+")
     who.set_defaults(run=cmd_who)
+    check = sub.add_parser("check", help="check the face models: files, graphs, speed, colour order, accuracy")
+    check.add_argument("--profile", default=None, choices=tuple(registry.PROFILES),
+                       help="check this profile's models (default: the profile in use)")
+    check.add_argument("--model", nargs="+", default=None, choices=tuple(registry.MODELS), metavar="ID",
+                       help="check these models instead")
+    check.add_argument("--all", action="store_true", help="check every model that is fetched")
+    check.add_argument("--speed", action="store_true", help="also time them (ms per crop at batch 1 and 8)")
+    check.add_argument("--photos", default=None, metavar="DIR",
+                       help="a folder of people (as faces/) for the colour-order check")
+    check.add_argument("--pack", nargs="+", default=None, metavar="FILE",
+                       help="test packs (lfw.bin, cfp_fp.bin, agedb_30.bin) for the published-accuracy check")
+    check.add_argument("--json", default=None, metavar="FILE", help="also write the results as JSON")
+    check.set_defaults(run=cmd_check)
     from ..characters.headtex.cli import add_commands
 
     add_commands(sub)
     args = parser.parse_args(argv)
-    if args.threshold is None:
-        from .gallery import THRESHOLD
-
-        args.threshold = THRESHOLD
     try:
         return args.run(args)
     except (OSError, ValueError, ImportError) as exc:  # ImportError: MediaPipe is missing (the message says how)

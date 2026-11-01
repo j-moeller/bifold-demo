@@ -29,8 +29,8 @@ body. Eight stages:
    skin tone by a gain per channel in linear light (by the neck: the head's neck colour), the neck seam levelled by
    least-squares offsets round the neck, the hair cards and unseen scalp recoloured towards the photos' hair.
 7. **Check and save** (:mod:`.person`): delta E across the neck seam and from the face to the hands, before and after
-   stage 6; the identity (SFace on renders of the textured avatar against the photos, relative to the avatar's own
-   head; a generated layer that lowers it is dropped); the textures of head, body and hair as a
+   stage 6; the identity (the face recognition on renders of the textured avatar against the photos, relative to the
+   avatar's own head; a generated layer that lowers it is dropped); the textures of head, body and hair as a
    :class:`~..created.CreatedCharacter`'s.
 
 :func:`~.texture.head_texture` runs stages 0 to 4 (a :class:`~.texture.HeadTexture`); :func:`~.person.person_textures`

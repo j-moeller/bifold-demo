@@ -127,6 +127,7 @@ def test_every_model_is_pinned_and_described():
         assert (spec.dim > 0) == (spec.task != "detector")
         if spec.norm_output:
             assert spec.form == "onnxruntime" and spec.task == "embedder"
+        assert (0.0 < spec.threshold < 1.0) == (spec.task == "embedder"), spec.id  # a provisional cut each
     assert len({spec.file.name for spec in registry.MODELS.values()}) == len(registry.MODELS)  # no clashes
     assert registry.MODELS["adaface_ir101_wf12m"].bgr and not registry.MODELS["buffalo_l_r50"].bgr
 

@@ -46,7 +46,7 @@ def _vector(colour):
 def test_the_gallery_knows_a_person_per_folder_and_single_photos(tmp_path):
     folder = tmp_path / "faces"
     _photo(folder / "Ada Lovelace" / "one.png", (200, 10, 10))
-    _photo(folder / "Ada Lovelace" / "two.jpg", (190, 20, 10))
+    _photo(folder / "Ada Lovelace" / "two.jpg", (180, 10, 60))  # alike, but not a duplicate (cosine 0.96)
     _photo(folder / "Grace_Hopper.png", (10, 10, 200))
     _photo(folder / "Ada Lovelace" / "dark.png", (0, 0, 0))  # no face in it
     (folder / "notes.txt").write_text("not a photo")
@@ -66,8 +66,10 @@ def test_the_gallery_caches_embeddings_and_sees_new_photos(tmp_path, monkeypatch
     folder = tmp_path / "faces"
     _photo(folder / "Ada" / "one.png", (200, 10, 10))
     first = FakeEngine()
+    (folder / gallery_module.CACHE).write_bytes(b"the demo's old shared cache")
     Gallery(folder, first).refresh(now=0.0)
-    assert first.embedded == 1 and (folder / gallery_module.CACHE).is_file()
+    assert first.embedded == 1 and (folder / gallery_module.cache_name("unknown")).is_file()
+    assert not (folder / gallery_module.CACHE).exists()  # the old cache goes when a per-model one is written
     again = FakeEngine()
     gallery = Gallery(folder, again)
     gallery.refresh(now=0.0)
@@ -90,7 +92,8 @@ def test_adding_photos_copies_them_into_the_persons_folder(tmp_path):
     problems = gallery.add(" Ada Lovelace ", [a, b, dark, tmp_path / "nothing.png"])
     assert len(problems) == 2 and "no face" in problems[0] and "not an image" in problems[1]
     assert sorted(p.name for p in (folder / "Ada Lovelace").iterdir()) == ["me.png", "me_2.png"]
-    assert gallery.people() == {"Ada Lovelace": 2}
+    assert gallery.people() == {"Ada Lovelace": 1}  # the second is nearly the same photo: kept, but not counted
+    assert [status for _, status, _ in gallery.report()] == ["duplicate"]
     assert gallery.photos("Ada Lovelace")[0].parent == folder / "Ada Lovelace"
     with pytest.raises(ValueError):
         gallery.add("../escape", [a])
@@ -109,6 +112,12 @@ def engine():
         pytest.skip(f"face models unavailable: {exc}")
 
 
+def _enrollable(crop):
+    """A face cut out of the sample photo, enlarged as an enrolment photo would be: the man on the left has about 22
+    pixels between his eyes there, and enrolment asks for at least 40."""
+    return cv2.resize(crop, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+
+
 @pytest.fixture(scope="module")
 def zidane():
     from bifold_demo.scene.textures import sample_image
@@ -121,7 +130,7 @@ def zidane():
 
 def test_the_engine_finds_the_faces_and_tells_people_apart(engine, zidane):
     faces = engine.faces(zidane)
-    assert len(faces) == 2 and all(f.score > 0.8 for f, _ in faces)
+    assert len(faces) == 2 and all(f.score > 0.6 for f, _ in faces)
     (_, a), (_, b) = faces
     assert abs(np.linalg.norm(a) - 1.0) < 1e-6 and a @ b < THRESHOLD  # two different men
     # the same men in other "photos": brighter, smaller, mirrored
@@ -143,7 +152,7 @@ def test_a_gallery_of_real_photos_names_the_faces(engine, zidane, tmp_path):
         x, y, w, h = (int(v) for v in face.box)
         crop = zidane[max(0, y - h // 2):y + 2 * h, max(0, x - w // 2):x + w + w // 2]
         (folder / name).mkdir(parents=True)
-        cv2.imwrite(str(folder / name / "crop.jpg"), crop)
+        cv2.imwrite(str(folder / name / "crop.jpg"), _enrollable(crop))
     gallery = Gallery(folder, engine)
     gallery.refresh(force=True)
     assert gallery.people() == {"Left Man": 1, "Right Man": 1}
@@ -162,7 +171,7 @@ def test_the_demo_names_the_faces_in_the_rendered_scene(gl, engine, zidane, tmp_
         x, y, w, h = (int(v) for v in face.box)
         (tmp_path / "faces" / name).mkdir(parents=True)
         crop = zidane[max(0, y - h // 2):y + 2 * h, x - w // 2:x + w * 3 // 2]
-        cv2.imwrite(str(tmp_path / "faces" / name / "crop.jpg"), crop)
+        cv2.imwrite(str(tmp_path / "faces" / name / "crop.jpg"), _enrollable(crop))
     scene = Scene(background=(40, 40, 40), camera=Camera(position=(0, 0, 2.2), target=(0, 0, 0), fov=50))
     scene.add(Quad(texture=sample_image("zidane.jpg"), height=1.6, lit=False), name="photo")
     app = DemoApp(DemoConfig(headless=True, frames=1, width=960, height=540, detect=False, recognize=True,
@@ -184,7 +193,8 @@ def test_n_switches_the_face_recognition(gl, tmp_path, monkeypatch):
     from bifold_demo.recognition.engine import FaceEngine
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(FaceEngine, "__init__", lambda self, *a, **k: None)
+    monkeypatch.setattr(FaceEngine, "__init__", lambda self, *a, **k: setattr(self, "notes", []))
+    monkeypatch.setattr(FaceEngine, "describe", lambda self: "no models (a test)")
     monkeypatch.setattr(FaceEngine, "faces", lambda self, image, min_size=0: [])
     app = DemoApp(DemoConfig(headless=True, frames=1, width=160, height=90, detect=False, uploads=None))
     app.run()

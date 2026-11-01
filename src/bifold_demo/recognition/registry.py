@@ -23,7 +23,13 @@ web-scraped faces for most recognisers) and patents are further questions that n
 ships (see docs/research/face_recognition_sota.md, section 1).
 
 Embeddings of different models cannot be compared, so everything made from embeddings is kept per model (the
-gallery's caches are ``faces/.embeddings.<model id>.npz``).
+gallery's caches are ``faces/.embeddings.<model id>.npz``), the threshold too: each embedder's ``threshold`` is a
+provisional cosine cut at about one false match in a thousand pairs of strangers on LFW (the mean of the non-mated
+LFW scores plus 3.09 standard deviations, a Gaussian tail, measured on 750 non-mated pairs here, rounded up: AdaFace
+0.18, the ResNet-50 0.19; on SFace's 3,000 it gives 0.370 against 0.347 counted, so it errs on the strict side; SFace
+keeps OpenCV's own 0.363). The ResNet-100s (``antelopev2``, AuraFace) could not be measured here and borrow
+AdaFace's for now.
+The decisions per model and face size are calibrated in the next step (F2).
 """
 
 from __future__ import annotations
@@ -81,7 +87,9 @@ class ModelSpec:
     opset: int = 0
     norm_output: str | None = None  # a tensor inside the graph holding the embedding's length before it was
     # normalised in the graph (made an extra output)
-    norm_quality: bool = False  # whether that length says how good the face is (AdaFace learns it so)
+    norm_quality: bool = False  # whether that length is meant to say how good the face is (AdaFace's design; on
+    # avatar renders it did not follow pose or size: docs/research/face_recognition_f1_results.md)
+    threshold: float = 0.0  # embedders: a provisional cosine cut (see the module docs) until decisions are calibrated
     published: dict = field(default_factory=dict)  # accuracy published by the authors (per cent)
     needs: str = ""  # a host the file can only be fetched from, said when the download fails
     optional: bool = False  # in no profile: fetched only on request
@@ -141,7 +149,7 @@ ADAFACE_IR101 = ModelSpec(
            "toolkit. Checked here: standard operators only, accuracy on LFW, colour order (bifold-faces check)",
     inputs=(Tensor("input", ("batch_size", 3, 112, 112)),),
     outputs=(Tensor("output", ("batch_size", 512)),),
-    opset=16, norm_output="/model/ReduceL2_output_0", norm_quality=True,
+    opset=16, norm_output="/model/ReduceL2_output_0", norm_quality=True, threshold=0.18,
     published={"LFW": 99.82, "CFP-FP": 99.26, "AgeDB-30": 98.00, "IJB-C TAR@1e-4": 97.66,
                "TinyFace rank-1": 72.29})
 
@@ -153,7 +161,7 @@ BUFFALO_L_R50 = ModelSpec(
     licence=INSIGHTFACE_LICENCE, commercial=False, data="WebFace600K (a WebFace260M subset; research-only terms)",
     origin="InsightFace's buffalo_l pack (GitHub release v0.7); the same file (same SHA-256) is mirrored by UniFace",
     inputs=(Tensor("input.1", ("None", 3, 112, 112)),), outputs=(Tensor("683", (1, 512)),),
-    opset=11, published={"LFW": 99.83, "CFP-FP": 99.33, "AgeDB-30": 98.23, "IJB-C TAR@1e-4": 97.25})
+    opset=11, threshold=0.19, published={"LFW": 99.83, "CFP-FP": 99.33, "AgeDB-30": 98.23, "IJB-C TAR@1e-4": 97.25})
 
 ANTELOPEV2_R100 = ModelSpec(
     "antelopev2_r100", "ArcFace ResNet-100 (Glint360K; InsightFace antelopev2, glintr100)", "embedder",
@@ -164,7 +172,7 @@ ANTELOPEV2_R100 = ModelSpec(
     licence=INSIGHTFACE_LICENCE, commercial=False, data="Glint360K (non-commercial research terms)",
     origin="InsightFace's antelopev2 pack (GitHub release v0.7)",
     inputs=(Tensor("input.1", ("None", 3, 112, 112)),), outputs=(Tensor("1333", (1, 512)),),
-    opset=11, published={"IJB-C TAR@1e-4": 97.5}, optional=True)
+    opset=11, threshold=0.18, published={"IJB-C TAR@1e-4": 97.5}, optional=True)  # (threshold: AdaFace's, interim)
 
 SFACE = ModelSpec(
     "sface_2021dec", "SFace 2021dec (OpenCV Zoo)", "embedder", files.RECOGNIZER,
@@ -172,7 +180,7 @@ SFACE = ModelSpec(
     licence="Apache-2.0", commercial=True, data="not stated (the paper used CASIA-WebFace, VGGFace2 and MS1M)",
     origin="OpenCV Zoo (GitHub LFS), run by OpenCV's FaceRecognizerSF (its graph normalises its input itself)",
     inputs=(Tensor("data", (1, 3, 112, 112)),), outputs=(Tensor("fc1", (1, 128)),),
-    opset=11, published={"LFW": 99.40})
+    opset=11, threshold=0.363, published={"LFW": 99.60})
 
 AURAFACE = ModelSpec(
     "auraface_v1", "AuraFace-v1 (fal; ResNet-100)", "embedder",
@@ -184,6 +192,7 @@ AURAFACE = ModelSpec(
     origin="fal's Hugging Face repository (glintr100.onnx; not reachable from every network). Its SHA-256 is the "
            "one Hugging Face lists; its size is not known in advance. Colour order and normalisation are assumed "
            "to be InsightFace's (it is run by InsightFace's library) until bifold-faces check confirms them",
+    threshold=0.18,  # interim (AdaFace's): not measurable here, calibrate where Hugging Face can be reached
     published={"LFW": 99.65, "CFP-FP": 95.19, "AgeDB-30": 96.10, "CALFW": 94.70, "CPLFW": 90.93},
     needs="huggingface.co")
 

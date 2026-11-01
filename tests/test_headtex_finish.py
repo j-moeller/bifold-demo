@@ -284,7 +284,7 @@ def test_finishing_checks_and_drops_a_generated_layer_that_lowers_the_identity(a
     assert person.checks["identity"] == {"front": 0.55}
     assert person.checks["identity of the avatar's own head"] == {"front": 0.2}
     assert any("not matched" in w for w in person.warnings)  # the synthetic head has no body
-    assert set(person.textures) == {"s_head"} and "identity (SFace" in person.summary()
+    assert set(person.textures) == {"s_head"} and "identity (the face recognition's" in person.summary()
     scores = iter([{"front": 0.2}, {"front": 0.56}, {"front": 0.55}, {"front": 0.56}])
     kept = stages.finish(result, model, inpainter=inpainter, check=True, engine=object())
     assert kept.completion.method == "mirror + flux2-klein"

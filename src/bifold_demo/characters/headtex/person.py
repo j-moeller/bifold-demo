@@ -16,10 +16,11 @@
 6. **Match the body** (:func:`.body.match_body`): the body's skin to the face, the neck seam levelled, the hair.
 7. **Check** (:attr:`PersonTextures.checks`): the colour difference (Lab delta E) across the neck seam and from the
    face's skin to the hands, before stage 6 and after; with ``check=True`` (OpenGL and the face recognition's
-   models), the identity: the SFace similarity between renders of the avatar wearing the textures (front and
-   three-quarter) and the photos, and of the avatar's own head as a baseline. Since the geometry is the avatar's, not
-   the person's, the similarity is low anyway (0.37-0.58 for the faces painted on the fair's people from one photo)
-   and only says something relative to that baseline: it is reported, never a reason to reject the result. A
+   models), the identity: the face recognition's similarity (its profile's recogniser) between renders of the
+   avatar wearing the textures (front and three-quarter) and the photos, and of the avatar's own head as a baseline.
+   Since the geometry is the avatar's, not the person's, the similarity is low anyway (with SFace 0.37-0.58 for the
+   faces painted on the fair's people from one photo) and only says something relative to that baseline: it is
+   reported, never a reason to reject the result. A
    generative layer that lowers it by more than :data:`IDENTITY_DROP` is dropped, with a warning.
 
 The result, :class:`PersonTextures`, holds the textures by primitive name (what a
@@ -197,7 +198,7 @@ def describe_checks(checks: dict) -> list[str]:
     identity = checks.get("identity")
     if isinstance(identity, dict):
         own = checks.get("identity of the avatar's own head") or {}
-        out.append("identity (SFace similarity of renders to the photos): " + ", ".join(
+        out.append("identity (the face recognition's similarity of renders to the photos): " + ", ".join(
             f"{k} {v:.2f}" + (f" (the avatar's own head {own[k]:.2f})" if k in own else "")
             for k, v in identity.items()))
     return out
@@ -299,7 +300,7 @@ def _engine():
 def identity(model, textures: dict, photos, *, engine=None, renderer=None, yaws=IDENTITY_YAWS) -> dict:
     """How much renders of ``model`` wearing ``textures`` (by primitive name; ``{}``: its own) look like the person
     in ``photos`` (BGR images or paths) to the face recognition (``engine``, a
-    :class:`~bifold_demo.recognition.engine.FaceEngine`): per render (``"front"``, ``"turned 30"``), the SFace
+    :class:`~bifold_demo.recognition.engine.FaceEngine`): per render (``"front"``, ``"turned 30"``), the
     similarity to the most similar photo; ``nan`` where the detector finds no face on the render. Raises
     ``ValueError`` when no photo has a face. Needs OpenGL."""
     from .texture import preview

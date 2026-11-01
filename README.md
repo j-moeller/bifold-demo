@@ -796,21 +796,26 @@ through the floor when the person kneels.
 ## Face recognition
 
 [`recognition/`](src/bifold_demo/recognition) tells who the people in the
-picture are. It works like the face recognition of today's phones and photo
-apps, in two steps:
+picture are, in five steps, with the models of a *profile* (below; `best` by
+default):
 
-1. **Find the faces.** [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)
-   finds each face and five landmarks on it (the eyes, the nose tip and the
-   mouth corners).
-2. **Fingerprint them.** The face is turned upright and scaled by its
-   landmarks, and [SFace](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface)
-   turns it into an *embedding*: 128 numbers, trained so that photos of the
-   same person give nearly the same numbers and other people's faces give
-   different ones (99.6 % on the LFW benchmark). Two faces are compared by the
-   cosine similarity of their embeddings: about 0.6 to 1.0 for the same person,
-   below about 0.3 for strangers. A face is the known person with the most
-   similar photo, if that reaches 0.363 (OpenCV's recommended cut); else it is
-   unknown.
+1. **Find the faces.** A face detector (SCRFD-10G; YuNet in the commercial
+   profile) finds each face and five landmarks on it (the eyes, the nose tip
+   and the mouth corners).
+2. **Line them up.** Each face is turned upright and scaled by its landmarks
+   onto a 112 x 112 template.
+3. **Fingerprint them.** A recogniser (AdaFace IR-101 in the best profile)
+   turns the face into an *embedding*: 512 numbers (128 for SFace), trained so
+   that photos of one person give nearly the same numbers and other people's
+   faces different ones. Two faces are compared by the cosine similarity of
+   their embeddings.
+4. **Judge the quality.** Each face gets a quality record: how many pixels lie
+   between the eyes, which way the head is turned, how sharp and well lit the
+   face is, and a learnt quality score.
+5. **Compare with the known people.** A face is the known person with the
+   highest score, if it reaches the model's threshold (for now one per model,
+   at about one false match in a thousand pairs of strangers on the LFW
+   benchmark; calibrated decisions per face size come next), else unknown.
 
 In the demo `N` (or `--recognize`) turns it on: every face in the picture gets
 a box with the name of the person and the similarity under it, or `?` for a
@@ -818,36 +823,37 @@ stranger, and the status panel lists who is in the picture. It runs on its own
 thread beside the object detection. A face only 30 pixels tall gives a noisy
 fingerprint, so faces are followed from frame to frame and named from the
 average of their last eight fingerprints, and a named face keeps its name
-while that average stays near the cut (no flickering names).
+while that average stays near the threshold (no flickering names).
+`--face-profile` (or `BIFOLD_FACE_PROFILE`) chooses the models.
 
 The known people are the photos in [`faces/`](faces/README.md) (`--faces DIR`
 for another folder), a folder per person with as many photos as you like
-(several photos taken on different days make it surer). Photos added while the
-demo runs are known a second later:
+(several photos taken on different days and from several sides make it surer).
+Photos added while the demo runs are known a second later. Each photo is
+checked as it comes in (one clearly biggest face, at least 40 pixels between
+the eyes, sharp; a warning for small, soft or badly lit faces and for people
+the model finds alike); nearly identical photos count once:
 
 ```bash
 bifold-faces add "Ada Lovelace" portrait.jpg holiday.png   # copies them to faces/Ada Lovelace/
-bifold-faces list                                          # who is known, and photos without a face
+bifold-faces list      # the models, then who is known: photos per pose, rejected photos and why, look-alikes
 bifold-faces who group_photo.jpg                           # who is in a photo
 ```
 
-The models (YuNet 0.2 MB, SFace 39 MB) are downloaded into `models/` the first
-time (or with `bifold-faces fetch`); OpenCV runs them itself, on the CPU
-(about 40 ms to find the faces in a 1280x720 picture, 10 ms per face). The
-embeddings of the photos are kept in `faces/.embeddings.npz`, so only new
-photos are looked at again. Both models are from the OpenCV Zoo and free to use
-(MIT and Apache 2.0). Stronger recognisers exist (ArcFace and AdaFace
-ResNet-100s trained on Glint360K), but their common pretrained weights
-(InsightFace's `buffalo_l`, `antelopev2`) are for non-commercial research only.
+The models are downloaded into `models/` the first time (or with
+`bifold-faces fetch`) and run by ONNX Runtime (SFace and YuNet by OpenCV). The
+embeddings of the photos are kept per model in
+`faces/.embeddings.<model>.npz`, so only new photos are looked at again.
 
 ```python
 from bifold_demo.recognition import FaceEngine, Gallery
 
-engine = FaceEngine()                  # finds and fingerprints faces
-gallery = Gallery("faces", engine)     # the known people
+engine = FaceEngine(profile="best")       # finds, lines up, fingerprints and judges faces
+gallery = Gallery("faces", engine)        # the known people
 gallery.refresh()
-for face, embedding in engine.faces(image):
-    match = gallery.match(embedding)   # match.name (None: unknown), match.score
+for record in engine.analyse(image):      # every face: box, landmarks, aligned crop, embedding, quality
+    match = gallery.match(record.vector)  # match.name (None: unknown), match.score, match.runner_up
+    print(match.name, record.quality.ied, record.quality.pose)
 ```
 
 ### The recognition core: models, profiles, licences
@@ -921,16 +927,68 @@ each model's own colour order and normalisation, in batches of 8 and then
 single crops. The AdaFace export normalises its embedding inside its graph,
 which would lose AdaFace's quality signal (the embedding's length, which its
 loss ties to how recognisable a face is); the length is read out of the graph
-as an extra output instead. Each face gets one quality record: the eye
-distance; yaw, pitch and roll from a 3D fit of the five landmarks (calibrated
-on 1620 avatar renders at known angles: with SCRFD's landmarks the yaw comes
-back within 2° with a spread of 2-4°, the pose bin — frontal, left, right,
-profile — in 98.6 % of the renders; YuNet's landmarks give 84 %); sharpness,
-brightness, contrast and clipping on the aligned face; the share of the crop
-beyond the picture; eDifFIQA-T's score; and AdaFace's norm.
+as an extra output instead (on the avatar renders it did not follow pose or
+face size, so it is recorded but not yet used as a weight). Each face gets one
+quality record: the eye distance; yaw, pitch and roll from a 3D fit of the
+five landmarks (calibrated on 1620 avatar renders at known angles: with
+SCRFD's landmarks the yaw comes back within 2° with a spread of 2-4°, the pose
+bin — frontal, left, right, profile — in 98.6 % of the renders; YuNet's
+landmarks give 84 %); sharpness, brightness, contrast and clipping on the
+aligned face; the share of the crop beyond the picture; eDifFIQA-T's score
+(which ranks renders by how recognisable they are with a Spearman correlation
+of 0.87 and falls steadily as faces get smaller); and AdaFace's norm.
 
-The demo itself still uses YuNet and SFace as described above; the engine built
-from a profile and the gallery of the new core follow in the next steps.
+**The engine and the gallery**
+([`engine.py`](src/bifold_demo/recognition/engine.py),
+[`gallery.py`](src/bifold_demo/recognition/gallery.py)). `FaceEngine` puts a
+profile's models together (the recogniser is loaded when first needed, so code
+that only finds faces stays light; `analyse` embeds all the faces of an image
+in one batch and gives a record per face). The gallery embeds each photo with
+exactly the engine's detector, alignment and model, checks it (above), and
+keeps, per person, every photo and a template per pose bin (the
+quality-weighted mean of the bin's embeddings); a person's score is the best of
+the two. The decision whom a face shows is a replaceable step
+(`gallery.decide(scores, quality)`), so that calibrated open-set decisions per
+model and face size can take its place. Embeddings of different models cannot
+be compared, so the caches are per model, and a cache made by another ONNX
+Runtime provider (CoreML computes in 16-bit floats) is not used.
+
+**Checking the models** ([`checks.py`](src/bifold_demo/recognition/checks.py)).
+No model is trusted before it is checked, the community exports above all:
+
+```bash
+bifold-faces check --speed                     # the profile's models: files, graphs, a test run, speed
+bifold-faces check --all --photos faces        # every fetched model; the colour order on photos of known people
+bifold-faces check --model adaface_ir101_wf12m --pack lfw.bin cfp_fp.bin agedb_30.bin
+```
+
+The file must have its registered SHA-256; the graph its registered inputs,
+outputs and opset and only standard ONNX operators; a run on random crops must
+give finite values of the right shape, the same twice, and the same for a crop
+alone as in a batch. With photos of people (a folder per person) the
+registered colour order must separate them better than the other order; with
+InsightFace's test packs (`lfw.bin` and others: aligned faces and pair labels,
+read as plain data, never as code) the 10-fold verification accuracy must come
+within 0.2 points of the published one. The results here are in
+[docs/research/face_recognition_f1_results.md](docs/research/face_recognition_f1_results.md):
+every file and graph passes; on LFW (a balanced 1,500-pair subset here: a
+ResNet-100 takes 0.4-0.6 s per face on this machine's four cores, so the full
+protocol and the CFP-FP and AgeDB packs, which are on Hugging Face, run on the
+Mac) SFace scores 99.60 % on all pairs, the `buffalo_l` ResNet-50 99.87 % and
+AdaFace IR-101 99.87 % (published with mirrored crops: 99.82 %), so the
+community export works; on 540 renders of 20 avatars a frontal photo names
+every render turned up to 60 degrees with each model (d' 4.6 for SFace, 5.3 for
+the ResNet-50, 5.4 for AdaFace); avatars look more alike to the models than
+strangers do on LFW, so thresholds are not set on renders.
+
+**Privacy.** A face embedding used to identify someone is biometric data, and
+embeddings can be turned back into recognisable faces. The gallery's caches
+live in the faces folder beside the photos and lose a person's entries in
+every model's cache when their photos leave it; nothing is kept of people who
+are not in the gallery; ONNX Runtime's telemetry is off. Identifying people in
+a publicly accessible space is regulated (the EU AI Act, GDPR article 9):
+recognise only enrolled people who agreed, say so on a sign, and get legal
+advice before any real use.
 
 ### Known faces on the 3D people
 
@@ -976,9 +1034,10 @@ MediaPipe, or when the photos cannot be used, the face is painted from one
 photo as described here, and a message says why.
 
 Tested with photos of three real people painted on four avatars (women, men, a
-child), the recognition named the right person in 24 of 24 close-ups (front and
-turned 40°; similarity 0.37-0.58) and, from the fair camera with the faces about
-30 pixels tall, in 98 of 120 analysed frames.
+child), the recognition (YuNet and SFace, before the core above) named the
+right person in 24 of 24 close-ups (front and turned 40°; similarity
+0.37-0.58) and, from the fair camera with the faces about 30 pixels tall, in 98
+of 120 analysed frames.
 [docs/previews/face_photo.jpg](docs/previews/face_photo.jpg) shows it with
 renders of other avatars as the "photos".
 
@@ -2116,12 +2175,12 @@ src/bifold_demo/
                created.py (characters from the character creator, saved),
                rocketbox.py + library.py + cli.py (bifold-characters),
                rocketbox_catalog.json (avatar labels)                   ← 3D people
-  recognition/ engine.py (find and fingerprint faces), gallery.py (known people),
+  recognition/ engine.py (a profile's models together), gallery.py (known people),
                recognizer.py (faces over frames), cast.py (known faces on 3D people),
                registry.py (face models and profiles), runtime.py (ONNX Runtime),
                detect.py (SCRFD, YuNet), align.py (the five-point template),
                embed.py (embedders), quality.py (a quality record per face),
-               models.py, cli.py (bifold-faces)                          ← face recognition
+               checks.py (model checks), models.py, cli.py (bifold-faces) ← face recognition
   sensor/      geometry.py (a declared high-resolution sensor, its windows and
                pixel maps), requests.py (requests, head regions, the scheduler),
                service.py (windows with the frames, the truth),

@@ -51,6 +51,7 @@ class DemoConfig:
     uploads: str | None = "uploads"
     items: str | None = "items"  # looks for the hats, glasses, signs and t-shirts (see characters.accessories)
     faces: str = "faces"  # photos of the people the face recognition knows (see recognition.gallery)
+    face_profile: str | None = None  # the face models: best, licensed, commercial (None: $BIFOLD_FACE_PROFILE / best)
     recognize: bool = False  # start with the face recognition on (N toggles it)
     cast: bool = True  # put the known people's faces on 3D people (when the faces folder has photos)
     created: str | None = "created"  # characters made in the character creator, shown in the fair (None: not)
@@ -167,8 +168,11 @@ class DemoApp:
         from .recognition.gallery import Gallery
 
         try:
-            gallery = Gallery(self.config.faces)
-            gallery.engine  # noqa: B018 - load the models now, not on the first frame
+            gallery = Gallery(self.config.faces, profile=self.config.face_profile)
+            engine = gallery.engine  # load the models now, not on the first frame
+            print(f"[faces] models: {engine.describe()}")
+            for note in engine.notes:
+                print(f"[faces] {note}")
             gallery.refresh(force=True)
         except Exception as exc:  # noqa: BLE001 - e.g. the models cannot be downloaded
             self._face_error = f"face recognition unavailable: {type(exc).__name__}: {exc}"
@@ -657,6 +661,9 @@ def parse_args(argv=None) -> DemoConfig:
     g.add_argument("--no-reload", dest="reload", action="store_false", help="do not reload the scene file on save")
     g.add_argument("--faces", default="faces",
                    help="folder of photos of the people to recognise, a folder per person (default: faces)")
+    g.add_argument("--face-profile", default=None, choices=("best", "licensed", "commercial"),
+                   help="the face models: best (research-only weights, the default), licensed (InsightFace's, "
+                        "commercial with a licence from InsightFace) or commercial (default: $BIFOLD_FACE_PROFILE)")
     g.add_argument("--recognize", action="store_true", help="start with the face recognition on (N toggles it)")
     g.add_argument("--no-cast", dest="cast", action="store_false",
                    help="do not put the faces of the known people on the 3D people")
@@ -710,8 +717,9 @@ def parse_args(argv=None) -> DemoConfig:
         mirror=a.mirror, model=a.model, device=a.device, conf=a.conf, iou=a.iou, imgsz=a.imgsz, classes=a.classes,
         detect=a.detect, sync=a.sync, fullscreen=a.fullscreen, record=a.record, headless=a.headless,
         frames=a.frames, reload=a.reload, uploads=a.uploads or None, items=a.items or None, faces=a.faces,
-        recognize=a.recognize, cast=a.cast, created=a.created or None, windows=a.windows, max_windows=a.max_windows,
-        sensor=a.sensor, camera_preset=a.camera_preset, webcam_capture=a.webcam_capture,
+        face_profile=a.face_profile, recognize=a.recognize, cast=a.cast, created=a.created or None,
+        windows=a.windows, max_windows=a.max_windows, sensor=a.sensor, camera_preset=a.camera_preset,
+        webcam_capture=a.webcam_capture,
     )
 
 

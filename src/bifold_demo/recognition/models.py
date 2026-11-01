@@ -7,7 +7,7 @@ Zoo, which other parts of the demo use directly (the head textures use YuNet to 
 
 * ``face_detection_yunet_2023mar.onnx`` (YuNet, MIT licence): finds faces and five landmarks (eyes, nose tip, mouth
   corners); OpenCV runs it;
-* ``face_recognition_sface_2021dec.onnx`` (SFace, Apache 2.0): a 128-number embedding of an aligned face, 99.4 % on
+* ``face_recognition_sface_2021dec.onnx`` (SFace, Apache 2.0): a 128-number embedding of an aligned face, 99.6 % on
   LFW; the commercial profile's recogniser where AuraFace cannot be fetched.
 """
 
