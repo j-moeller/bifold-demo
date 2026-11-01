@@ -177,3 +177,12 @@ work goes on. The people are avatars from the
   a welcome sign, and the rows of choices beside it. The shirt's fabric "blue
   paisley silk" is the keyword fabric: no model could run where it was made,
   and the fabric row says why. No face.
+- `virtual_sensor.jpg`: the virtual high-resolution sensor (`sensor/`). Top:
+  avatars standing in the empty hall facing the camera at 2-30 m, in the
+  1280x720 view, each with the place of their window (green where the face
+  detector YuNet finds the face in the view, red where it does not). Middle:
+  their windows on the 8K sensor (7680x4320), with the eye distance in the
+  view and in the window; YuNet finds every face there (green boxes). Bottom:
+  the person at 4 m through the camera presets "ideal", "good 8K", "good 4K"
+  and "budget 1080p" (the last two on their own 4K and 1080p sensors). Renders
+  of avatars only (`docs/research/virtual_sensor_results.md`).

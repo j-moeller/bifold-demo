@@ -32,7 +32,7 @@ def test_the_head_region_is_a_square_around_the_top_of_the_box():
     x0, y0, x1, y1 = head.region((100, 50, 160, 350))  # a box 300 pixels tall
     assert x1 - x0 == pytest.approx(0.30 * 1.30 * 300) and y1 - y0 == pytest.approx(x1 - x0)
     assert (x0 + x1) / 2 == pytest.approx(130) and (y0 + y1) / 2 == pytest.approx(50 + 0.12 * 300)
-    assert head.eye_distance((100, 50, 160, 350)) == pytest.approx(0.036 * 300)
+    assert head.eye_distance((100, 50, 160, 350)) == pytest.approx(0.034 * 300)
     tight = HeadRegion(centre=0.07, side=0.15, margin=0.0)
     assert tight.region((0, 0, 10, 100)) == pytest.approx((-2.5, -0.5, 12.5, 14.5))
 
@@ -65,7 +65,7 @@ def test_requests_plan_their_windows():
     camera = Camera(position=(0, 1.6, 6), target=(0, 1.6, -6), fov=55)
     box = (600, 200, 680, 500)  # a person 300 pixels tall: about 11 pixels between the eyes
     window, eyes = plan_request(WindowRequest("p", box=box), sensor)
-    assert window.level == 1 and eyes == pytest.approx(0.036 * 300 * 6)
+    assert window.level == 1 and eyes == pytest.approx(0.034 * 300 * 6)
     x0, y0, x1, y1 = window.view_rect
     hx0, hy0, hx1, hy1 = HeadRegion().region(box)
     assert x0 <= hx0 and y0 <= hy0 and x1 >= hx1 and y1 >= hy1

@@ -34,14 +34,19 @@ class HeadRegion:
     A square ``side`` box heights wide, centred across the box and ``centre`` box heights below its top, enlarged by
     ``margin`` (a share of the side) so that the face detector finds the face also when the box is a little off. The
     defaults are the starting values of ``docs/research/face_recognition_sota.md`` (section 3.2, stage 3), to be tuned
-    by the person tracker. ``eyes``: the distance between the eyes as a share of the box height (63 mm in 1.75 m), to
-    choose the window's level when nothing better is known.
+    by the person tracker. ``eyes``: the distance between the eyes (as if facing the camera) as a share of the box
+    height, to choose the window's level when nothing better is known.
+
+    Measured on YOLO's boxes of the fair (91 people in 10 frames, ``docs/research/virtual_sensor_results.md``): the
+    eyes lie 0.079 box heights below the top (0.060-0.105 for 90 %) and the eye distance is 0.034 box heights
+    (0.033-0.036). These defaults hold the whole face in every case, the face a quarter of the square's side;
+    ``HeadRegion(centre=0.10, side=0.20)`` holds it in 96 % with 2.2 times fewer pixels.
     """
 
     centre: float = 0.12
     side: float = 0.30
     margin: float = 0.30
-    eyes: float = 0.036
+    eyes: float = 0.034
 
     def region(self, box) -> tuple[float, float, float, float]:
         """The square around the head, in view pixels."""

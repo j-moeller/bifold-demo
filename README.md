@@ -1034,11 +1034,13 @@ bone around its posed joint, as large as the farthest vertex that bone moves
 avatars). The tests are conservative, so culling changes no pixel, and they
 take about 1 ms per window for the 36 people and 124 objects of the fair. A
 window also reuses the joint palettes its frame uploaded. On the fair
-(llvmpipe, a shared 4-core machine), head windows drew 1-8 of the 36 people
-and 1-16 of the 124 objects and took 8-80 ms instead of 42-100 ms (1.2-5x
-faster, more for small windows); the whole 1280x720 view takes about 220 ms.
-The whole view is not culled (`renderer.cull_view`): most of the fair is in
-it, and culling gained nothing there.
+(llvmpipe, a shared 4-core machine), head windows drew 1-13 of the 36 people
+and 2-38 of the 124 objects; windows up to 200 pixels took 27 ms (median)
+instead of 59 ms, about 2.2 times faster, while the large windows of people
+close to the camera are bound by their pixels there (1.2-1.4 times). The
+whole 1280x720 view takes 220-470 ms, the whole 8K frame 6.3 s. The whole
+view is not culled (`renderer.cull_view`): most of the fair is in it, and
+culling gained nothing there.
 
 **Asking for windows.** A `WindowRequest` names a region of the main view in
 one of three ways: a person's **box** from the detector (the window then
@@ -1144,6 +1146,19 @@ bifold-scene windows --time 6 --faces -o windows/               # the fair, grou
 bifold-scene windows --time 6 --people detect --model yolo26n.pt  # YOLO's person boxes
 bifold-scene windows --time 6 --people heads --preset ideal --preset budget_1080p
 ```
+
+**Measured** ([docs/research/virtual_sensor_results.md](docs/research/virtual_sensor_results.md)):
+with the 8K sensor a face facing the camera has six times the view's eye
+distance, 115 pixels at 3 m, 75 at 4 m, 46 at 6 m, 26 at 10 m and 13 at 20 m
+(19, 12.5, 7.7, 4.3 and 2.2 in the view). The face detector (YuNet) found 36 of
+36 such faces at 2-30 m in the windows, against 20 of 36 in the view (none
+beyond 12 m). The windows equal the crops of whole 8K and 4K renders of the
+fair (98.7-99.9 % of the pixels identical, 53-82 dB). The head square of the
+review's starting values held the whole face in all 91 YOLO boxes measured,
+the face a quarter of its side; `HeadRegion(centre=0.10, side=0.20)` held it
+in 96 % with 2.2 times fewer pixels.
+[docs/previews/virtual_sensor.jpg](docs/previews/virtual_sensor.jpg) shows
+people at 2-30 m, their windows and one face through the presets.
 
 **Agreement.** Windows equal the same pixels cut from a render of the whole
 sensor: on a test scene with textured boxes, a sphere, skinned people with
