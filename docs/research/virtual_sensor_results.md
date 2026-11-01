@@ -24,7 +24,7 @@ moment.
 - **Culling** leaves out all but 1-13 of the fair's 36 people and 2-38 of its 124 objects, changes no pixel, costs
   about 1 ms, and makes windows up to 200 px about 2.2 times faster (1.2-1.4 times for larger, fill-bound windows).
 - **The head square** of the review's starting values (0.12, 0.30, 0.30) holds the whole face in every one of 91
-  YOLO boxes of the fair, the face a quarter of its side; (0.10, 0.20, 0.30) holds it in 96 % with 2.2 times fewer
+  YOLO boxes of the fair, the face a quarter of its side; (0.10, 0.20, 0.30) holds it in 91 % with 2.2 times fewer
   pixels.
 
 ## 1. Agreement with full-resolution crops
@@ -119,20 +119,22 @@ boxes (IoU at least 0.5): 91 matches. In box heights from the top and from the m
 |---|---|---|---|
 | Eyes below the box's top | 0.060 | 0.079 | 0.105 |
 | Eyes across from the box's middle | -0.077 | -0.004 | 0.044 |
-| Frontal eye distance | 0.0327 | 0.0342 | 0.0361 |
+| Eye distance of the face turned to the camera | 0.0334 | 0.0369 | 0.0432 |
 
 How often the whole face (1.4 eye distances to each side of the eyes, 1.2 above, 2.1 below) lies in the head square:
 
 | `HeadRegion` (centre, side, margin) | Face inside | Face width in the side (median) | Pixels |
 |---|---|---|---|
-| 0.12, 0.30, 0.30 (the review's starting values, the default) | 91/91 | 25 % | 1 |
-| 0.10, 0.20, 0.30 | 87/91 (96 %) | 37 % | 0.44 |
-| 0.09, 0.17, 0.30 | 74/91 (81 %) | 43 % | 0.32 |
-| 0.09, 0.15, 0.25 | 65/91 (71 %) | 51 % | 0.23 |
+| 0.12, 0.30, 0.30 (the review's starting values, the default) | 91/91 | 26 % | 1 |
+| 0.10, 0.20, 0.30 | 83/91 (91 %) | 40 % | 0.44 |
+| 0.09, 0.17, 0.30 | 69/91 (76 %) | 47 % | 0.32 |
+| 0.09, 0.15, 0.25 | 60/91 (66 %) | 55 % | 0.23 |
 
-The default eye-distance share of `HeadRegion` was set to the measured 0.034 (63 mm in 1.75 m, 0.036, overestimated
-it by 5 %). The person tracker can tighten the square once it knows a track's face (a `region` request around the face
-found in an earlier window).
+The face's size here is that of the face turned to the camera where it is (`Truth.frontal_eye_distance`): towards the
+picture's sides faces are stretched (by about 1/cos of the angle off the axis, 1.3 times at the picture's edge), which
+the box height is not, so the share spreads more there. The default eye-distance share of `HeadRegion` is the
+median, 0.037. The person tracker can tighten the square once it knows a track's face (a `region` request around the
+face found in an earlier window).
 
 ## 5. The camera model's cost
 

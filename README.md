@@ -1080,9 +1080,12 @@ for the evaluation; there a request can name its `subject` and its own
 `sensor`. With a scene, each window also carries the `truth`: who the scene
 knows is in it (the person the window was placed on, not a small face behind
 them), where their eye bones are in the window, the face's frontal eye
-distance (its size whatever its turn), the distance, their speed in window
-pixels a second and, with `visibility=True`, whether their eyes are hidden
-behind someone. It is for evaluation only; recognition must not use it.
+distance (its size if it were turned to the camera where it is, the same
+measure the planning uses), how the head is turned (`facing`: 0 looking into
+the camera, 90 in profile, 180 the back of the head; and `yaw`, `pitch`,
+`roll`), the distance, their speed in window pixels a second and, with
+`visibility=True`, whether their eyes are hidden behind someone. It is for
+evaluation only; recognition must not use it.
 
 **A real camera** has no virtual sensor, but the same requests work on it:
 `WebcamSource(capture=(3840, 2160), windows=service)` captures at the higher
@@ -1158,7 +1161,7 @@ beyond 12 m). The windows equal the crops of whole 8K and 4K renders of the
 fair (98.7-99.9 % of the pixels identical, 53-82 dB). The head square of the
 review's starting values held the whole face in all 91 YOLO boxes measured,
 the face a quarter of its side; `HeadRegion(centre=0.10, side=0.20)` held it
-in 96 % with 2.2 times fewer pixels.
+in 91 % with 2.2 times fewer pixels.
 [docs/previews/virtual_sensor.jpg](docs/previews/virtual_sensor.jpg) shows
 people at 2-30 m, their windows and one face through the presets.
 

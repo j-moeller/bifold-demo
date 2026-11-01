@@ -21,7 +21,7 @@ from bifold_demo.sensor import (
     render_windows,
 )
 from bifold_demo.sensor.requests import head_point_region
-from bifold_demo.sensor.service import Motion, find_truth, plan_request
+from bifold_demo.sensor.service import Motion, eye_points, find_truth, plan_request
 from bifold_demo.sources import FixedStepClock, Frame, SceneSource
 
 # -- requests ---------------------------------------------------------------------------------------------------------
@@ -32,7 +32,7 @@ def test_the_head_region_is_a_square_around_the_top_of_the_box():
     x0, y0, x1, y1 = head.region((100, 50, 160, 350))  # a box 300 pixels tall
     assert x1 - x0 == pytest.approx(0.30 * 1.30 * 300) and y1 - y0 == pytest.approx(x1 - x0)
     assert (x0 + x1) / 2 == pytest.approx(130) and (y0 + y1) / 2 == pytest.approx(50 + 0.12 * 300)
-    assert head.eye_distance((100, 50, 160, 350)) == pytest.approx(0.034 * 300)
+    assert head.eye_distance((100, 50, 160, 350)) == pytest.approx(0.037 * 300)
     tight = HeadRegion(centre=0.07, side=0.15, margin=0.0)
     assert tight.region((0, 0, 10, 100)) == pytest.approx((-2.5, -0.5, 12.5, 14.5))
 
@@ -65,7 +65,7 @@ def test_requests_plan_their_windows():
     camera = Camera(position=(0, 1.6, 6), target=(0, 1.6, -6), fov=55)
     box = (600, 200, 680, 500)  # a person 300 pixels tall: about 11 pixels between the eyes
     window, eyes = plan_request(WindowRequest("p", box=box), sensor)
-    assert window.level == 1 and eyes == pytest.approx(0.034 * 300 * 6)
+    assert window.level == 1 and eyes == pytest.approx(0.037 * 300 * 6)
     x0, y0, x1, y1 = window.view_rect
     hx0, hy0, hx1, hy1 = HeadRegion().region(box)
     assert x0 <= hx0 and y0 <= hy0 and x1 >= hx1 and y1 >= hy1
@@ -187,6 +187,108 @@ def _eyes_model():
     part = SkinnedPrimitive("body", body.positions + np.float32([0, 0.85, 0]), body.normals, body.uvs, body.indices,
                             joints, weights, np.full((2, 2, 4), 200, np.uint8))
     return CharacterModel("eyes", skeleton, [part], np.linalg.inv(skeleton.rest_global))
+
+
+def _head_model():
+    """A box person with a head bone (Bip01 Head at 1.5 m) and Rocketbox eye bones 64 mm apart on it at 1.6 m."""
+    from bifold_demo.characters.model import CharacterModel, Skeleton, SkinnedPrimitive
+    from bifold_demo.scene.geometry import box_mesh
+
+    local = np.repeat(np.eye(4)[None], 4, axis=0)
+    local[1, :3, 3] = (0.0, 1.5, 0.0)  # the head, on the root
+    local[2, :3, 3], local[3, :3, 3] = (-0.032, 0.1, 0.1), (0.032, 0.1, 0.1)  # the eyes, on the head
+    skeleton = Skeleton(["Root", "Bip01 Head", "Bip01 REye", "Bip01 LEye"], [-1, 0, 1, 1], local)
+    body = box_mesh(0.4, 1.7, 0.2)
+    joints, weights = np.zeros((len(body.positions), 4), np.int64), np.zeros((len(body.positions), 4), np.float32)
+    weights[:, 0] = 1.0
+    part = SkinnedPrimitive("body", body.positions + np.float32([0, 0.85, 0]), body.normals, body.uvs, body.indices,
+                            joints, weights, np.full((2, 2, 4), 200, np.uint8))
+    return CharacterModel("head", skeleton, [part], np.linalg.inv(skeleton.rest_global))
+
+
+def test_the_frontal_eye_distance_is_a_face_turned_to_the_camera_anywhere_in_the_picture():
+    """The truth's frontal eye distance equals the real one of a face looking into the camera, from the middle of the
+    picture to its edge (where the face is larger), and the planning's estimate for a head point."""
+    from bifold_demo.characters.character import Character
+    from bifold_demo.scene import Scene
+
+    model, sensor = _head_model(), Sensor(7680, 4320, (1280, 720))
+    focal = 360 / math.tan(math.radians(27.5))
+    sizes = []
+    for u in (640, 960, 1240):  # view pixels across: up to 40 degrees off the axis
+        scene = Scene()
+        scene.camera = Camera(position=(0, 1.6, 6), target=(0, 1.6, -6), fov=55)
+        x, z = (u - 640) * 4.0 / focal, 6 - 4.0 - 0.1
+        heading = math.degrees(math.atan2(-x, 6 - z))  # facing the camera
+        state = CharacterState((x, 0.0, z), heading, [])
+        scene.add(Character(model, lambda t, s=state: s), name="p")
+        scene.update(0.0, 0.0)
+        head = tuple(eye_points(scene["p"]).mean(axis=0))
+        window, planned = plan_request(WindowRequest("p", head=head, face_px=None, eye_m=0.064), sensor, scene.camera)
+        truth = find_truth(scene, window, subject=scene["p"])
+        assert truth.frontal_eye_distance == pytest.approx(truth.eye_distance, rel=1e-3)  # it does look at us
+        assert truth.frontal_eye_distance == pytest.approx(planned, rel=1e-3) and truth.facing < 0.5
+        sizes.append(truth.frontal_eye_distance)
+    assert sizes[0] < sizes[1] < sizes[2] and sizes[2] > 1.25 * sizes[0]  # larger towards the side
+
+
+def test_the_truth_tells_where_the_head_is_turned():
+    from bifold_demo.characters.character import Character
+    from bifold_demo.scene import Scene
+
+    model, sensor = _head_model(), Sensor(7680, 4320, (1280, 720))
+    camera = Camera(position=(0, 1.6, 6), target=(0, 1.6, -6), fov=55)
+
+    def pose(heading=0.0, yaw=0.0, pitch=0.0):
+        scene = Scene()
+        scene.camera = camera
+        state = CharacterState((0.0, 0.0, 2.0), heading, [], head_yaw=yaw, head_pitch=pitch)
+        scene.add(Character(model, lambda t: state), name="p")
+        scene.update(0.0, 0.0)
+        window = sensor.window((560, 280, 720, 440), 1)
+        return find_truth(scene, window, subject=scene["p"])
+
+    front = pose()
+    assert front.facing < 0.5 and abs(front.yaw) < 0.5 and abs(front.pitch) < 0.5 and abs(front.roll) < 0.5
+    off = math.degrees(math.atan2(0.1, 4.0))  # turned 90 degrees, the eyes are 0.1 m to the side of the axis
+    assert pose(heading=90).yaw == pytest.approx(90 + off, abs=0.01)  # turned to their left: their right cheek shows
+    assert pose(heading=-90).yaw == pytest.approx(-90 - off, abs=0.01)
+    assert pose(heading=-90).facing == pytest.approx(90 + off, abs=0.01)
+    back = pose(heading=180)  # the back of the head: the eyes' distance alone cannot tell (they are 0.2 m further)
+    assert back.facing == pytest.approx(180, abs=0.01) and back.frontal_eye_distance * back.distance == pytest.approx(
+        front.frontal_eye_distance * front.distance, rel=1e-3)
+    turned = pose(yaw=30)  # the head turns about its bone: the eyes move 0.05 m sideways
+    assert turned.yaw == pytest.approx(30 + math.degrees(math.atan2(0.05, 3.9)), abs=0.1)
+    down = pose(pitch=20)  # nodding moves the eyes down, so the camera is a little higher above them
+    assert 20 < down.pitch < 22 and abs(down.yaw) < 0.01 and abs(down.roll) < 0.01
+
+
+def test_real_avatars_face_the_camera_or_show_the_back_of_their_head():
+    import os
+    from pathlib import Path
+
+    from bifold_demo.characters.character import Character
+    from bifold_demo.characters.library import CharacterLibrary
+    from bifold_demo.scene import Scene
+
+    folder = Path(os.environ.get("BIFOLD_CHARACTERS_TEST_DIR", "/nonexistent")).expanduser()
+    if not (folder / "avatars").is_dir():
+        pytest.skip(f"no prepared characters in {folder} (set BIFOLD_CHARACTERS_TEST_DIR)")
+    library = CharacterLibrary(folder)
+    model = library.load(min(library.available()), textures="none")
+    sensor = Sensor(7680, 4320, (1280, 720))
+    for heading, facing in ((0.0, (0.0, 6.0)), (180.0, (174.0, 180.0)), (90.0, (84.0, 96.0))):
+        scene = Scene()
+        scene.camera = Camera(position=(0, 1.6, 6), target=(0, 1.5, -12), fov=55)
+        state = CharacterState((0.0, 0.0, 2.0), heading, [])
+        scene.add(Character(model, lambda t, s=state: s), name="p")
+        scene.update(0.0, 0.0)
+        head = tuple(eye_points(scene["p"]).mean(axis=0))
+        window, _eyes = plan_request(WindowRequest("p", head=head, face_px=None), sensor, scene.camera)
+        truth = find_truth(scene, window, subject=scene["p"])
+        assert facing[0] <= truth.facing <= facing[1], (heading, truth)
+        if heading == 0.0:
+            assert truth.frontal_eye_distance == pytest.approx(truth.eye_distance, rel=0.02)
 
 
 def test_the_truth_is_the_person_the_window_is_on_not_a_small_face_behind():
@@ -444,6 +546,7 @@ def test_the_scene_command_writes_the_windows_of_a_moment(gl, tmp_path):
     assert near["distance"] == pytest.approx(math.hypot(0.5, 3.0), abs=1e-3)  # to the eyes, 0.5 m to the side
     assert far["distance"] == pytest.approx(math.hypot(0.15, 8.0), abs=1e-3)
     assert near["visible"] == 1.0 and far["frontal_eye_distance"] == pytest.approx(far["eye_distance"], rel=0.01)
+    assert near["facing"] < 10 and abs(near["roll"]) < 1  # standing, looking ahead (the camera 0.5 m to the side)
     assert near["view_eye_distance"] * 6 == pytest.approx(near["eye_distance"], rel=0.01)  # 6 times the view's
     assert windows[2]["sensor"] == [3840, 2160]  # good 4K's own sensor
     assert all((out / w["file"]).is_file() for w in windows) and (out / "view.png").is_file()

@@ -33,10 +33,18 @@ import numpy as np
 
 from .camera_model import CameraModel, camera_preset
 from .geometry import DEFAULT_SCALE, Sensor, Window
-from .requests import DEFAULT_WINDOWS, HeadRegion, Scheduler, WindowRequest, head_point_region
+from .requests import (
+    DEFAULT_WINDOWS,
+    HeadRegion,
+    Scheduler,
+    WindowRequest,
+    frontal_eye_distance,
+    head_point_region,
+)
 
 MULTIPLE = 16  # window sides are grown to a multiple of this, so that sizes repeat and their framebuffers are reused
 EYE_BONES = ("Bip01 REye", "Bip01 LEye")  # the eyes of the Rocketbox skeleton (the person's right, then left)
+HEAD_BONES = ("Bip01 Head", "Head")  # the head bone (Rocketbox, then others)
 MOTION_GAP = 0.5  # seconds: a person seen longer ago than this has no known speed
 
 
@@ -49,11 +57,19 @@ class Truth:
         distance: metres from the camera to the point between the eyes.
         eyes: ``((x, y), (x, y))``: the person's right and left eye (the eye bones) in window pixels.
         eye_distance: pixels between them in the window (fewer when the head is turned).
-        frontal_eye_distance: the pixels between them if the face were turned to the camera: the face's size.
+        frontal_eye_distance: the pixels between them if the face were turned to the camera, looking into it, where
+            it is (the same definition as the planning's, :func:`~.requests.frontal_eye_distance`): the face's size.
         inside: both eyes lie in the window.
         velocity: ``(x, y)`` window pixels per second of the point between the eyes (0 when unknown).
         visible: how much the person is the nearest surface where their eyes are (0-1: 0 hidden behind someone or
             something; ``None``: not measured, see ``render_windows(visibility=True)``).
+        facing: degrees between where the face points and the camera: 0 looking into it, 90 in profile, 180 the
+            back of the head (the head bone's orientation; the body's for a model without one).
+        yaw: degrees the face is turned away from the camera about the head's up axis, positive to the person's
+            left (the camera then sees more of their right cheek); within -180 to 180.
+        pitch: degrees the face is tilted down from the camera (positive: looking down, the camera sees more of the top
+            of the head; negative: looking up).
+        roll: degrees the head is tilted in the picture, positive clockwise as the camera sees it.
     """
 
     name: str
@@ -65,6 +81,10 @@ class Truth:
     velocity: tuple = (0.0, 0.0)
     frontal_eye_distance: float = 0.0
     visible: float | None = None
+    facing: float = 0.0
+    yaw: float = 0.0
+    pitch: float = 0.0
+    roll: float = 0.0
 
 
 @dataclass(eq=False)
@@ -141,7 +161,17 @@ def plan_request(request: WindowRequest, sensor: Sensor, camera=None, head: Head
 
 # -- what the scene knows: eyes and their motion -----------------------------------------------------------------------
 
-_eye_bones: dict[int, tuple] = {}  # id(model) -> (weakref, (right, left) bone indices or None)
+_eye_bones: dict[int, tuple] = {}  # id(model) -> (weakref, (right, left) eye bone indices or None, head bone or None)
+
+
+def _bones(model) -> tuple:
+    """``((right eye, left eye) or None, head or None)``: the bones of ``model`` the truth looks at."""
+    entry = _eye_bones.get(id(model))
+    if entry is None or entry[0]() is not model:
+        found = [model.skeleton.find(name) for name in EYE_BONES]
+        entry = (weakref.ref(model), None if None in found else tuple(found), model.skeleton.find(*HEAD_BONES))
+        _eye_bones[id(model)] = entry
+    return entry[1], entry[2]
 
 
 def eye_points(person) -> np.ndarray | None:
@@ -150,16 +180,49 @@ def eye_points(person) -> np.ndarray | None:
     model = getattr(person, "skinned_model", None)
     if model is None:
         return None
-    entry = _eye_bones.get(id(model))
-    if entry is None or entry[0]() is not model:
-        found = [model.skeleton.find(name) for name in EYE_BONES]
-        entry = (weakref.ref(model), None if None in found else tuple(found))
-        _eye_bones[id(model)] = entry
-    if entry[1] is None:
+    eyes, _head = _bones(model)
+    if eyes is None:
         return None
     placed = person.matrices()[0]
-    local = np.asarray(person.pose, dtype=np.float64)[list(entry[1]), :3, 3]
+    local = np.asarray(person.pose, dtype=np.float64)[list(eyes), :3, 3]
     return local @ placed[:3, :3].T + placed[:3, 3]
+
+
+def head_axes(person) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(forward, up, right)``: unit vectors in the scene: where ``person``'s face points, the top of their head and
+    their right, from the head bone's turn since the rest pose (in which every character faces +Z, upright); the
+    body's (its model matrix) for a model without a head bone."""
+    placed = person.matrices()[0][:3, :3]
+    turn = np.eye(3)
+    model = getattr(person, "skinned_model", None)
+    if model is not None:
+        _eyes, head = _bones(model)
+        if head is not None:
+            posed = np.asarray(person.pose, dtype=np.float64)[head, :3, :3]
+            rest = np.asarray(model.skeleton.rest_global, dtype=np.float64)[head, :3, :3]
+            turn = posed @ np.linalg.inv(rest)  # rest-pose directions to posed ones (character space)
+    rest_axes = np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]]).T  # columns: forward +Z, up +Y, right -X
+    axes = placed @ turn @ rest_axes
+    axes /= np.maximum(np.linalg.norm(axes, axis=0), 1e-12)
+    return axes[:, 0], axes[:, 1], axes[:, 2]
+
+
+def head_pose(person, camera, at=None) -> dict:
+    """``facing``, ``yaw``, ``pitch`` and ``roll`` (degrees) of ``person``'s head as ``camera`` sees it from ``at``
+    (default: the point between the eyes, else the head bone), as :class:`Truth` defines them."""
+    forward, up, right = head_axes(person)
+    if at is None:
+        eyes = eye_points(person)
+        at = eyes.mean(axis=0) if eyes is not None else person.matrices()[0][:3, 3]
+    to_camera = np.asarray(camera.current_position, dtype=np.float64) - np.asarray(at, dtype=np.float64)
+    to_camera /= max(np.linalg.norm(to_camera), 1e-12)
+    view_matrix = camera.view_matrix()
+    return {
+        "facing": float(np.degrees(np.arccos(np.clip(forward @ to_camera, -1.0, 1.0)))),
+        "yaw": float(np.degrees(np.arctan2(to_camera @ right, to_camera @ forward))),
+        "pitch": float(np.degrees(np.arcsin(np.clip(to_camera @ up, -1.0, 1.0)))),
+        "roll": float(np.degrees(np.arctan2(up @ view_matrix[0, :3], up @ view_matrix[1, :3]))),
+    }
 
 
 class Motion:
@@ -212,8 +275,6 @@ def _find_person(scene, window: Window, motion: Motion | None, subject) -> tuple
     """``(person, truth)`` for :func:`find_truth`."""
     camera = scene.camera
     clip_from_world = window.crop_matrix() @ camera.projection_matrix(window.sensor.view_aspect) @ camera.view_matrix()
-    view_matrix = camera.view_matrix()
-    focal = window.sensor.height / window.level / 2 / np.tan(np.radians(camera.current_fov) / 2)  # window pixels
     size = np.array(window.size, dtype=np.float64)
 
     def pixels(points):
@@ -237,8 +298,10 @@ def _find_person(scene, window: Window, motion: Motion | None, subject) -> tuple
         inside = bool(((px >= 0) & (px <= size)).all())
         if subject is None and not (0 <= middle[0] <= size[0] and 0 <= middle[1] <= size[1]):
             continue
-        depth = -(view_matrix[2, :3] @ eyes.mean(axis=0) + view_matrix[2, 3])  # along the line of sight
-        frontal = focal * float(np.linalg.norm(eyes[0] - eyes[1])) / max(depth, 1e-6)  # turned heads too
+        frontal = frontal_eye_distance(clip_from_world, size, camera, eyes.mean(axis=0),
+                                       float(np.linalg.norm(eyes[0] - eyes[1])))  # whatever way the face turns
+        if frontal is None:
+            continue
         rank = float(np.linalg.norm(middle - size / 2)) / max(frontal, 1e-6)
         if best is None or rank < best[0]:
             best = (rank, person, eyes, px, inside, frontal)
@@ -246,6 +309,7 @@ def _find_person(scene, window: Window, motion: Motion | None, subject) -> tuple
         return None
     _rank, person, eyes, px, inside, frontal = best
     middle = eyes.mean(axis=0)
+    pose = head_pose(person, camera, middle)
     velocity = (0.0, 0.0)
     if motion is not None:
         speed = motion.velocity(person)
@@ -259,7 +323,7 @@ def _find_person(scene, window: Window, motion: Motion | None, subject) -> tuple
                          distance=float(np.linalg.norm(middle - np.asarray(camera.current_position, dtype=np.float64))),
                          eyes=tuple(tuple(float(v) for v in p) for p in px),
                          eye_distance=float(np.linalg.norm(px[0] - px[1])), inside=inside, velocity=velocity,
-                         frontal_eye_distance=float(frontal))
+                         frontal_eye_distance=float(frontal), **pose)
 
 
 def eyes_visible(mask: np.ndarray, eyes) -> float:

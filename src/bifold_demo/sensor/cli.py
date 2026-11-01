@@ -193,7 +193,9 @@ def cmd_windows(args) -> int:
             entry["truth"] = {"name": truth.name, "avatar": truth.avatar, "distance": round(truth.distance, 3),
                               "eye_distance": round(truth.eye_distance, 2),
                               "frontal_eye_distance": round(truth.frontal_eye_distance, 2), "inside": truth.inside,
-                              "visible": truth.visible, "velocity": [round(v, 1) for v in truth.velocity]}
+                              "visible": truth.visible, "velocity": [round(v, 1) for v in truth.velocity],
+                              "facing": round(truth.facing, 1), "yaw": round(truth.yaw, 1),
+                              "pitch": round(truth.pitch, 1), "roll": round(truth.roll, 1)}
             person = scene.get(truth.name)
             if person is not None:
                 in_view = eyes_in_view(scene, person, size)

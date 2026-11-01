@@ -38,15 +38,16 @@ class HeadRegion:
     height, to choose the window's level when nothing better is known.
 
     Measured on YOLO's boxes of the fair (91 people in 10 frames, ``docs/research/virtual_sensor_results.md``): the
-    eyes lie 0.079 box heights below the top (0.060-0.105 for 90 %) and the eye distance is 0.034 box heights
-    (0.033-0.036). These defaults hold the whole face in every case, the face a quarter of the square's side;
-    ``HeadRegion(centre=0.10, side=0.20)`` holds it in 96 % with 2.2 times fewer pixels.
+    eyes lie 0.079 box heights below the top (0.060-0.105 for 90 %) and the eye distance of the face turned to the
+    camera is 0.037 box heights (0.033-0.043; more towards the picture's sides, where faces are stretched). These
+    defaults hold the whole face in every case, the face a quarter of the square's side;
+    ``HeadRegion(centre=0.10, side=0.20)`` holds it in 91 % with 2.2 times fewer pixels.
     """
 
     centre: float = 0.12
     side: float = 0.30
     margin: float = 0.30
-    eyes: float = 0.034
+    eyes: float = 0.037
 
     def region(self, box) -> tuple[float, float, float, float]:
         """The square around the head, in view pixels."""
@@ -117,21 +118,43 @@ class WindowRequest:
             object.__setattr__(self, "head", tuple(float(v) for v in self.head))
 
 
+def across_line_of_sight(camera, point) -> tuple[np.ndarray, np.ndarray]:
+    """Two unit vectors at ``point`` (scene coordinates), both across the line of sight from ``camera`` to it: one as
+    level as the camera's right, one as upright as its up. A face turned to the camera at ``point`` has its eyes along
+    the first: this is what "frontal" means for face sizes throughout the sensor (a face looking into the camera,
+    wherever it is in the picture, so larger towards the picture's sides than one parallel to the image)."""
+    view_matrix = camera.view_matrix()
+    right, up = view_matrix[0, :3], view_matrix[1, :3]  # the camera's axes in the scene
+    ray = np.asarray(point, dtype=np.float64) - np.asarray(camera.current_position, dtype=np.float64)
+    ray = ray / max(np.linalg.norm(ray), 1e-12)
+    across = right - (right @ ray) * ray
+    upward = up - (up @ ray) * ray
+    return across / max(np.linalg.norm(across), 1e-12), upward / max(np.linalg.norm(upward), 1e-12)
+
+
+def frontal_eye_distance(clip_from_world: np.ndarray, size, camera, point, eye_m: float) -> float | None:
+    """The pixels (in a picture of ``size`` = (width, height) drawn with ``clip_from_world``) between two eyes
+    ``eye_m`` metres apart around ``point``, on a face turned to ``camera`` (see :func:`across_line_of_sight`); ``None``
+    when the point is behind the camera."""
+    across, _upward = across_line_of_sight(camera, point)
+    point = np.asarray(point, dtype=np.float64)
+    ends = np.c_[np.array([point - across * eye_m / 2, point + across * eye_m / 2]), np.ones(2)] @ clip_from_world.T
+    if (ends[:, 3] <= 1e-9).any():
+        return None
+    ndc = ends[:, :2] / ends[:, 3:]
+    pixels = np.c_[(ndc[:, 0] + 1) / 2 * size[0], (1 - ndc[:, 1]) / 2 * size[1]]
+    return float(np.linalg.norm(pixels[1] - pixels[0]))
+
+
 def head_point_region(camera, view, point, size: float = 0.5, eye_m: float = EYE_DISTANCE_M):
     """``(region, eye_distance)`` of a head at ``point`` (scene coordinates) for ``camera``'s view of ``view`` =
     (width, height) pixels: the square of ``size`` metres around it, across the line of sight, in view pixels, and the
-    view pixels between two eyes ``eye_m`` apart there (frontal). ``None`` when the point is behind the camera."""
+    view pixels between two eyes ``eye_m`` apart on a face turned to the camera there (:func:`frontal_eye_distance`).
+    ``None`` when the point is behind the camera."""
     w, h = view
     clip_from_world = camera.projection_matrix(w / h) @ camera.view_matrix()
     point = np.asarray(point, dtype=np.float64)
-    view_matrix = camera.view_matrix()
-    right, up = view_matrix[0, :3], view_matrix[1, :3]  # the camera's axes in the scene
-    ray = point - np.asarray(camera.current_position, dtype=np.float64)
-    ray /= max(np.linalg.norm(ray), 1e-12)
-    across = right - (right @ ray) * ray  # across the line of sight, as level as the camera
-    upward = up - (up @ ray) * ray
-    across /= max(np.linalg.norm(across), 1e-12)
-    upward /= max(np.linalg.norm(upward), 1e-12)
+    across, upward = across_line_of_sight(camera, point)
 
     def pixel(p):
         clip = clip_from_world @ np.append(p, 1.0)
@@ -140,13 +163,14 @@ def head_point_region(camera, view, point, size: float = 0.5, eye_m: float = EYE
         return np.array([(clip[0] / clip[3] + 1) / 2 * w, (1 - clip[1] / clip[3]) / 2 * h])
 
     points = [pixel(point + d) for d in (np.zeros(3), -across * size / 2, across * size / 2, -upward * size / 2,
-                                         upward * size / 2, -across * eye_m / 2, across * eye_m / 2)]
-    if any(p is None for p in points):
+                                         upward * size / 2)]
+    eyes = frontal_eye_distance(clip_from_world, view, camera, point, eye_m)
+    if eyes is None or any(p is None for p in points):
         return None
-    centre, left, right_, low, high, eye_a, eye_b = points
+    centre, left, right_, low, high = points
     half_w, half_h = np.linalg.norm(right_ - left) / 2, np.linalg.norm(high - low) / 2
     region = (centre[0] - half_w, centre[1] - half_h, centre[0] + half_w, centre[1] + half_h)
-    return region, float(np.linalg.norm(eye_b - eye_a))
+    return region, eyes
 
 
 class Scheduler:
