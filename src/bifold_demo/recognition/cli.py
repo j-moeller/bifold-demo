@@ -9,6 +9,8 @@
                                                register photos of a head to an avatar's head (stage 1)
     bifold-faces headtex PHOTO[:VIEW] ... --avatar NAME -o head.png [--views render.png] [--debug DIR]
                                                a head texture for an avatar from the photos (stages 0-4)
+    bifold-faces headtex PHOTO[:VIEW] ... --avatar NAME -o head.png --full [--check] [--character NAME]
+                                               head, body and hair textures (all stages), checked, saved
 
 ``fetch --headtex`` also downloads MediaPipe's face landmarker and segmenter (MediaPipe itself is optional, see the
 README).

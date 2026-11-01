@@ -878,6 +878,18 @@ texture on the avatar's own mesh, it turns and talks with the head and makes
 the funny faces. The texture is that person's own (`texture_overrides`); others
 with the same avatar keep their face. Painting takes about 0.4 s.
 
+With MediaPipe installed (see [below](#head-textures-from-photos)) the demo
+does better: all the person's photos go through the
+[head textures from photos](#stages-5-to-7-the-whole-person), and the 3D
+person gets a new head texture (the photos projected onto the avatar's own
+head, the rest completed), a body texture with the person's skin and hair
+cards in the person's hair colour. That takes a few seconds per person on the
+worker thread (the first time for an avatar some more), and the result is
+kept in `faces/.headtex/<name>/` by the photos' contents, so the next start
+reuses it; it is deleted when the person leaves the faces folder. Without
+MediaPipe, or when the photos cannot be used, the face is painted from one
+photo as described here, and a message says why.
+
 Tested with photos of three real people painted on four avatars (women, men, a
 child), the recognition named the right person in 24 of 24 close-ups (front and
 turned 40°; similarity 0.37-0.58) and, from the fair camera with the faces about
@@ -887,14 +899,16 @@ renders of other avatars as the "photos".
 
 ## Head textures from photos
 
-Work in progress: [`characters/headtex/`](src/bifold_demo/characters/headtex)
-will turn photos of a person's head, taken from several angles (front,
-three-quarter, the sides, maybe the back; casual phone photos), into a texture
-for an avatar's own head mesh that blends into the whole body. The approach is
-the one of the literature review
+[`characters/headtex/`](src/bifold_demo/characters/headtex) turns photos of a
+person's head, taken from several angles (front, three-quarter, the sides,
+maybe the back; casual phone photos), into a texture for an avatar's own head
+mesh that blends into the whole body. The approach is the one of the
+literature review
 ([docs/research/face_head_texture.md](docs/research/face_head_texture.md),
-section 3), in eight stages; stages 0, 1, 3 and 4 are done (3 and 4
-[below](#stages-3-and-4-the-texture)):
+section 3), in eight stages; all but the optional stage 2 (normalising the
+photos with a generative model) are built: 0 and 1 here, 3 and 4
+[below](#stages-3-and-4-the-texture), 5 to 7
+[further below](#stages-5-to-7-the-whole-person):
 
 0. **Landmarks on the head mesh**, once per head model. The avatar's head is
    rendered with its own texture in the bind pose (flat light) from five
@@ -1142,11 +1156,79 @@ and from below, each under a light of its own direction and colour):
   starved the worker (55 s): the renderer keeps Python's interpreter lock
   while it draws.
 
-What it does not do yet: the hair the photos show goes onto the avatar's own
-scalp texels only, and the avatar's hair cards (buns, long hair, a fringe: a
-mesh with a texture of its own) keep their colour until stage 6; what no
-photo shows (the back of the head, under the chin) is the avatar's own
-texture, tone-matched, until stage 5 completes it.
+The hair the photos show goes onto the avatar's own scalp texels only; the
+avatar's hair cards (buns, long hair, a fringe: a mesh with a texture of its
+own) take the person's hair colour in stage 6, and what no photo shows (the
+back of the head, under the chin) is completed in stage 5.
+
+### Stages 5 to 7: the whole person
+
+5. **Complete what no photo shows** (`headtex/completion.py`). A texel the
+   photos show poorly takes the colour of its mirror image across the face's
+   plane where the photos show that well (the Rocketbox heads are symmetric:
+   a mirrored texel lands within a millimetre of another, on the median), so
+   a photo of one side of the face completes the other; it is copied in
+   albedo and blended in by the same multi-band blend. Where neither side was
+   seen (the back of the head, under the chin) the avatar's own texture,
+   tone-matched, stays. A generative layer can fill what is left
+   (`FluxInpainter`: FLUX.2 [klein] through `diffusers`, or any pipeline
+   passed in): one call on the texture with those texels painted grey, then
+   only those texels take its result, tone-matched to the rest (its detail,
+   not its tone), feathered and at 40 % at most. A model that cannot load or
+   fails leaves the deterministic result, with a warning. It was tested here
+   with a stand-in pipeline only (Hugging Face is out of reach from the
+   sandbox); what FLUX.2 [klein] makes of a texture atlas is untested.
+6. **Match the body** (`headtex/body.py`). The body texture's skin (the
+   outfits' skin mask: hands, neck, bare arms and legs) takes the person's
+   skin tone: one gain per channel in linear light takes the hands' robust
+   median to the face's skin target (by the neck, the head's neck colour), so
+   the body's painted creases and soft light stay. Where the head mesh's open
+   edge meets the body and both textures are skin, a smooth offset round the
+   neck (least squares over 24 sectors) is spread half into each side. The
+   hair cards and the scalp no photo showed are recoloured towards the hair
+   the photos show (its lightness and chroma; the strands' detail kept, skin
+   and eyelashes left alone). Outfits go on over the new body texture.
+7. **Check and save** (`headtex/person.py`). The colour difference across the
+   neck seam and from the face to the hands, before and after stage 6, and,
+   with `--check` (OpenGL and the face recognition's models), the identity:
+   SFace similarity between renders of the textured avatar (front, turned
+   30°) and the photos, next to that of the avatar's own head. The geometry is
+   the avatar's, so the similarity is only meaningful relative to that: it is
+   reported, never a reason to reject; a generative layer that lowers it is
+   dropped. The head, body and hair textures can be saved as a
+   [created character](#created-characters).
+
+```bash
+bifold-faces headtex front.jpg left.jpg:left right.jpg:right --avatar Female_Adult_04 -o out/head.png --full \
+    --check --views out/views.jpg --character "Ada at the fair" --face "Ada Lovelace"
+```
+
+`--full` writes the body texture (`out/head_body.png`) and the hair cards'
+(`out/head_<primitive>.png`) next to the head's, prints what each stage did
+and the checks, and with `--character` saves a created character into
+`created/` (`--created DIR`). `--generate` adds the generative layer (it
+needs `diffusers` and the model's weights, about 16 GB of memory).
+
+```python
+from bifold_demo.characters.headtex import person_textures
+
+person = person_textures(["front.jpg", "left.jpg"], model, views=[None, "left"], cache="textures/")
+print(person.summary())                # what each stage did, the neck and the hands, warnings
+person.wear(character)                 # head, body and hair textures on a scene Character of that model
+book.save(person.created("Ada at the fair", face="Ada Lovelace"))   # a CreatedCharacter
+```
+
+How well it works (`tests/test_headtex_finish.py`, synthetic;
+`tests/test_headtex_finish_avatars.py`: Male_Adult_05's four fake photos
+finished onto Female_Adult_04, whose open neckline shows the seam): across
+the seam ΔE 3.4 before stage 6 and 1.2 after, the neck against the body's
+skin next to it 8.7 and 1.8, the face against the hands 7.0 and 0.2. SFace
+says the renders look like him: 0.74 from the front (her own head 0.25),
+0.65 turned 30° (0.29). On Female_Adult_01 (three photos) 6.0 → 2.1, 4.7 →
+0.8 and 7.5 → 0.3; there two of the six seam pairs are a dark line painted at
+the neckline, which the levelling leaves out. Time on top of stages 0-4: the
+mirror's lookup about 2 s once per avatar, then stage 5 under 1 s, stage 6
+about 1.5 s, the checks about 1 s (the identity check 0.5-1.5 s more).
 
 Photos of people and textures made from them are personal data: keep them in
 git-ignored folders (like `faces/`) and never commit them.
@@ -1603,7 +1685,8 @@ src/bifold_demo/
                         fabric.py: fabrics from a description, with seamless.py
                         (seam score, repair, light) and tiling.py (rolling, padding)),
                headtex/ (head textures from photos: landmarks on the mesh, photos registered,
-                         projected, fused, de-lit; the skin tone),
+                         projected, fused, de-lit; the skin tone; completed, the body's
+                         skin and the hair matched, checked),
                created.py (characters from the character creator, saved),
                rocketbox.py + library.py + cli.py (bifold-characters),
                rocketbox_catalog.json (avatar labels)                   ← 3D people

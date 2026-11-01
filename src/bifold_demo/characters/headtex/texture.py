@@ -371,61 +371,101 @@ SEAM_REACH = 0.01  # metres: a body vertex this near the head mesh's open neck i
 NECK_BAND = 0.12  # metres: the body's skin this near the seam and the head's visible neck count for the tone step
 
 
-def neck_seam(model, head_rgba=None, atlas: HeadAtlas | None = None) -> dict:
+@dataclass
+class SeamPairs:
+    """Where the head mesh's open edge at the neck meets the body mesh (see :func:`seam_pairs`): the head vertices
+    on the edge (``points``, bind pose), and for those within :data:`SEAM_REACH` of the body (``close``) the texel of
+    each side (``head_texels``, ``body_texels``: ``(row, column)`` arrays at UV ``1`` = the texture's size; scale
+    them to an image of another size)."""
+
+    points: np.ndarray  # (S, 3) the head's open-edge vertices at the neck
+    close: np.ndarray  # (S,) bool: a body vertex is within SEAM_REACH
+    head_uv: np.ndarray  # (C, 2) the close ones' texture coordinates on the head
+    body_uv: np.ndarray  # (C, 2) ... and of the nearest body vertex
+
+    def texels(self, side: str, size: int) -> tuple[np.ndarray, np.ndarray]:
+        """``(rows, columns)`` of the close pairs' texels on ``side`` (``"head"`` or ``"body"``) in a ``size`` image."""
+        uv = self.head_uv if side == "head" else self.body_uv
+        return (np.clip(((1.0 - uv[:, 1]) * size).astype(int), 0, size - 1),
+                np.clip((uv[:, 0] * size).astype(int), 0, size - 1))
+
+
+_seams: dict[int, tuple] = {}
+
+
+def seam_pairs(model) -> SeamPairs | None:
+    """The neck seam of ``model`` (a :class:`SeamPairs`; ``None`` without a head and a body, or when the head mesh
+    has no open edge below the chin), found once per model: the head mesh's open edges (edges of one triangle,
+    welding vertices that share a point) below the chin, and the nearest body vertex to each of their vertices."""
+    hit = _seams.get(id(model))
+    if hit is not None and hit[0] is model:
+        return hit[1]
+    from ..outfit.regions import body_primitive
+    from .landmarks import face_frame
+
+    try:
+        frame = face_frame(model)
+    except ValueError:  # no head with face bones
+        frame = None
+    body_index = body_primitive(model)
+    out = None
+    if frame is not None and body_index is not None and body_index != frame.primitive:
+        head = model.primitives[frame.primitive]
+        body = model.primitives[body_index]
+        positions = np.asarray(head.positions, np.float64)
+        tri = np.asarray(head.indices, np.int64).reshape(-1, 3)
+        _, merged = np.unique(np.round(positions / 1e-5).astype(np.int64), axis=0, return_inverse=True)
+        edges = np.sort(merged[tri][:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), axis=1)
+        unique, counts = np.unique(edges, axis=0, return_counts=True)
+        open_vertices = np.unique(unique[counts == 1])  # merged ids on the mesh's open edges
+        seam = np.nonzero(np.isin(merged, open_vertices) & (positions[:, 1] < frame.chin[1] - 0.02))[0]
+        if len(seam):
+            body_positions = np.asarray(body.positions, np.float64)
+            distance = np.linalg.norm(positions[seam, None] - body_positions[None], axis=2)
+            nearest = distance.argmin(axis=1)
+            close = distance[np.arange(len(seam)), nearest] < SEAM_REACH
+            out = SeamPairs(positions[seam], close, np.asarray(head.uvs, np.float64)[seam[close]],
+                            np.asarray(body.uvs, np.float64)[nearest[close]])
+    _seams[id(model)] = (model, out)
+    while len(_seams) > 8:
+        _seams.pop(next(iter(_seams)))
+    return out
+
+
+def neck_seam(model, head_rgba=None, atlas: HeadAtlas | None = None, body_rgba=None) -> dict:
     """How the head texture meets the body texture at the neck (Lab delta E; ``nan`` where there is nothing to
     compare): ``"seam"``, the median difference across the seam itself (the head mesh's open edge at the neck and
-    the body's points there, within :data:`SEAM_REACH`), where the body texture is skin
+    the body's points there, within :data:`SEAM_REACH`, :func:`seam_pairs`), where the body texture is skin
     (:func:`~..outfit.regions.body_regions`; on most Rocketbox avatars a collar covers the seam), with ``"pairs"``
     such points; and ``"step"``, the difference between the median colours of the head's visible neck (the atlas's
     neck part) and the body's skin within :data:`NECK_BAND` of the seam (the throat and the neckline), what shows
-    where an open collar leaves the join visible. ``head_rgba``: a head texture (RGB(A) image, default the avatar's
-    own); ``atlas``: the head's :class:`~.fuse.HeadAtlas` (else the step is not measured)."""
+    where an open collar leaves the join visible. ``head_rgba``, ``body_rgba``: the textures (RGB(A) images, default
+    the avatar's own); ``atlas``: the head's :class:`~.fuse.HeadAtlas` (else the step is not measured)."""
     from ..outfit.regions import body_regions, texture_of
-    from .landmarks import face_frame
 
     regions = body_regions(model)
-    frame = face_frame(model)
-    head, body = model.primitives[frame.primitive], model.primitives[regions.primitive]
-    positions = np.asarray(head.positions, np.float64)
-    tri = np.asarray(head.indices, np.int64).reshape(-1, 3)
-    _, merged = np.unique(np.round(positions / 1e-5).astype(np.int64), axis=0, return_inverse=True)
-    edges = np.sort(merged[tri][:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), axis=1)
-    unique, counts = np.unique(edges, axis=0, return_counts=True)
-    open_vertices = np.unique(unique[counts == 1])  # merged ids on the mesh's open edges
-    seam = np.nonzero(np.isin(merged, open_vertices) & (positions[:, 1] < frame.chin[1] - 0.02))[0]
+    pairs = seam_pairs(model)
     out = {"seam": float("nan"), "pairs": 0, "step": float("nan")}
-    if not len(seam):
+    if pairs is None:
         return out
+    head, body = model.primitives[_head_index(model)], model.primitives[regions.primitive]
     head_image = np.asarray(texture_of(head.texture).rgba if head_rgba is None else head_rgba)
-    body_image = texture_of(body.texture).rgba
+    body_image = np.asarray(texture_of(body.texture).rgba if body_rgba is None else body_rgba)
     size = regions.size
     if body_image.shape[0] != size:
         body_image = cv2.resize(body_image, (size, size), interpolation=cv2.INTER_AREA)
     body_lab = light.lab(light.to_linear(cv2.blur(np.ascontiguousarray(body_image[..., :3]), (3, 3))))
     head_lab = light.lab(light.to_linear(cv2.blur(np.ascontiguousarray(head_image[..., :3]), (3, 3))))
-
-    def texels(uvs, h, w):
-        return (np.clip(((1.0 - uvs[:, 1]) * h).astype(int), 0, h - 1),
-                np.clip((uvs[:, 0] * w).astype(int), 0, w - 1))
-
-    body_positions = np.asarray(body.positions, np.float64)
-    distance = np.linalg.norm(positions[seam, None] - body_positions[None], axis=2)
-    nearest = distance.argmin(axis=1)
-    close = distance[np.arange(len(seam)), nearest] < SEAM_REACH
-    hr, hc = texels(np.asarray(head.uvs, np.float64)[seam[close]], *head_lab.shape[:2])
-    br, bc = texels(np.asarray(body.uvs, np.float64)[nearest[close]], size, size)
+    hr, hc = pairs.texels("head", head_lab.shape[0])
+    br, bc = pairs.texels("body", size)
     skin = regions.skin[br, bc]
     if skin.any():
         out["seam"] = float(np.median(light.delta_e(head_lab[hr, hc][skin], body_lab[br, bc][skin])))
         out["pairs"] = int(skin.sum())
     if atlas is not None:
-        seam_points = positions[seam]
-
-        def near_seam(points):
-            return np.linalg.norm(points[:, None] - seam_points[None], axis=2).min(axis=1) < NECK_BAND
-
         body_skin = np.nonzero(regions.skin.ravel())[0]
-        body_skin = body_skin[near_seam(regions.bake.position.reshape(-1, 3)[body_skin].astype(np.float64))]
+        points = regions.bake.position.reshape(-1, 3)[body_skin].astype(np.float64)
+        body_skin = body_skin[distance_to(points, pairs.points, NECK_BAND) < NECK_BAND]
         neck = np.nonzero((atlas.parts == fuse.NECK).ravel())[0]
         if len(body_skin) > 20 and len(neck) > 20:
             scale = head_lab.shape[0] / atlas.size
@@ -433,6 +473,29 @@ def neck_seam(model, head_rgba=None, atlas: HeadAtlas | None = None) -> dict:
             head_neck = head_lab[(rows * scale).astype(int), (cols * scale).astype(int)]
             out["step"] = float(light.delta_e(np.median(head_neck, axis=0),
                                               np.median(body_lab.reshape(-1, 3)[body_skin], axis=0)))
+    return out
+
+
+def _head_index(model) -> int:
+    """The index of ``model``'s head primitive (the one the face painting and the head textures use)."""
+    from ..face_photo import head_layout
+
+    layout = head_layout(model)
+    if layout is None:
+        raise ValueError(f"{model.name} has no head with face bones")
+    return layout.primitive
+
+
+def distance_to(points: np.ndarray, targets: np.ndarray, reach: float = np.inf, chunk: int = 8192) -> np.ndarray:
+    """``(N,)`` the distance from each of ``points`` (``(N, 3)``) to the nearest of ``targets`` (``(M, 3)``, a few
+    hundred at most); ``inf`` for points further than ``reach`` from the targets' bounding box (not measured)."""
+    points = np.asarray(points, np.float64)
+    out = np.full(len(points), np.inf)
+    near = np.all((points >= targets.min(axis=0) - reach) & (points <= targets.max(axis=0) + reach), axis=1)
+    index = np.flatnonzero(near)
+    for s in range(0, len(index), chunk):
+        part = points[index[s:s + chunk]]
+        out[index[s:s + chunk]] = np.sqrt(((part[:, None, :] - targets[None]) ** 2).sum(axis=2)).min(axis=1)
     return out
 
 
@@ -450,11 +513,13 @@ def skin_gap(result: HeadTexture, model) -> float:
 PREVIEW_YAWS = (0.0, 35.0, 80.0)  # front, three-quarter, side
 
 
-def preview(model, result: HeadTexture | None, size: int = 480, renderer=None, yaws=PREVIEW_YAWS) -> np.ndarray:
-    """Renders of ``model`` wearing ``result`` (``None``: its own head texture) from the front, three-quarter and
-    the side, lit like the fair, side by side (a BGR image; needs OpenGL)."""
+def preview(model, result: HeadTexture | dict | None, size: int = 480, renderer=None, yaws=PREVIEW_YAWS) -> np.ndarray:
+    """Renders of ``model`` wearing ``result`` (a :class:`HeadTexture`, or textures by primitive name: RGBA images
+    or scene textures; ``None``: its own) from the front, three-quarter and the side, lit like the fair, side by side
+    (a BGR image; needs OpenGL)."""
     from ...scene import Scene
     from ...scene.renderer import Renderer
+    from ...scene.textures import Texture
     from ..character import Character
     from .camera import PhotoCamera
     from .landmarks import face_frame
@@ -464,8 +529,11 @@ def preview(model, result: HeadTexture | None, size: int = 480, renderer=None, y
     try:
         scene = Scene(background=(150, 160, 172), ambient=0.55, light_direction=(-0.4, -0.6, -0.7))
         person = Character(model, name="preview", shadow=False)
-        if result is not None:
+        if isinstance(result, HeadTexture):
             wear(person, result)
+        elif result is not None:
+            for name, image in result.items():
+                person.texture_overrides[name] = image if isinstance(image, Texture) else Texture(image)
         scene.add(person)
         scene.update(0.0, 0.0)
         pivot = face_frame(model).pivot - np.array([0.0, 0.04, 0.0])
@@ -537,5 +605,5 @@ def describe_light(shading: light.Shading | None) -> str:
     return f"from {side}, {shading.strength:.2f} directional, contrast {shading.contrast:.1f}"
 
 
-__all__ = ["HeadTexture", "debug_images", "describe_light", "fuse_views", "head_texture", "head_texture_async",
-           "neck_seam", "preview", "skin_gap", "take_off", "wear"]
+__all__ = ["HeadTexture", "SeamPairs", "debug_images", "describe_light", "distance_to", "fuse_views", "head_texture",
+           "head_texture_async", "neck_seam", "preview", "seam_pairs", "skin_gap", "take_off", "wear"]

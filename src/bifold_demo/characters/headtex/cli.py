@@ -5,6 +5,10 @@
                                                      register photos to an avatar's head; draw what was found
     bifold-faces headtex PHOTO[:VIEW] ... --avatar NAME -o head.png [--views render.png] [--debug DIR]
                                                      a head texture from the photos (stages 0-4)
+    bifold-faces headtex PHOTO[:VIEW] ... --avatar NAME -o head.png --full [--body body.png] [--generate]
+                 [--check] [--character NAME [--face PERSON] [--created DIR]]
+                                                     all stages (0-7): head, body and hair textures, checked;
+                                                     optionally saved as a created character
 
 A ``:left``, ``:right`` or ``:back`` after a photo names what it shows (needed for photos without a face).
 """
@@ -42,6 +46,19 @@ def add_commands(sub) -> None:
                      "into this image")
     tex.add_argument("--debug", default=None, help="write what each stage did into this folder")
     tex.add_argument("--size", type=int, default=None, help="the texture's size (default: the avatar's own)")
+    tex.add_argument("--full", action="store_true", help="all stages: complete what no photo shows, match the body's "
+                     "skin, the neck and the hair, check (stages 5-7)")
+    tex.add_argument("--body", default=None, help="the body texture's file (default: next to -o; all stages, as "
+                     "--full)")
+    tex.add_argument("--generate", nargs="?", const="flux2-klein", default=None, metavar="MODEL",
+                     help="a generative layer for what no photo shows (default model: flux2-klein; "
+                     "needs diffusers and the model's weights)")
+    tex.add_argument("--check", action="store_true", help="the identity check (renders of the avatar "
+                     "against the photos; needs OpenGL and the face recognition's models)")
+    tex.add_argument("--character", default=None, help="save the textures as a created character of "
+                     "this name")
+    tex.add_argument("--face", default=None, help="with --character: the known person whose face it is")
+    tex.add_argument("--created", default="created", help="with --character: the created characters' folder")
     tex.set_defaults(run=cmd_headtex)
 
 
@@ -135,6 +152,8 @@ def cmd_headtex(args) -> int:
     with Landmarker(args.models, max_faces=2) as landmarker, Segmenter(args.models) as segmenter:
         result = head_texture(list(photos), model, views=list(views), landmarker=landmarker, segmenter=segmenter,
                               size=args.size, cache_dir=args.characters, debug=args.debug is not None)
+    if args.full or args.body or args.generate or args.check or args.character:  # (each says all stages)
+        return _full(args, model, result, list(photos))
     print(result.summary())
     print(f"texture: {result.save(args.output)}")
     if args.views:
@@ -142,10 +161,58 @@ def cmd_headtex(args) -> int:
         target.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(target), np.vstack([preview(model, result), preview(model, None)]))
         print(f"renders (top: with the texture, bottom: the avatar's own): {target}")
+    _write_debug(args, result, debug_images)
+    return 0
+
+
+def _write_debug(args, result, debug_images) -> None:
+    import cv2
+
     if args.debug:
         folder = Path(args.debug)
         folder.mkdir(parents=True, exist_ok=True)
         for name, image in debug_images(result).items():
             cv2.imwrite(str(folder / name), image)
         print(f"debug images: {folder}")
+
+
+def _full(args, model, result, photos) -> int:
+    """Stages 5 to 7 on ``result`` and the files of ``--full``."""
+    import cv2
+
+    from .completion import FluxInpainter
+    from .person import finish
+    from .texture import debug_images, preview
+
+    engine = None
+    if args.check:
+        from ...recognition.engine import FaceEngine
+
+        engine = FaceEngine(args.models)
+    inpainter = FluxInpainter(args.generate) if args.generate else None
+    person = finish(result, model, inpainter=inpainter, check=args.check, photos=photos, engine=engine)
+    print(person.summary())
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    files = {person.head_primitive: output}
+    if person.body is not None:
+        files[person.body_primitive] = Path(args.body) if args.body else output.with_name(f"{output.stem}_body.png")
+    for name in person.textures:
+        files.setdefault(name, output.with_name(f"{output.stem}_{name}.png"))
+    for name, path in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not cv2.imwrite(str(path), cv2.cvtColor(person.textures[name], cv2.COLOR_RGBA2BGRA)):
+            raise OSError(f"cannot write {path}")
+        print(f"texture of {name}: {path}")
+    if args.views:
+        target = Path(args.views)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(target), np.vstack([preview(model, person.textures), preview(model, None)]))
+        print(f"renders (top: with the textures, bottom: the avatar's own): {target}")
+    _write_debug(args, result, debug_images)
+    if args.character:
+        from ..created import CharacterBook
+
+        saved = CharacterBook(args.created).save(person.created(args.character, face=args.face))
+        print(f"saved as the created character {args.character!r}: {saved}")
     return 0

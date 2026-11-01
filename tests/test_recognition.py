@@ -267,6 +267,11 @@ def cast_scene(monkeypatch):
     layout = type("Layout", (), {"primitive": 0})()
     monkeypatch.setattr(face_photo, "head_layout", lambda m: layout)
     monkeypatch.setattr(cast_module, "_painted", lambda character, photo, engine: Texture.solid("#ff0000", str(photo)))
+
+    def no_mediapipe(character, photos, cache):
+        raise ImportError("MediaPipe is not installed")
+
+    monkeypatch.setattr(cast_module, "_from_photos", no_mediapipe)  # (the head textures: see the tests below)
     scene = Scene()
     for name in ("walker1", "approach1", "audience2", "audience1"):
         scene.add(Character(model, lambda t: CharacterState((0.0, 0.0, 0.0), 0.0, []), name=name), name=name)
@@ -278,7 +283,7 @@ def _settle(cast, scene, now):
 
     messages = cast.update(scene, now=now)
     deadline = time.monotonic() + 5.0
-    while cast._painting and time.monotonic() < deadline:
+    while any(not entry[-1].done() for entry in cast._painting.values()) and time.monotonic() < deadline:
         time.sleep(0.01)
     return messages + cast.update(scene, now=now)
 
@@ -308,6 +313,80 @@ def test_the_known_people_get_3d_people_in_front_of_the_camera_first(cast_scene)
         assert cast.wears(cast_scene["walker1"]) == "Ben" and cast.wears(cast_scene["audience2"]) is None
         assert cast.put(cast_scene["walker1"], None) == "walker1 has their own face again"
         assert cast.put(cast_scene["walker1"], "Nobody") == "no photo of Nobody with a face"
+    finally:
+        cast.close()
+
+
+def test_known_people_get_head_textures_made_from_all_their_photos(cast_scene, monkeypatch, tmp_path):
+    """The head textures from photos (stages 0 to 7) give the 3D person a head, body and hair texture of their own,
+    made from all the person's photos, again when the photos change; taken off, the avatar's own come back."""
+    from bifold_demo.characters import face_photo
+    from bifold_demo.recognition import cast as cast_module
+    from bifold_demo.recognition.cast import FaceCast
+
+    made = []
+
+    def from_photos(character, photos, cache):
+        made.append((character.name, list(photos), cache))
+        return {"box0": np.full((4, 4, 4), 200, np.uint8), "box1": np.full((4, 4, 4), len(made), np.uint8)}
+
+    def painted(*args):
+        raise AssertionError("not painted from one photo")
+
+    monkeypatch.setattr(cast_module, "_from_photos", from_photos)
+    monkeypatch.setattr(cast_module, "_painted", painted)
+    head = cast_scene["audience1"].skinned_model.primitives[face_photo.head_layout(None).primitive].name
+    gallery = _People({"Ada": ["ada.jpg", "ada2.jpg"]})
+    gallery.folder = tmp_path
+    cast = FaceCast(gallery)
+    try:
+        messages = _settle(cast, cast_scene, now=0.0)
+        person = cast_scene["audience1"]
+        assert messages == ["audience1 has Ada's face"] and cast.wears(person) == "Ada"
+        assert made == [("audience1", ["ada.jpg", "ada2.jpg"], tmp_path / cast_module.CACHE / "Ada")]
+        assert set(person.texture_overrides) == {head, "box1"} and person.texture_overrides["box1"].rgba[0, 0, 0] == 1
+        gallery.people_["Ada"] = ["ada.jpg", "ada2.jpg", "ada3.jpg"]  # another photo: made again
+        _settle(cast, cast_scene, now=1.5)
+        assert len(made) == 2 and person.texture_overrides["box1"].rgba[0, 0, 0] == 2
+        kept = tmp_path / cast_module.CACHE / "Ada" / "some key"  # (what the head textures keep for her)
+        kept.mkdir(parents=True)
+        (tmp_path / cast_module.CACHE / "Ben").mkdir()
+        gallery.people_["Ben"] = ["ben.jpg"]
+        _settle(cast, cast_scene, now=2.6)
+        assert kept.is_dir() and cast.wears(cast_scene["audience2"]) == "Ben"
+        del gallery.people_["Ada"]  # she leaves: so do the textures made from her photos
+        _settle(cast, cast_scene, now=3.7)
+        assert not person.texture_overrides and not kept.parent.exists()
+        assert (tmp_path / cast_module.CACHE / "Ben").is_dir()
+    finally:
+        cast.close()
+
+
+def test_photos_the_head_textures_cannot_use_are_painted_as_before(cast_scene, monkeypatch):
+    """Without MediaPipe, or when the photos cannot be used, the face is painted from the first photo, and a
+    message says why (once)."""
+    from bifold_demo.recognition import cast as cast_module
+    from bifold_demo.recognition.cast import FaceCast
+
+    cast = FaceCast(_People({"Ada": ["ada.jpg"], "Ben": ["ben.jpg"]}))
+    try:
+        messages = _settle(cast, cast_scene, now=0.0)
+        assert cast.wears(cast_scene["audience1"]) == "Ada" and cast.wears(cast_scene["audience2"]) == "Ben"
+        why = [m for m in messages if "painted from one photo: MediaPipe is not installed" in m]
+        assert len(why) == 1  # said once, not for everyone
+        assert cast_scene["audience1"].texture_overrides["box0"].name == "ada.jpg"  # the painting's texture
+    finally:
+        cast.close()
+
+    def unusable(character, photos, cache):
+        raise ValueError("no usable photo: the face is turned away")
+
+    monkeypatch.setattr(cast_module, "_from_photos", unusable)
+    cast = FaceCast(_People({"Ada": ["ada.jpg"]}))
+    try:
+        messages = _settle(cast, cast_scene, now=0.0)
+        assert "audience1 has Ada's face" in messages
+        assert any("the head texture from the photos failed: no usable photo" in m for m in messages)
     finally:
         cast.close()
 
