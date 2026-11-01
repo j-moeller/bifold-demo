@@ -11,6 +11,14 @@
 
 Image files are re-read automatically when they change on disk, so replacing a
 file is enough to update every object that uses it.
+
+**Colour spaces.** Image files hold sRGB-encoded colours, and the renderer works in linear light: it uploads a
+:class:`Texture` as an sRGB texture, so the GPU decodes its colours when it samples them, and builds its mipmaps by
+averaging light (:func:`mip_chain`: a fine black-and-white pattern becomes the grey of half the light, level 188,
+not the darker 128 of averaged sRGB values; transparent texels lend no colour to the edges of cut-outs). Data such
+as normal maps are not colours (``Texture.srgb`` is False, :func:`as_data_texture`): they are averaged as they are.
+:func:`prepare_upload` lays a texture out for the GPU, mipmaps included, on any thread, so that the thread that
+draws does not have to.
 """
 
 from __future__ import annotations
@@ -35,14 +43,19 @@ class Texture:
     """RGBA image data (row 0 = top of the image).
 
     ``version`` increases whenever the pixels change so the renderer knows when
-    to re-upload them to the GPU.
+    to re-upload them to the GPU. ``srgb``: the pixels are sRGB-encoded colours
+    (the default); False for data such as normal maps (see the module docs).
     """
 
-    def __init__(self, rgba: np.ndarray, name: str = ""):
+    srgb = True
+
+    def __init__(self, rgba: np.ndarray, name: str = "", srgb: bool = True):
         self.id = next(_ids)
         self.name = name
         self.version = 0
         self.rgba = _check_rgba(rgba)
+        if not srgb:
+            self.srgb = False
 
     @classmethod
     def from_file(cls, path, max_size: int = 2048) -> "Texture":
@@ -157,12 +170,38 @@ def as_texture(spec) -> Texture | None:
     raise TypeError(f"cannot use {type(spec).__name__} as a texture: {spec!r}")
 
 
-def prepare_upload(texture: Texture) -> Texture:
-    """Lay out the pixels of ``texture`` the way the renderer uploads them (rows bottom first, for OpenGL) now, on the
-    calling thread, so that the thread that draws does not have to: for a texture made on a worker thread. The
-    renderer uses (and drops) them on the upload, unless the pixels changed meanwhile. Returns ``texture``."""
-    texture._upload = (texture.version, np.ascontiguousarray(texture.rgba[::-1]).tobytes())
+def as_data_texture(spec) -> Texture | None:
+    """:func:`as_texture` for data that are not colours (a normal map): marks the texture so that its pixels are
+    neither decoded from sRGB when drawn nor averaged in linear light for its mipmaps. An image file used this way
+    must not be used as a colour texture too (the file cache shares one texture per file)."""
+    if isinstance(spec, np.ndarray) and spec.ndim == 3 and spec.shape[2] in (3, 4):
+        return Texture(_array_to_rgba(spec, "rgb"), name="data", srgb=False)  # arrays of characters are RGB(A)
+    texture = as_texture(spec)
+    if texture is not None and texture.srgb:
+        texture.srgb = False
     return texture
+
+
+def prepare_upload(texture: Texture) -> Texture:
+    """Lay out the pixels of ``texture`` the way the renderer uploads them (rows bottom first, for OpenGL), with its
+    mipmap levels (:func:`mip_chain`), now, on the calling thread, so that the thread that draws does not have to:
+    for a texture made or read on a worker thread. The renderer uses (and drops) them on the upload, unless the
+    pixels changed meanwhile; when a renderer uploaded these pixels already, nothing is kept. Returns ``texture``."""
+    rgba, version = texture.rgba, texture.version
+    levels = [np.ascontiguousarray(level[::-1]).tobytes() for level in mip_chain(rgba, texture.srgb)]
+    if texture.__dict__.get("_on_gpu") != version:  # (else they would never be used)
+        texture._upload = (version, np.ascontiguousarray(rgba[::-1]).tobytes(), levels)
+    return texture
+
+
+def upload_levels(texture: Texture) -> list[bytes]:
+    """The mipmap levels below ``texture``'s own, laid out for the renderer's upload (rows bottom first): those
+    :func:`prepare_upload` made for its current pixels when there are any (dropped then), else made now."""
+    prepared = texture.__dict__.get("_upload")
+    if prepared is not None and prepared[0] == texture.version and prepared[2] is not None:
+        texture.__dict__.pop("_upload", None)
+        return prepared[2]
+    return [np.ascontiguousarray(level[::-1]).tobytes() for level in mip_chain(texture.rgba, texture.srgb)]
 
 
 def parse_color(color) -> tuple[int, int, int]:

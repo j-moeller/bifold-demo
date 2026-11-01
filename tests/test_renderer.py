@@ -91,6 +91,75 @@ def test_fog_fades_distant_surfaces(gl):
     scene.camera = Camera(position=(0, 0, 0), target=(0, 0, -1))
     scene.add(Quad(size=1.0, texture="#ff0000", position=(0, 0, -3), lit=False), name="mid")
     b, g, r = _render(scene)[45, 80].tolist()
-    assert 110 < r < 145 and 110 < b < 145  # halfway between red and the blue fog
+    assert 180 < r < 195 and 180 < b < 195  # halfway: half the light of the red and of the blue fog (level 188)
     scene.fog = None
     assert _render(scene)[45, 80].tolist() == [0, 0, 255]
+
+
+def test_every_level_comes_back_through_srgb_textures_and_the_srgb_picture(gl):
+    """Colours are decoded from sRGB when sampled and encoded again when drawn: unlit, nothing changes."""
+    scene = Scene(background=(17, 34, 51))
+    scene.camera = Camera(position=(0, 0, 2.0), target=(0, 0, 0), fov=60)
+    cell = 0.07
+    for level in range(256):
+        row, col = divmod(level, 16)
+        scene.add(Quad(position=((col - 7.5) * cell, (7.5 - row) * cell, 0), size=cell * 0.9, lit=False,
+                       texture=(level, level, 255 - level)), name=f"q{level}")
+    image = _render(scene, size=(320, 320))
+    assert image[2, 2].tolist() == [51, 34, 17]  # the background colour too (BGR)
+    from bifold_demo.scene.renderer import Renderer
+
+    renderer = Renderer(320, 320, samples=0)
+    try:
+        scene.update(0.0, 0.0)
+        renderer.render(scene)
+        view_proj = scene.camera.projection_matrix(1.0) @ scene.camera.view_matrix()
+    finally:
+        renderer.release()
+    for level in range(256):
+        row, col = divmod(level, 16)
+        clip = view_proj @ np.array([(col - 7.5) * cell, (7.5 - row) * cell, 0.0, 1.0])
+        x, y = ((clip[:2] / clip[3]) * [0.5, -0.5] + 0.5) * 320
+        assert image[int(y), int(x)].tolist() == [255 - level, level, level], level
+
+
+def test_mipmaps_average_light():
+    """A fine black-and-white checker seen small is the grey of half the light (188), not the level of half the
+    value (128), and so are the mipmaps prepared off the render thread."""
+    from bifold_demo.scene.textures import prepare_upload
+
+    rgb = np.zeros((256, 256, 3), np.uint8)
+    rgb[(np.add.outer(np.arange(256), np.arange(256)) % 2) == 0] = 255
+    prepared = prepare_upload(Texture.from_array(rgb, order="rgb"))
+    assert len(prepared._upload[2]) == 8  # levels 128 ... 1
+    assert set(np.frombuffer(prepared._upload[2][-1], np.uint8).tolist()) == {188, 255}
+
+
+@pytest.mark.parametrize("prepared", [False, True])
+def test_small_textures_show_the_light_of_their_texels(gl, prepared):
+    from bifold_demo.scene.textures import prepare_upload
+
+    rgb = np.zeros((256, 256, 3), np.uint8)
+    rgb[(np.add.outer(np.arange(256), np.arange(256)) % 2) == 0] = 255
+    texture = Texture.from_array(rgb, order="rgb")
+    if prepared:
+        prepare_upload(texture)
+    scene = Scene(background=(0, 0, 0))
+    scene.camera = Camera(position=(0, 0, 2), target=(0, 0, 0), fov=60)
+    scene.add(Quad(texture=texture, size=0.2, lit=False), name="far")  # 256 texels on about 14 pixels
+    value = _render(scene)[45, 80]
+    assert (np.abs(value.astype(int) - 188) <= 3).all(), value
+
+
+def test_light_falls_off_in_linear_light_and_shadow_keeps_its_level(gl):
+    """A surface turned 60 degrees from the light gets half the light (level 188, not 128); a surface in shadow is
+    as dark as the ambient level says (0.2 of white: 51)."""
+    scene = Scene(background=(0, 0, 0), ambient=0.0, light_direction=(0, -np.sin(np.radians(60)),
+                                                                       -np.cos(np.radians(60))))
+    scene.camera = Camera(position=(0, 0, 2), target=(0, 0, 0))
+    scene.add(Quad(texture="#ffffff", size=1.0), name="turned")  # facing the camera, 60 degrees from the light
+    level = int(_render(scene)[45, 80, 1])
+    assert abs(level - 188) <= 3, level
+    scene.ambient = 0.2
+    scene.light_direction = (0, 0, 1)
+    assert abs(int(_render(scene)[45, 80, 1]) - 51) <= 2

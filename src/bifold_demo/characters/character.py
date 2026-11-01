@@ -14,7 +14,7 @@ import numpy as np
 from ..scene.animation import resolve
 from ..scene.geometry import Mesh
 from ..scene.scene import SceneObject
-from ..scene.textures import IMAGE_EXTENSIONS, as_texture, parse_color
+from ..scene.textures import IMAGE_EXTENSIONS, as_texture, parse_color, prepare_upload
 from ..scene.transforms import vec3
 from .model import AnimationClip, CharacterModel, CharacterState, Layer, Poser
 
@@ -183,8 +183,9 @@ def preload_textures(model: CharacterModel) -> list[Future]:
     """Start decoding the image files among ``model``'s textures on a background thread (each file once).
 
     The decoded textures land in the shared file cache of :func:`bifold_demo.scene.as_texture`, where the renderer
-    finds them, so the first frame that shows a character does not decode its PNGs on the render thread. Textures
-    given as arrays or :class:`~bifold_demo.scene.Texture` need no decoding. Returns one future per file.
+    finds them, laid out for the upload with their mipmaps (:func:`~bifold_demo.scene.textures.prepare_upload`), so
+    the first frame that shows a character does not decode its PNGs or average its mipmaps on the render thread.
+    Textures given as arrays or :class:`~bifold_demo.scene.Texture` need no decoding. Returns one future per file.
     """
     global _texture_queue
     files = sorted({os.fspath(p.texture) for p in model.primitives if isinstance(p.texture, (str, os.PathLike))
@@ -210,7 +211,7 @@ def _decode_textures(jobs: queue.SimpleQueue) -> None:
         file, job = jobs.get()
         if job.set_running_or_notify_cancel():
             try:
-                job.set_result(as_texture(file))
+                job.set_result(prepare_upload(as_texture(file)))
             except Exception as exc:  # noqa: BLE001 - the renderer raises it again when it draws the character
                 job.set_exception(exc)
 

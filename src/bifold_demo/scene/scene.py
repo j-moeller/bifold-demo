@@ -336,7 +336,9 @@ class SubCamera(Camera):
 
 @dataclass
 class Fog:
-    """Distance haze: surfaces blend towards ``color`` between ``start`` and ``end`` (distance from the camera)."""
+    """Distance haze: surfaces blend towards ``color`` between ``start`` and ``end`` (distance from the camera), in
+    linear light (as light scattered in the air adds up): half of a dark surface and half of a light fog look
+    lighter than the halfway sRGB level."""
 
     start: float = 20.0
     end: float = 100.0
@@ -350,7 +352,8 @@ class Scene:
     Args:
         background: a colour ``(r, g, b)`` or any texture value (image path, ...)
             drawn behind everything, scaled to cover the frame.
-        ambient: light level in shadow (0-1); 1 disables shading.
+        ambient: light level in shadow (0-1) as it looks: a surface in shadow is this fraction as bright, on
+            screen, as in full light (the renderer shades in linear light); 1 disables shading.
         light_direction: direction the light travels in (from the light into the scene).
         light_color: ``(r, g, b)`` colour of the light.
         camera: a :class:`Camera`; a default one is created when omitted.

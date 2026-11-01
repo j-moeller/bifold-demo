@@ -96,7 +96,9 @@ def build_scene(people=None) -> Scene:
         ambient=0.62,
         light_direction=(-0.25, -1.0, -0.35),
         light_color=(255, 250, 240),
-        fog=Fog(start=18, end=95, color=(214, 216, 222), strength=0.55),
+        # the renderer mixes the fog in linear light, which veils dark distant surfaces sooner: 0.2 there looks
+        # like 0.55 did when the mixing was done on sRGB values (the hall's far end within a level on average)
+        fog=Fog(start=18, end=95, color=(214, 216, 222), strength=0.2),
     )
     scene.camera = Camera(position=CAMERA_POSITION, target=CAMERA_TARGET, fov=CAMERA_FOV, near=0.1)
     add_hall(scene)

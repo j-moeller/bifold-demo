@@ -1230,6 +1230,28 @@ result is in each avatar's metadata, `head_maps`). One head, `Male_Adult_04`,
 has a fine skin texture that reads the other way below about 2 texels, while
 its folds read like every other head's; the folds decide.
 
+**Linear light.** Light adds up, and pixels average, in linear light, while
+images hold sRGB-encoded colours; until now the renderer lit, filtered and
+blended the encoded values. Now textures are sRGB textures (the GPU decodes
+a colour when it samples it), their mipmaps are averaged in linear light on
+the CPU (on the thread that decodes a character's textures, and by
+`prepare_upload` for textures made on workers; textures that change, like
+videos, keep the driver's), shading, fog and the blob shadows' blending are
+in linear light, and the picture is an sRGB framebuffer: the GPU encodes what
+the shaders write and averages the MSAA samples of a pixel as light. A fine
+black-and-white pattern seen small is now the grey of half the light (level
+188) instead of 128, and edges are antialiased as a camera's pixels would
+average them; mipmaps of cut-outs (hair cards) are averaged with their
+coverage, so transparent texels no longer darken the edges of hair. Colours
+given to a scene stay sRGB colours, and `ambient` and the blob shadows'
+darkening are given as they look, so surfaces in full light and in shadow
+look as before and only the fall-off between them changes (lighter, as light
+on a curved surface really falls off). Fog veils dark distant surfaces sooner
+when it mixes light: the fair's fog strength went from 0.55 to 0.2, which
+keeps its far end within a level of how it looked (3.2 levels mean absolute
+difference over the whole 1280x720 view at 6 s, the faces practically
+unchanged).
+
 **Older caches** (format 1, without maps) still load and draw as before;
 `bifold-characters list` names them, and `fetch` makes them again with the
 maps (it downloads their files again). To upgrade a library in place:
@@ -1979,6 +2001,11 @@ Scene(background=(28, 30, 36),          # a colour, or an image/video path (fill
       camera=Camera(position=(0, 1.6, 6), target=(0, 1, 0), fov=55),
       fog=Fog(start=20, end=100, color=(200, 200, 200), strength=0.5))  # distance haze, or None
 ```
+
+The renderer shades in linear light (see "High-resolution heads"): colours
+are sRGB colours as usual, `ambient` is the brightness in shadow as it looks
+on screen, and fog mixes light, so a given strength veils dark distant
+surfaces more than it did when sRGB values were mixed.
 
 ## Detection options
 
