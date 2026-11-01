@@ -163,3 +163,36 @@ def test_light_falls_off_in_linear_light_and_shadow_keeps_its_level(gl):
     scene.ambient = 0.2
     scene.light_direction = (0, 0, 1)
     assert abs(int(_render(scene)[45, 80, 1]) - 51) <= 2
+
+
+def test_the_stored_light_model_draws_as_before(gl):
+    """``Renderer.linear = False``: lighting, fog and filtering on the stored sRGB values (the renderer before linear
+    light); switching back uploads the textures again as sRGB textures."""
+    from bifold_demo.scene import Fog
+    from bifold_demo.scene.renderer import Renderer
+
+    rgb = np.zeros((256, 256, 3), np.uint8)
+    rgb[(np.add.outer(np.arange(256), np.arange(256)) % 2) == 0] = 255
+    small = Texture.from_array(rgb, order="rgb")
+    scene = Scene(background=(0, 0, 0), ambient=0.0, light_direction=(0, -np.sin(np.radians(60)),
+                                                                       -np.cos(np.radians(60))))
+    scene.camera = Camera(position=(0, 0, 2), target=(0, 0, 0), fov=60)
+    scene.add(Quad(texture=small, size=0.2, lit=False), name="small")
+    scene.add(Quad(texture="#ffffff", size=0.3, position=(0.6, 0, 0)), name="turned")
+    foggy = Scene(background=(0, 0, 0), fog=Fog(start=1.0, end=5.0, color=(0, 0, 255)))
+    foggy.camera = Camera(position=(0, 0, 0), target=(0, 0, -1))
+    foggy.add(Quad(size=1.0, texture="#ff0000", position=(0, 0, -3), lit=False), name="mid")
+    renderer = Renderer(160, 90, samples=0)
+    try:
+        for linear, half in ((False, 128), (True, 188), (False, 128)):
+            renderer.linear = linear
+            scene.update(0.0, 0.0)
+            image = renderer.render(scene)
+            assert abs(int(image[45, 80, 1]) - half) <= 4, (linear, image[45, 80])  # the small checker
+            x = round(80 + 0.6 / (2 * np.tan(np.radians(30)) * 160 / 90) * 80)  # the turned quad's centre
+            assert abs(int(image[45, x, 1]) - half) <= 4, (linear, image[45, x])  # half the light, 60 degrees off
+            foggy.update(0.0, 0.0)
+            b, _g, r = renderer.render(foggy)[45, 80].tolist()
+            assert abs(r - half) <= 6 and abs(b - half) <= 6
+    finally:
+        renderer.release()

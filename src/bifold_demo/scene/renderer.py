@@ -11,7 +11,9 @@ an sRGB framebuffer: the GPU encodes what the shaders write, and the MSAA sample
 Colours given to the scene (an object's tint, the light, the fog, the background) are sRGB colours as everywhere
 else and are converted; so are the scene's ``ambient`` level and the blob shadows' darkening, which are given as
 they look, so that what lies in shadow looks as dark as it always did and only the light's fall-off between light
-and shadow changes. Data such as normal maps are not decoded (``Texture.srgb``).
+and shadow changes. Data such as normal maps are not decoded (``Texture.srgb``). ``Renderer.linear = False`` draws
+as before instead, on the stored sRGB values (a picture that must not depend on the light model: the avatar renders
+the head-texture pipeline analyses, :func:`bifold_demo.characters.headtex.landmarks.render_views`).
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ import numpy as np
 
 from .frustum import Bounds, boxes_outside, frustum_planes, spheres_outside, world_boxes
 from .scene import Scene, SceneObject, SubCamera
-from .textures import Texture, VideoTexture, as_texture, color_to_linear, upload_levels
+from .textures import Texture, VideoTexture, as_texture, color_to_linear, parse_color, upload_levels
 from .transforms import crop_matrix, gl_bytes
 
 SRGB8_ALPHA8 = 0x8C43  # the internal format of sRGB textures and of the picture's colour buffers
@@ -131,13 +133,14 @@ void main() {
 
 _SHADOW_FS = "#version 330 core\n" + _FOG + """
 uniform float u_strength;
+uniform float u_shadow_gamma;  // 2.2 in linear light, 1 on stored values (Renderer.linear)
 in vec2 v_offset;
 in float v_depth;
 out vec4 f_color;
 void main() {
     float falloff = 1.0 - min(dot(v_offset, v_offset), 1.0);
     float darken = u_strength * falloff * falloff * (1.0 - fog_amount(v_depth));  // as it looks
-    f_color = vec4(0.0, 0.0, 0.0, 1.0 - pow(1.0 - darken, 2.2));  // blended in linear light
+    f_color = vec4(0.0, 0.0, 0.0, 1.0 - pow(1.0 - darken, u_shadow_gamma));
 }
 """
 
@@ -212,10 +215,15 @@ class Renderer:
     :meth:`render_window` draws a rectangle of the same picture at another pixel scale (a window of a virtual
     high-resolution sensor, see :mod:`bifold_demo.sensor`), reusing what :meth:`render` uploaded.
 
+    :attr:`linear` (True): shade, filter and blend in linear light (see the module docs); False: on the stored sRGB
+    values, as the renderer did before (textures uploaded again when it changes).
+
     The OpenGL context belongs to the thread that created the renderer; call
     :meth:`render` from that thread only. Every public method makes the renderer's own context current (with several
     renderers in one thread, the one made last is current otherwise).
     """
+
+    linear = True  # the light model: linear light (False: the stored sRGB values, as before)
 
     def __init__(self, width: int = 1280, height: int = 720, samples: int = 4):
         import moderngl
@@ -391,6 +399,8 @@ class Renderer:
         (``None``: the whole view); ``cull``: leave out what lies outside the frustum; ``window``: a window of the
         frame drawn last (its joint palettes are on the GPU already)."""
         ctx = self.ctx
+        if not self.linear:  # the stored values as they are: nothing is encoded
+            return self._draw_scene_srgb(scene, target, size, view_proj, aspect, ndc, cull, window)
         ctx.enable_direct(FRAMEBUFFER_SRGB)  # encode what is drawn: shading and blending happen in linear light
         try:
             return self._draw_scene_srgb(scene, target, size, view_proj, aspect, ndc, cull, window)
@@ -409,7 +419,7 @@ class Renderer:
             background = background(scene.time)
         bg_texture = None
         if isinstance(background, (tuple, list)) or (isinstance(background, str) and background.startswith("#")):
-            r, g, b = color_to_linear(background)  # a clear is encoded like a drawing
+            r, g, b = self._colour(background)  # a clear is encoded like a drawing
             fbo.clear(b, g, r, 1.0, viewport=viewport)
         else:
             bg_texture = as_texture(background)
@@ -431,7 +441,7 @@ class Renderer:
         ctx.enable(self._moderngl.DEPTH_TEST)
         ctx.disable(self._moderngl.CULL_FACE)
         eye = scene.camera.current_position
-        uniforms = _scene_uniforms(scene)
+        uniforms = _scene_uniforms(scene, self.linear)
         _set_uniforms(self._program, uniforms)
 
         objects, characters = [], []
@@ -509,7 +519,7 @@ class Renderer:
         u = self._uniforms
         u["u_mvp"].write(gl_bytes(view_proj @ model))
         u["u_normal_matrix"].write(gl_bytes(normal_matrix))
-        u["u_color"].value = color_to_linear(obj.current_color)
+        u["u_color"].value = self._colour(obj.current_color)
         u["u_lit"].value = bool(obj.lit)
         self._gl_texture(obj.current_texture or self._white).use(0)
         self._vao(obj.mesh).render(self._moderngl.TRIANGLES)
@@ -545,7 +555,7 @@ class Renderer:
             model, normal_matrix = obj.matrices(camera_position)
             u["u_mvp"].write(gl_bytes(view_proj @ model))
             u["u_normal_matrix"].write(gl_bytes(normal_matrix))
-            u["u_color"].value = color_to_linear(obj.current_color)
+            u["u_color"].value = self._colour(obj.current_color)
             u["u_lit"].value = bool(obj.lit)
             self._joint_texture(obj, reuse).use(1)
             overrides = getattr(obj, "texture_overrides", None)
@@ -690,7 +700,15 @@ class Renderer:
 
     def _uploaded(self, texture: Texture) -> bool:
         entry = self._textures.get(texture.id)
-        return entry is not None and entry[2] == texture.version and entry[3]
+        return entry is not None and entry[2] == texture.version and entry[3] \
+            and entry[4] == (bool(texture.srgb) and self.linear)
+
+    def _colour(self, color) -> tuple[float, float, float]:
+        """A colour (sRGB, as scenes give them) for the shaders: in linear light, or as stored (:attr:`linear`)."""
+        if self.linear:
+            return color_to_linear(color)
+        r, g, b = parse_color(color)
+        return r / 255.0, g / 255.0, b / 255.0
 
     def _probe_programs(self):
         if self._probes is None:
@@ -815,7 +833,7 @@ class Renderer:
         """``texture`` on the GPU (uploaded when new or changed), with its mipmaps unless ``mipmaps`` is False (then
         they are built the next time it is asked for with them)."""
         entry = self._textures.get(texture.id)
-        if entry is not None and entry[2] == texture.version:
+        if entry is not None and entry[2] == texture.version and entry[4] == (bool(texture.srgb) and self.linear):
             if mipmaps and not entry[3]:
                 self._build_mipmaps(entry)
             return entry[1]
@@ -824,7 +842,7 @@ class Renderer:
             pixels = prepared[1]
         else:
             pixels = np.ascontiguousarray(np.flipud(texture.rgba)).tobytes()  # first row = bottom for OpenGL
-        size, srgb = (texture.width, texture.height), bool(texture.srgb)
+        size, srgb = (texture.width, texture.height), bool(texture.srgb) and self.linear
         if entry is not None and entry[1].size == size and entry[4] == srgb:
             gl_tex = entry[1]
             gl_tex.write(pixels)
@@ -854,7 +872,8 @@ class Renderer:
             texture = entry[0]()
             prepared = texture.__dict__.get("_upload") if texture is not None else None
             current = prepared is not None and prepared[0] == entry[2] and prepared[2] is not None
-            if texture is not None and texture.version == entry[2] and (current or not _changes(texture)):
+            if texture is not None and texture.version == entry[2] and (current or not _changes(texture)) \
+                    and self.linear:  # (on stored values the driver's, as before)
                 for level, pixels in enumerate(upload_levels(texture), start=1):
                     gl_tex.write(pixels, level=level)
             gl_tex.filter = (self._moderngl.LINEAR_MIPMAP_LINEAR, self._moderngl.LINEAR)
@@ -944,19 +963,25 @@ class Renderer:
         self._last_window = None
 
 
-def _scene_uniforms(scene: Scene) -> dict:
-    """Light and fog uniform values shared by every surface program, in linear light (see the module docs)."""
+def _scene_uniforms(scene: Scene, linear: bool = True) -> dict:
+    """Light and fog uniform values shared by every surface program, in linear light (see the module docs), or as
+    stored (``linear`` False: the renderer's values before linear light)."""
     light = np.asarray(scene.light_direction, dtype=np.float64)
     light = light / max(np.linalg.norm(light), 1e-9)
     fog = scene.fog
+
+    def colour(c):
+        return color_to_linear(c) if linear else tuple(v / 255.0 for v in parse_color(c))
+
     values = {
         "u_light_dir": tuple(light),
-        "u_light_color": color_to_linear(scene.light_color),
-        "u_ambient": ambient_light(scene.ambient),
+        "u_light_color": colour(scene.light_color),
+        "u_ambient": ambient_light(scene.ambient) if linear else float(np.clip(scene.ambient, 0.0, 1.0)),
         "u_fog_strength": float(np.clip(fog.strength, 0.0, 1.0)) if fog else 0.0,
+        "u_shadow_gamma": 2.2 if linear else 1.0,
     }
     if fog:
-        values["u_fog_color"] = color_to_linear(fog.color)
+        values["u_fog_color"] = colour(fog.color)
         values["u_fog_start"] = float(fog.start)
         values["u_fog_end"] = float(fog.end)
     return values

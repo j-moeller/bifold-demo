@@ -1,4 +1,5 @@
-"""Head textures from photos, stages 0 and 1, on synthetic data (no MediaPipe, no OpenGL, no avatars needed).
+"""Head textures from photos, stages 0 and 1, on synthetic data (no MediaPipe, no avatars needed; OpenGL only for the
+renders the stages analyse).
 
 A synthetic head (a sphere with a nose and the Rocketbox face bones) stands in for an avatar, a fake renderer and a
 fake Face Landmarker for MediaPipe: the "landmarker" knows the 478 true landmark points on the head and projects them
@@ -26,6 +27,7 @@ from bifold_demo.characters.headtex.warp import ThinPlateWarp
 from bifold_demo.characters.model import CharacterModel, Skeleton, SkinnedPrimitive
 
 CENTRE = np.array([0.0, 1.6, 0.0])  # the synthetic head's centre
+RENDER_VIEWS = stage0.render_views  # (the unit tests replace it by a refusal: see ``isolated``)
 RADIUS = 0.09
 
 
@@ -444,6 +446,46 @@ def test_landmarks_without_a_face_on_the_renders_fall_back_to_the_canonical_face
     for iris, eye in ((cf.RIGHT_IRIS, frame.eyes[0]), (cf.LEFT_IRIS, frame.eyes[1])):
         centre = fallback.points[iris[0]]
         assert np.linalg.norm(centre[:2] - eye[:2]) < 0.002 and centre[2] > eye[2]  # in front of the eye bone
+
+
+def test_the_renders_the_stages_analyse_do_not_depend_on_the_light_model(gl):
+    """Stage 0's landmarks and the head's regions are found on renders of the avatar, and registration magnifies
+    small changes in them: they are drawn on the stored texture values whatever the renderer's light model (a fine
+    checker seen small is the 128 of averaged values, not the 188 of half the light), and the renderer keeps its own
+    setting."""
+    from bifold_demo.scene.renderer import Renderer
+
+    model = synthetic_head_model()
+    checker = np.zeros((256, 256, 4), np.uint8)
+    checker[..., 3] = 255
+    checker[(np.add.outer(np.arange(256), np.arange(256)) % 2) == 0, :3] = 255
+    model.primitives[0].texture = checker
+    cameras = [PhotoCamera.around(CENTRE, 0.6, yaw, 0.0, fov=30.0, size=(96, 96)) for yaw in (0.0, 30.0)]
+    renderer = Renderer(96, 96)
+    try:
+        linear = RENDER_VIEWS(model, cameras, renderer)
+        assert renderer.linear
+        renderer.linear = False
+        stored = RENDER_VIEWS(model, cameras, renderer)
+        assert not renderer.linear
+        renderer.linear = True
+        lit_like_the_fair = renderer.render(_scene_of(model, cameras[0]))
+    finally:
+        renderer.release()
+    assert all(np.array_equal(a, b) for a, b in zip(linear, stored))
+    assert abs(linear[0][40:56, 40:56].astype(float).mean() - 128) < 10
+    assert abs(lit_like_the_fair[40:56, 40:56].astype(float).mean() - 188) < 10  # the renderer's own light model
+
+
+def _scene_of(model, camera):
+    from bifold_demo.characters.character import Character
+    from bifold_demo.scene import Scene
+
+    scene = Scene(background=(128, 128, 128), ambient=1.0)
+    scene.add(Character(model, name="avatar", shadow=False))
+    scene.update(0.0, 0.0)
+    scene.camera = camera.scene_camera()
+    return scene
 
 
 def test_a_head_without_face_bones_has_no_landmarks():

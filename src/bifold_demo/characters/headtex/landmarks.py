@@ -163,7 +163,13 @@ def views(frame: FaceFrame, size: int = RENDER_SIZE) -> list[PhotoCamera]:
 
 
 def render_views(model, cameras, renderer=None) -> list[np.ndarray]:
-    """``model`` in its bind pose with its own textures, unlit, seen by ``cameras`` (BGR images; needs OpenGL)."""
+    """``model`` in its bind pose with its own textures, unlit, seen by ``cameras`` (BGR images; needs OpenGL).
+
+    These renders are what the landmarks (stage 0) and the head's regions (:func:`.register.head_regions`) are found
+    on, and registration magnifies small changes in them (a tenth of a millimetre on the landmarks moved the quality
+    of a small photo by a tenth), so they must not change with how the renderer draws the fair: they are drawn on the
+    textures' stored values (``Renderer.linear = False``, as before the renderer went to linear light) whatever the
+    renderer's own setting, which is kept."""
     from ...scene import Scene
     from ...scene.renderer import Renderer
     from ..character import Character
@@ -171,6 +177,7 @@ def render_views(model, cameras, renderer=None) -> list[np.ndarray]:
     size = cameras[0].size
     own = renderer is None
     renderer = renderer or Renderer(*size)
+    linear, renderer.linear = renderer.linear, False
     try:
         scene = Scene(background=(128, 128, 128), ambient=1.0)
         scene.add(Character(model, name="avatar", shadow=False))
@@ -181,6 +188,7 @@ def render_views(model, cameras, renderer=None) -> list[np.ndarray]:
             images.append(renderer.render(scene))
         return images
     finally:
+        renderer.linear = linear
         if own:
             renderer.release()
 

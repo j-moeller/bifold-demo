@@ -1364,7 +1364,15 @@ on a curved surface really falls off). Fog veils dark distant surfaces sooner
 when it mixes light: the fair's fog strength went from 0.55 to 0.2, which
 keeps its far end within a level of how it looked (3.2 levels mean absolute
 difference over the whole 1280x720 view at 6 s, the faces practically
-unchanged).
+unchanged). `renderer.linear = False` draws on the stored sRGB values, as
+before. The head-texture pipeline draws its own renders of an avatar that
+way, whatever the renderer's setting (`landmarks.render_views`: stage 0's
+landmarks and the head's regions are found on them): registration magnifies
+small changes in them. With linear light they moved the landmarks by a tenth
+of a millimetre (the median), which shifted the camera fitted to a small
+photo enough to lower its quality by a tenth and the share of its face texels
+worth refining from 0.13 to 0.08; drawn on the stored values they are the same
+as before to the bit.
 
 **Older caches** (format 1, without maps) still load and draw as before;
 `bifold-characters list` names them, and `fetch` makes them again with the
