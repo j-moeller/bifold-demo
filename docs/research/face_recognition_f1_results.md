@@ -89,9 +89,9 @@ tail); on SFace's full 3,000 non-mated pairs that gives 0.370 against 0.347 coun
 
 | Model | Accuracy (subset) | Published (with flip) | d' | EER | Mated / non-mated mean | Non-mated sd | FMR 1e-3 threshold |
 |---|---|---|---|---|---|---|---|
-| SFace | 99.47 % +- 0.65 (all pairs: 99.60 %; with flip 99.65 %) | 99.60 (OpenCV Zoo) | 5.7 | 0.67 % | 0.67 / 0.10 | 0.088 | 0.37 (counted on all pairs: 0.35) |
-| `buffalo_l` ResNet-50 | 99.87 % +- 0.27 | 99.83 | 7.8 | 0.27 % | 0.66 / 0.01 | 0.057 | 0.18 |
-| AdaFace IR-101 (WebFace12M) | 99.87 % +- 0.27 | 99.82 | 8.2 | 0.27 % | 0.68 / 0.00 | 0.055 | 0.18 |
+| SFace | 99.47 % +- 0.65 (all pairs: 99.60 %; with flip 99.65 %) | 99.60 (OpenCV Zoo) | 5.7 | 0.67 % | 0.67 / 0.10 | 0.088 | 0.374 (all pairs: 0.370; counted 0.347) |
+| `buffalo_l` ResNet-50 | 99.87 % +- 0.27 | 99.83 | 7.8 | 0.27 % | 0.66 / 0.01 | 0.057 | 0.184 |
+| AdaFace IR-101 (WebFace12M) | 99.87 % +- 0.27 | 99.82 | 8.2 | 0.27 % | 0.68 / 0.00 | 0.055 | 0.175 |
 
 **The AdaFace export reproduces the published accuracy** within what 1,500 pairs can tell (2 errors in 1,500, the
 same as the ResNet-50; the published 99.82 % is about 1 in 550), and it separates mated from non-mated pairs best
