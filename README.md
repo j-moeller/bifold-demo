@@ -910,8 +910,24 @@ crop is black where it reaches beyond the picture (as in training), the share
 of it that does is a quality signal, and faces much bigger than the crop are
 shrunk with area averaging first so that they do not alias.
 
-The demo itself still uses YuNet and SFace as described above; the embedders,
-quality measures and gallery of the new core follow in the next steps.
+**Embedders and quality**
+([`embed.py`](src/bifold_demo/recognition/embed.py),
+[`quality.py`](src/bifold_demo/recognition/quality.py)). Every embedder takes
+a batch of aligned crops and gives unit embeddings and their raw lengths, in
+each model's own colour order and normalisation, in batches of 8 and then
+single crops. The AdaFace export normalises its embedding inside its graph,
+which would lose AdaFace's quality signal (the embedding's length, which its
+loss ties to how recognisable a face is); the length is read out of the graph
+as an extra output instead. Each face gets one quality record: the eye
+distance; yaw, pitch and roll from a 3D fit of the five landmarks (calibrated
+on 1620 avatar renders at known angles: with SCRFD's landmarks the yaw comes
+back within 2° with a spread of 2-4°, the pose bin — frontal, left, right,
+profile — in 98.6 % of the renders; YuNet's landmarks give 84 %); sharpness,
+brightness, contrast and clipping on the aligned face; the share of the crop
+beyond the picture; eDifFIQA-T's score; and AdaFace's norm.
+
+The demo itself still uses YuNet and SFace as described above; the engine built
+from a profile and the gallery of the new core follow in the next steps.
 
 ### Known faces on the 3D people
 
@@ -1882,6 +1898,7 @@ src/bifold_demo/
                recognizer.py (faces over frames), cast.py (known faces on 3D people),
                registry.py (face models and profiles), runtime.py (ONNX Runtime),
                detect.py (SCRFD, YuNet), align.py (the five-point template),
+               embed.py (embedders), quality.py (a quality record per face),
                models.py, cli.py (bifold-faces)                          ← face recognition
   sensor/      geometry.py (a declared high-resolution sensor, its windows and
                pixel maps), requests.py (requests, head regions, the scheduler),
