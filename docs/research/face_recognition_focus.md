@@ -88,3 +88,9 @@ branch and pushed; its results go into the progress log.
 - **1 November:** focus changed; licence and head-mesh decisions taken; both reviews started; onnxruntime 1.31.1
   installed in the build environment.
 - **1 November, about 15:00 UTC:** both reviews finished and committed; the steps above settled; F1 and S1 start.
+- **1 November, 15:15 UTC:** first pieces on the branch.
+  - F1: the model registry, the profiles, checked zip-pack downloads, ONNX Runtime; the SCRFD and YuNet
+    detectors; ArcFace five-point alignment.
+  - S1: windows that are exact crops of a high-resolution sensor; culling; window requests and results with
+    the frames.
+  - The tests of the new and touched modules: 169 passed, 3 skipped.
