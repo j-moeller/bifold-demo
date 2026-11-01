@@ -362,6 +362,8 @@ def test_the_demo_shows_the_windows_of_the_people_it_finds(gl, tmp_path, monkeyp
     column = canvas[:, -round(0.2 * VIEW[0]) - 4:]  # the windows' column on the right
     assert not np.array_equal(column, later[-1].image[:, -column.shape[1]:])
     assert any(line.startswith("windows: 1 of 2 asked") for line in app._status_lines(later[-1], None))
+    app._request_windows(later[-1], None)  # no current detections (detection off, too old): no windows
+    assert app.window_service.requests == []
     window = type("W", (), {"toggle_fullscreen": lambda self: None})()
     app._handle_key(ord("w"), window)
     assert not app.windows_on and app.scene_source.windows is None and app.window_service.requests == []
@@ -374,6 +376,22 @@ def test_the_demo_shows_the_windows_of_the_people_it_finds(gl, tmp_path, monkeyp
         (True, 2, (5120, 2880), "budget 1080p", (1920, 1080))
     with pytest.raises(SystemExit):
         parse_args(["--camera-preset", "vhs"])
+
+
+def test_the_windows_column_fits_any_number_of_windows():
+    from bifold_demo.display.sensor_view import draw_windows
+    from bifold_demo.sensor import WindowResult
+
+    sensor = Sensor.scaled(4, VIEW)
+    results = []
+    for k in range(30):
+        window = sensor.window((5 * k, 20, 5 * k + 20, 60), 1)
+        image = np.full((window.height, window.width, 3), 40 + 6 * k, np.uint8)
+        results.append(WindowResult(WindowRequest(k, region=(0, 0, 1, 1)), window, image, 0.0, 1, eye_distance=12.0))
+    canvas = np.zeros((VIEW[1], VIEW[0], 3), np.uint8)
+    draw_windows(canvas, results)  # more windows than the column holds: the places are all marked
+    assert canvas[:, -round(0.2 * VIEW[0]):].any() and canvas[:, :100].any()
+    draw_windows(canvas, [])
 
 
 _SCENE_FILE = '''

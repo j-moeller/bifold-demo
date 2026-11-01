@@ -136,11 +136,11 @@ class Sensor:
         return Window(self, level, left, top, width, height)
 
     def plan(self, region, ied: float | None = None, face_px: float | None = None, max_pixels: int | None = None,
-             multiple: int = 1) -> Window:
+             multiple: int = 1, max_side: int | None = None) -> Window:
         """The window for ``region`` (view pixels): at the coarsest level at which a face with ``ied`` view pixels
         between the eyes still has ``face_px`` (at level 1 when no level gets there, or when ``ied`` or ``face_px`` is
-        not given), then coarser while it has more than ``max_pixels`` pixels. The face then has ``ied *
-        window.scale`` pixels between the eyes."""
+        not given), then coarser while it has more than ``max_pixels`` pixels or a side longer than ``max_side`` (what
+        a renderer can draw). The face then has ``ied * window.scale`` pixels between the eyes."""
         levels = self.levels
         start = 0
         if ied is not None and ied > 0 and face_px is not None and face_px > 0:
@@ -149,7 +149,8 @@ class Sensor:
         window = None
         for k in levels[start:]:
             window = self.window(region, k, multiple)
-            if max_pixels is None or window.pixels <= max_pixels:
+            if (max_pixels is None or window.pixels <= max_pixels) and \
+                    (max_side is None or max(window.size) <= max_side):
                 break
         return window
 

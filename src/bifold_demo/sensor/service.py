@@ -113,9 +113,10 @@ class WindowResult:
 
 
 def plan_request(request: WindowRequest, sensor: Sensor, camera=None, head: HeadRegion | None = None,
-                 multiple: int = 1) -> tuple[Window, float | None] | None:
+                 multiple: int = 1, max_side: int | None = None) -> tuple[Window, float | None] | None:
     """``(window, eye distance in window pixels or None)`` for ``request`` on ``sensor``, or ``None`` when nothing of
-    its region is in the view (or its head point is behind the camera). ``camera``: the scene's, for head points."""
+    its region is in the view (or its head point is behind the camera). ``camera``: the scene's, for head points;
+    ``max_side``: the longest side a window may have (a renderer's limit)."""
     head = head or HeadRegion()
     view = sensor.view
     if request.head is not None:
@@ -134,7 +135,7 @@ def plan_request(request: WindowRequest, sensor: Sensor, camera=None, head: Head
     x0, y0, x1, y1 = region
     if x1 <= 0 or y1 <= 0 or x0 >= view[0] or y0 >= view[1]:
         return None
-    window = sensor.plan(region, eyes, request.face_px, request.max_pixels, multiple)
+    window = sensor.plan(region, eyes, request.face_px, request.max_pixels, multiple, max_side)
     return window, (eyes * window.scale if eyes else None)
 
 
@@ -308,7 +309,7 @@ def render_windows(scene, renderer, requests: Iterable[WindowRequest], sensor: S
         if chosen.view != view:
             raise ValueError(f"a sensor for a {chosen.view[0]}x{chosen.view[1]} view cannot make windows of a "
                              f"{view[0]}x{view[1]} renderer's view")
-        planned = plan_request(request, chosen, scene.camera, head, multiple)
+        planned = plan_request(request, chosen, scene.camera, head, multiple, renderer.max_window)
         if planned is None:
             continue
         window, eyes = planned
@@ -340,9 +341,10 @@ def crop_windows(image: np.ndarray, view, requests: Iterable[WindowRequest], sen
                  frame: int = 0, head: HeadRegion | None = None, multiple: int = MULTIPLE,
                  preset="ideal") -> list[WindowResult]:
     """Windows cut from a real camera's full-resolution ``image`` (BGR), of which the detector sees a copy of
-    ``view`` = (width, height) pixels: the image is the sensor (``sensor`` must match it), and a window at level
-    ``k`` is its crop averaged over ``k x k`` pixels. Requests with head points are left out (a real camera knows no
-    scene). ``preset`` adds a camera's faults on top of the real camera's own (its sensor size is not used)."""
+    ``view`` = (width, height) pixels: the image is the sensor (``sensor`` must match it; a request's own sensor is
+    not used), and a window at level ``k`` is its crop averaged over ``k x k`` pixels. Requests with head points are
+    left out (a real camera knows no scene). ``preset`` adds a camera's faults on top of the real camera's own (its
+    sensor size is not used)."""
     h, w = image.shape[:2]
     sensor = sensor or Sensor(w, h, view)
     if sensor.size != (w, h):
@@ -352,7 +354,7 @@ def crop_windows(image: np.ndarray, view, requests: Iterable[WindowRequest], sen
         if request.head is not None:
             continue
         model = camera_preset(request.preset if request.preset is not None else preset)
-        planned = plan_request(request, request.sensor or sensor, None, head, multiple)
+        planned = plan_request(request, sensor, None, head, multiple)
         if planned is None:
             continue
         window, eyes = planned

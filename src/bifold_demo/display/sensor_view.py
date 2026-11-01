@@ -67,15 +67,17 @@ def draw_windows(image: np.ndarray, windows, from_size: tuple[int, int] | None =
     thickness, font_scale, text_thickness = max(1, round(1.5 * s)), 0.45 * s, max(1, round(1.1 * s))
     gap = max(4, round(8 * s))
     side_w = round(INSET_SHARE * w)
-    side_h = (h - gap * (len(windows) + 1)) // len(windows)
+    side_h = max(8, (h - gap * (len(windows) + 1)) // len(windows))
     y = gap
     for result in windows:
         colour = _colour(result.tag)
         x0, y0, x1, y1 = result.view_rect
         cv2.rectangle(image, (round(x0 * sx), round(y0 * sy)), (round(x1 * sx), round(y1 * sy)), colour, thickness,
                       cv2.LINE_AA)
+        if y + 8 > h - gap:  # no room left in the column: the place is marked, the picture left out
+            continue
         thumb = result.image
-        scale = min(side_w / thumb.shape[1], side_h / thumb.shape[0])
+        scale = min(side_w / thumb.shape[1], min(side_h, h - gap - y) / thumb.shape[0])
         tw, th = max(1, round(thumb.shape[1] * scale)), max(1, round(thumb.shape[0] * scale))
         interpolation = cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR
         thumb = cv2.resize(thumb, (tw, th), interpolation=interpolation)

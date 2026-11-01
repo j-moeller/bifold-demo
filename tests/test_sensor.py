@@ -87,6 +87,9 @@ def test_the_plan_picks_the_coarsest_level_that_still_gives_the_face_its_pixels(
     assert limited.level == 2 and limited.pixels <= 300 * 300
     assert sensor.plan(region).level == 1  # nothing asked: the finest
     assert sensor.plan(region, max_pixels=100 * 100).pixels <= 100 * 100
+    huge = Sensor.scaled(24, (1280, 720))  # 30720 x 17280: the whole view is wider than a renderer can draw
+    whole = huge.plan((0, 0, 1280, 720), max_side=16384)
+    assert whole.level == 2 and max(whole.size) <= 16384 and huge.plan((0, 0, 1280, 720)).level == 1
 
 
 def test_pixels_map_between_view_sensor_and_window_both_ways():

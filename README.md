@@ -1078,9 +1078,11 @@ tracker's own order (`waited`: frames since the tag's last window).
 `render_windows(scene, renderer, requests, sensor)` renders windows directly,
 for the evaluation; there a request can name its `subject` and its own
 `sensor`. With a scene, each window also carries the `truth`: who the scene
-knows is in it, where their eye bones are in the window, the distance and
-their speed in window pixels a second. It is for evaluation only; recognition
-must not use it.
+knows is in it (the person the window was placed on, not a small face behind
+them), where their eye bones are in the window, the face's frontal eye
+distance (its size whatever its turn), the distance, their speed in window
+pixels a second and, with `visibility=True`, whether their eyes are hidden
+behind someone. It is for evaluation only; recognition must not use it.
 
 **A real camera** has no virtual sensor, but the same requests work on it:
 `WebcamSource(capture=(3840, 2160), windows=service)` captures at the higher

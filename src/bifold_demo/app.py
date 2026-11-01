@@ -279,8 +279,10 @@ class DemoApp:
         return f"windows on: up to {cfg.max_windows} a frame, {sensor} sensor, {preset.name} camera{need}"
 
     def _request_windows(self, frame: Frame, result: DetectionResult | None) -> None:
-        """Ask for windows on the heads of the people in ``result`` (the latest detections of ``frame``'s source)."""
+        """Ask for windows on the heads of the people in ``result`` (the latest detections of ``frame``'s source); none
+        without current detections (detection off, none yet for this source, or too old)."""
         if result is None or result.source != frame.source:
+            self.window_service.request([])
             return
         from .sensor import WindowRequest
 
