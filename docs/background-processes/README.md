@@ -28,6 +28,9 @@ Nothing here is an instruction for the code; the module docstrings and the READM
 | B: character creator | B0 literature review | on the branch (`e494da2`) | [docs/research/outfit_textures.md](../research/outfit_textures.md) |
 | B | **B1 garment regions, fills, patterns, presets** (stages 0-1) | reviewed, fixed, **on the branch** (`b2adef8`, `dc46e51`, `2c75ec0`) | [B1-outfit-regions-and-fills.md](B1-outfit-regions-and-fills.md) |
 | B | **B2 a fabric from a description** (stage 2) | built, reviewed, fixed and **on the branch** (`79de578`, `1d839e6`, `21d792d`) | [B2-fabric-from-a-description.md](B2-fabric-from-a-description.md) |
+| A | **A5-A7 completion, body and hair matched, identity check, used in the fair** (stages 5-7) | lean, **on the branch** (`9a7d640`); its face hook in the creator (`2b89d0c`) | README "Head textures from photos" |
+| B | **B4 the character creator screen** (`C` in the demo) | lean, **on the branch** (`38b25a6`) | README "Character creator", `docs/previews/creator.jpg` |
+| B | B3 prints, decals, restyling the whole outfit | skipped (an extension; B2 covers text to texture) | |
 | C: saved characters in the scene | C1 the saved format and the book | on the branch (`5054840`) | `src/bifold_demo/characters/created.py` |
 | C | **C2 created characters take over places in the fair** | built, reviewed, fixed twice and **on the branch** (`c7475c4` ... `e16477f`) | [C2-created-characters-in-the-fair.md](C2-created-characters-in-the-fair.md) |
 
@@ -62,21 +65,20 @@ to this container too.
 
 ## What comes next
 
-- **A:**
-  - A4: finish it (real-avatar tests, docs, preview, clean commits), then review, fix and integrate;
-  - A5: generative completion of what no photo shows, and photo normalisation, behind an interface with
-    deterministic fallbacks (stage 5);
-  - A6: match the body's skin to the face (using B1's skin mask), level the neck seam, recolour hair and eyes, and
-    check the identity (stages 6-7);
-  - A7: the gallery, the fair's cast, the CLI and the docs.
-- **B:**
-  - B2: finish the fix (tests for F7-F10, the full suite, commits), then integrate;
-  - B3: prints, decals and restyling the whole outfit;
-  - B4: the character creator screen in the app (a turning preview, region tabs, colour and pattern chips, a text box
-    for fabrics, presets, save).
-- **C:**
-  - C2: finish the recheck, decide on its three small findings, integrate;
-  - C3: docs, CLI and previews.
+The three tasks are done to the bar the user set (a testing bed, not the demonstration). Open points, if the work goes
+on:
+
+- **Generative stages are untested with real models.** No Hugging Face access here, so FLUX.2-klein was tested only
+  with stand-in pipelines:
+  - B2's fabric swatches with latent rolling;
+  - A5's completion of unseen head texels.
+
+  Real seams, rejection rates, quality and Mac timings are unknown. On a texture atlas, A5 may need the research
+  doc's render-and-back-project approach.
+- **Heavy work shares the GIL with the render loop.** The head-texture pipeline and avatar preparation run on worker
+  threads; beside an unpaced render loop they starve. A separate process would be more robust.
+- **Optional:** B3 (prints, decals, restyling the whole outfit), and polishing the creator screen (ASCII-only text,
+  a held sign cut off on the turntable).
 
 ## How the work was run, and how it goes on
 
@@ -172,3 +174,14 @@ multi-checker rounds.
   - B4, the character creator screen: brief `briefs/B4_creator.md`;
   - A5-A7: completion of unseen texels, body skin matched to the face, identity check, the new head textures used by
     FaceCast and the creator. Brief `briefs/A567_finish.md`.
+
+**1 November, about 12:20 UTC.** B4 (the character creator) and A5-A7 (the last head-texture stages, FaceCast and the
+creator's face hook) are on the branch.
+
+- **The creator's own checks:** 148 creator, created, created-cast and selection tests passed on the branch.
+- **A5-A7's checks,** in its worktree on the same commits: 266 tests of the touched modules passed.
+- **Measured A5-A7,** on two avatars wearing another avatar's fake photos:
+  - face against hands: ΔE 7.0-7.5 before stage 6, 0.2-0.3 after;
+  - across the neck seam: 3.4-6.0 before, 1.2-2.1 after.
+
+All three tasks are done.
