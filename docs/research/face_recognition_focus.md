@@ -25,47 +25,66 @@ texture and mesh".
 | Renderer | Forward shading with MSAA; no normal maps |
 | Faces from photos | `characters/headtex/`: textures only, at 1024; the avatar's head shape is kept |
 
-## Research (running)
-
-Two literature reviews, each with a concrete recommendation for this code base, written in the style of the earlier
-ones. They will be committed here as they grow.
+## Research (done)
 
 1. **[face_recognition_sota.md](face_recognition_sota.md): state-of-the-art face recognition for a camera system.**
-   - Covers face detection, alignment, quality assessment, the recognition models (losses, backbones, training sets,
-     benchmarks), low resolution, tracking and aggregation over video, open-set identification and calibration, and
-     evaluation.
-   - Recommends both profiles, with where each model can be fetched (GitHub, GCS or PyPI; no Hugging Face in the
-     build environment) and in which form (ONNX, safetensors, MediaPipe bundles; no pickled or TorchScript files).
+   - **The shape:** person first, face second, and a decision per person track. That decision has three states: a
+     name, "unknown" or "not decided yet". It is calibrated per model and per face size against one target
+     false-alarm rate (FPIR) that means the same in every profile.
+   - **Profiles behind one switch** (`--face-profile`, `BIFOLD_FACE_PROFILE`):
+
+     | | Face detector | Recogniser | Quality |
+     |---|---|---|---|
+     | **best** (research-only weights) | SCRFD-10G | AdaFace IR-101 (WebFace12M; a community ONNX, to be checked first) | eDifFIQA-T plus geometry |
+     | **licensed** | SCRFD-10G | InsightFace `buffalo_l` ResNet-50, under a licence bought from InsightFace | eDifFIQA-T plus geometry |
+     | **commercial** | YuNet | AuraFace-v1 (Apache-2.0; on Hugging Face, so fetched on the Mac), else SFace as now | geometry |
+
+   - **The gap:** faces in today's 720p view have 10-22 px between the eyes, against the 90 px the standards ask of
+     reference photos. "The high-resolution head view is the biggest lever"; no model change does as much.
+   - **What stays out of the identity path:** super-resolution and frontalisation.
+   - **Evaluation:**
+     - every model is checked first: files, inputs and outputs, colour order, published accuracy;
+     - the metrics: ROC and TAR at FAR, open-set FNIR at FPIR, and track-level measures;
+     - protocols on rendered stills and video, real photos and webcam recordings;
+     - an acceptance test for the best profile: at least 95 % of enrolled people's tracks named correctly within 2 s,
+       at 1 % FPIR per track.
 2. **[high_res_faces.md](high_res_faces.md): high-resolution faces in the rendered crowd.**
-   - How many pixels recognition needs, and a "virtual high-resolution sensor" that renders a detected person's head
-     at high resolution through a sub-frustum of the same camera.
-   - Textures at 2048 and above, with normal maps and detail.
-   - Subdividing the skinned head mesh.
-   - Fitting the head's shape to a person's photos: multi-view landmarks, 3D morphable models and their licences, or
-     deforming the avatar's own head, and transferring the shape while keeping UVs, skinning and bones.
-   - Shading that matters to recognisers, and how to evaluate it all.
+   - **A virtual high-resolution sensor.** For each detected person, a window around the head is rendered through an
+     off-axis sub-frustum of the same camera, exactly a crop of a declared high-resolution sensor. Then camera faults
+     are added: blur, noise, demosaicing and JPEG.
+     - Measured on llvmpipe: 11-23 ms per window, against 180-195 ms for the whole 720p view.
+     - It matches a crop of a 5120x2880 render at 54-65 dB PSNR.
+   - **Heads at 2048** with their Rocketbox normal and specular maps (every avatar has them), in linear light.
+   - **The shape fit:**
+     - the identity space of ICT-FaceKit (MIT, plain OBJ files on GitHub) is moved onto each Rocketbox head;
+     - each person is fitted across all their photos at once, from MediaPipe landmarks, the irises for scale and the
+       head outlines, with a small free-form correction;
+     - the fitted shape goes onto the avatar keeping its topology, UVs, skin weights and rig (eyes and teeth moved,
+       bones recomputed);
+     - it is stored as a `shape.npz` of about 30 KB.
 
-## Planned steps (a draft; settled once the reviews are in)
+     None of the learned 3D face regressors can run here: they need pickled weights, a FLAME or Basel account, or
+     CUDA.
+   - **Then the texture** is made on the fitted head at 2048.
+   - **Later:** subdivided heads and skin, eye and light shading for close-ups.
 
-1. **Recognition core:**
-   - pluggable backends with the two profiles;
-   - face detection in each detected person's region, alignment, quality, embeddings;
-   - tracks with quality-weighted evidence over frames;
-   - open-set decisions with calibrated thresholds;
-   - the gallery and enrolment.
-2. **Evaluation harness:** a benchmark through the simulation (known identities on avatars, rendered at many sizes,
-   poses and lights) and on photo pairs: verification, identification and open-set metrics, broken down by condition.
-3. **High-resolution heads:** full-resolution head textures with normal maps, a refined head mesh, and the renderer
-   changes they need.
-4. **Virtual high-resolution sensor:** after a person is detected, their head region is rendered at high resolution
-   for the recogniser.
-5. **Head shape fitted to the person,** combined with the existing photo-to-texture pipeline: geometry first, then the
-   texture on the fitted shape; saved with created characters and used for known people in the fair.
-6. **Integration in the demo:** person, then face, then identity, with the overlay and the status.
+## Steps
 
-Each step is built in its own worktree, reviewed independently, fixed, tested on the branch, then pushed.
+| Step | What | Needs |
+|---|---|---|
+| **F1** Recognition core | A model registry with checked downloads (InsightFace packs from GitHub releases, zip members), onnxruntime sessions with telemetry off, SCRFD and YuNet detectors, ArcFace alignment, the AdaFace, `buffalo_l`, SFace and AuraFace embedders, quality, the three profiles, per-model gallery caches, enrolment checks, and model checks | - |
+| **S1** Virtual high-resolution sensor | Sub-frustum windows snapped to a declared sensor, culling, camera presets (blur, noise, demosaicing, JPEG); windows delivered with the frames | - |
+| **F2** Person, face, identity | Person tracks (YOLO with a tracker), head regions (high-resolution windows for undecided tracks), quality-weighted evidence per track, open-set decisions (cohort normalisation, calibration per model and face size, target FPIR, runner-up margin, hysteresis, one identity per track); the overlay and status in the demo | F1, S1 |
+| **E1** Evaluation and first results | Metrics (ROC, DET, TAR at FAR, CMC, FNIR at FPIR, calibration), `bifold-faces eval` with manifests, rendered stills and video with disjoint photo sets for textures and gallery, baseline numbers for today's SFace against the new profiles; the results committed | F1, F2, S1 |
+| **S2** High-resolution heads | 2048 head colour, normal and specular maps; linear light; normal and specular shading; the fair's light re-tuned | S1 |
+| **S3** Shape fitted to the person | The ICT-FaceKit identity space on each head, multi-view fitting, transfer to the rig, `shape.npz`; textures made on the fitted head at 2048; used by created characters and known faces | S2 |
+| **S4** Close-ups | Subdivided heads in windows; skin, eye and light shading | S2 |
+
+F1 and S1 start in parallel. Each step is built in its own worktree, reviewed independently, fixed, tested on the
+branch and pushed; its results go into the progress log.
 
 ## Progress log
 
 - **1 November:** focus changed; licence and head-mesh decisions taken; both reviews started; onnxruntime 1.31.1
   installed in the build environment.
+- **1 November, about 15:00 UTC:** both reviews finished and committed; the steps above settled; F1 and S1 start.
