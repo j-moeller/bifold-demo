@@ -847,6 +847,54 @@ for face, embedding in engine.faces(image):
     match = gallery.match(embedding)   # match.name (None: unknown), match.score
 ```
 
+### The recognition core: models, profiles, licences
+
+Face recognition is becoming the core of the demo
+([plan](docs/research/face_recognition_focus.md),
+[review](docs/research/face_recognition_sota.md)), with stronger models
+behind one switch. [`recognition/registry.py`](src/bifold_demo/recognition/registry.py)
+lists every face model with its file (download address, size and SHA-256),
+its input (size, colour order, normalisation), its output, its licence, what
+it was trained on and where the file comes from. Three **profiles** put them
+together (`--face-profile`, or `BIFOLD_FACE_PROFILE`; default `best`):
+
+| Profile | Face detector | Recogniser (fallback) | Quality | Licences of the weights |
+|---|---|---|---|---|
+| `best` | SCRFD-10G | AdaFace IR-101, trained on WebFace12M (`buffalo_l` ResNet-50) | eDifFIQA-T and geometry | research use only |
+| `licensed` | SCRFD-10G | InsightFace `buffalo_l` ResNet-50 | eDifFIQA-T and geometry | research use only, unless a commercial licence is bought from InsightFace |
+| `commercial` | YuNet | AuraFace-v1 (SFace) | geometry | MIT and Apache-2.0 |
+
+AdaFace IR-101 is the most accurate recogniser on small and poor faces whose
+weights can be run here (TinyFace rank-1 72 %, IJB-C 97.7 % at 1e-4); its ONNX
+file is a community export, so it is checked before it is trusted (its
+SHA-256 is pinned, its graph has only standard operators, and its accuracy is
+measured against the published one). AuraFace is on Hugging Face only and is
+fetched where Hugging Face can be reached; elsewhere the commercial profile
+uses SFace. "Commercial" is about the weights' licences only: the detectors
+were trained on WIDER FACE and most recognisers on web-scraped faces whose
+terms are for research, so anything that ships needs a legal review first.
+
+```bash
+bifold-faces fetch --profile best      # SCRFD-10G, AdaFace, buffalo_l (fallback), eDifFIQA-T: 560 MB, 460 MB kept
+bifold-faces fetch --model sface_2021dec yunet_2023mar
+bifold-faces list                      # the models (licences, profiles, fetched or not), then the known people
+```
+
+InsightFace publishes its models as zip packs (`buffalo_l.zip`,
+`antelopev2.zip`); the download keeps only the members a profile needs and
+deletes the pack. Every file is checked against its pinned SHA-256 before it
+replaces anything, and a file that cannot be had from one source is tried from
+the next (InsightFace's files are also mirrored, byte for byte, by the AdaFace
+export and UniFace). The models run with ONNX Runtime: on a Mac with CoreML
+first (falling back to the CPU), elsewhere on the CPU (`BIFOLD_FACE_PROVIDER`
+and `BIFOLD_FACE_THREADS` override). ONNX Runtime 1.29 and later send usage
+telemetry to Microsoft by default; the recognition switches it off
+(`ORT_DISABLE_TELEMETRY=1`) before ONNX Runtime loads.
+
+The demo itself still uses YuNet and SFace as described above; the detectors,
+alignment, embedders, quality measures and gallery of the new core follow in
+the next steps.
+
 ### Known faces on the 3D people
 
 When `faces/` has photos, the demo puts every known person's face on one of the
@@ -1698,6 +1746,7 @@ src/bifold_demo/
                rocketbox_catalog.json (avatar labels)                   ← 3D people
   recognition/ engine.py (find and fingerprint faces), gallery.py (known people),
                recognizer.py (faces over frames), cast.py (known faces on 3D people),
+               registry.py (face models and profiles), runtime.py (ONNX Runtime),
                models.py, cli.py (bifold-faces)                          ← face recognition
   people/      prompts.py, generator.py (text-to-image), cutout.py,
                library.py, defaults.py, cli.py (bifold-people)          ← 2D people generator

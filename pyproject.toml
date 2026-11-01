@@ -13,6 +13,10 @@ dependencies = [
     "opencv-python>=4.8",
     "moderngl>=5.8",
     "ultralytics>=8.4",
+    # the face recognition's models (recognition/registry.py): ONNX Runtime runs them (its macOS wheel has the CoreML
+    # provider), the onnx package reads and edits their graphs (model checks, AdaFace's norm output)
+    "onnxruntime>=1.20",
+    "onnx>=1.16",
 ]
 
 [project.optional-dependencies]
