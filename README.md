@@ -843,7 +843,11 @@ bifold-faces who group_photo.jpg                           # who is in a photo
 The models are downloaded into `models/` the first time (or with
 `bifold-faces fetch`) and run by ONNX Runtime (SFace and YuNet by OpenCV). The
 embeddings of the photos are kept per model in
-`faces/.embeddings.<model>.npz`, so only new photos are looked at again.
+`faces/.embeddings.<model>.npz`, so only new photos are looked at again. On
+four CPU cores AdaFace takes about half a second per face, the licensed
+profile's ResNet-50 a tenth and SFace 20-30 ms; on a Mac, CoreML should be much
+faster (not measured yet). Where the CPU is all there is, the licensed or
+commercial profile keeps the live view responsive.
 
 ```python
 from bifold_demo.recognition import FaceEngine, Gallery
