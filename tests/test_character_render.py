@@ -342,6 +342,31 @@ def test_visible_pixels_counts_what_of_someone_would_show(render):
     assert renderer.visible_pixels([person, at(1.0, -1.0)]) == [0, 0]  # behind the wall
 
 
+def test_a_renderer_counts_and_uploads_in_its_own_context(render):
+    """Another renderer made (and drawing) after it, as the character creator's turntable is, makes its own OpenGL
+    context current: counting, uploading and freeing still go to this renderer's context, not that one."""
+    from bifold_demo.scene.renderer import Renderer
+
+    person = Character(_model())
+    scene = _scene(person, floor=True)
+    render(scene)
+    renderer = render.renderer
+    (alone,) = renderer.visible_pixels([person])
+    other = Renderer(64, 48, samples=0)  # current from here on
+    try:
+        other.render(_scene(Character(_model()), floor=True))
+        newcomer = Character(_model(), name="newcomer")
+        while not renderer.prepare(newcomer):
+            pass
+        assert renderer.visible_pixels([person]) == [alone]
+        renderer._collect_garbage()
+        assert _mask(render(_scene(newcomer)), RED).sum() > 300  # drawn with what was uploaded meanwhile
+    finally:
+        other.release()
+    render(scene)
+    assert renderer.visible_pixels([person]) == [alone]  # releasing the other renderer left this one working
+
+
 def test_prepare_uploads_one_thing_a_call(render):
     from bifold_demo.scene.textures import Texture, prepare_upload
 

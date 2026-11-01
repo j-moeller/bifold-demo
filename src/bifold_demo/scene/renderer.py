@@ -343,6 +343,10 @@ class Renderer:
         or when the person is invisible. Each is counted on its own, with what it wears and the middle of its blob
         shadow; what textures cut out (hair) counts as if it were there. For changes to a scene that nobody should
         see (``scenes.created_cast``): call it after :meth:`render`, from the same thread."""
+        with self.ctx:  # its own context (another renderer's may be current)
+            return self._visible_pixels(people)
+
+    def _visible_pixels(self, people) -> list[int]:
         if self._drawn is None:
             raise RuntimeError("visible_pixels needs a frame drawn first")
         mgl, ctx, fbo = self._moderngl, self.ctx, self._draw_fbo
@@ -387,6 +391,10 @@ class Renderer:
         and what it wears (in the scene or not yet), or a :class:`Texture`. True when all of it is there. Called once
         a frame before someone comes into the scene, it spreads the uploads over those frames, so that the frame they
         come in has none of them left to do."""
+        with self.ctx:  # its own context (another renderer's may be current)
+            return self._prepare(*things)
+
+    def _prepare(self, *things) -> bool:
         for thing in things:
             if isinstance(thing, Texture):
                 if not self._uploaded(thing):
@@ -588,6 +596,10 @@ class Renderer:
 
     def _collect_garbage(self) -> None:
         """Free GPU resources of meshes and textures that no longer exist."""
+        with self.ctx:  # its own context (another renderer's may be current)
+            self._free_unused()
+
+    def _free_unused(self) -> None:
         for key, (ref, *_rest) in list(self._meshes.items()):
             if ref() is None:
                 self._release_mesh(key)
@@ -618,6 +630,12 @@ class Renderer:
             resource.release()
 
     def release(self) -> None:
+        """Free all GPU resources (the renderer cannot draw afterwards)."""
+        with self.ctx:  # its own context (another renderer's may be current)
+            self._release_all()
+        self.ctx.release()
+
+    def _release_all(self) -> None:
         for key in list(self._meshes):
             self._release_mesh(key)
         for key in list(self._primitives):
@@ -641,7 +659,6 @@ class Renderer:
         for _ref, gl_tex, *_rest in self._textures.values():
             gl_tex.release()
         self._textures.clear()
-        self.ctx.release()
 
 
 def _scene_uniforms(scene: Scene) -> dict:
