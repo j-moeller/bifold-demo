@@ -1,8 +1,10 @@
-"""``bifold-faces landmarks`` and ``bifold-faces register``: stages 0 and 1 from the command line.
+"""``bifold-faces landmarks``, ``register`` and ``headtex``: the head-texture stages from the command line.
 
     bifold-faces landmarks [AVATAR ...]              the 478 landmarks on avatars' heads (cached); which way found
     bifold-faces register PHOTO[:VIEW] ... --avatar NAME [--out DIR] [--segment]
                                                      register photos to an avatar's head; draw what was found
+    bifold-faces headtex PHOTO[:VIEW] ... --avatar NAME -o head.png [--views render.png] [--debug DIR]
+                                                     a head texture from the photos (stages 0-4)
 
 A ``:left``, ``:right`` or ``:back`` after a photo names what it shows (needed for photos without a face).
 """
@@ -10,6 +12,8 @@ A ``:left``, ``:right`` or ``:back`` after a photo names what it shows (needed f
 from __future__ import annotations
 
 from pathlib import Path
+
+import numpy as np
 
 from .register import VIEW_YAWS
 
@@ -29,6 +33,16 @@ def add_commands(sub) -> None:
     reg.add_argument("--segment", action="store_true", help="also segment hair, skin and clothes (needed for photos "
                      "without a face)")
     reg.set_defaults(run=cmd_register)
+    tex = sub.add_parser("headtex", help="a head texture for an avatar from photos of a person (stages 0-4)")
+    tex.add_argument("photos", nargs="+", help="photos, each optionally followed by :left, :right, :back or :front")
+    tex.add_argument("--avatar", required=True, help="the avatar whose head the texture is for")
+    tex.add_argument("-o", "--output", required=True, help="the texture's file (PNG)")
+    tex.add_argument("--characters", default=None, help="the prepared characters folder (default: as the demo)")
+    tex.add_argument("--views", default=None, help="also render the avatar wearing it (front, three-quarter, side) "
+                     "into this image")
+    tex.add_argument("--debug", default=None, help="write what each stage did into this folder")
+    tex.add_argument("--size", type=int, default=None, help="the texture's size (default: the avatar's own)")
+    tex.set_defaults(run=cmd_headtex)
 
 
 def _photo_and_view(text: str) -> tuple[str, str | None]:
@@ -104,3 +118,34 @@ def cmd_register(args) -> int:
             cv2.imwrite(str(target), draw_registration(view, model, head))
             print(f"  drawn: {target}")
     return status
+
+
+def cmd_headtex(args) -> int:
+    import cv2
+
+    from .detect import Landmarker, Segmenter
+    from .texture import debug_images, head_texture, preview
+
+    library = _library(args, [args.avatar])
+    model = library.load(args.avatar)
+    photos, views = zip(*(_photo_and_view(p) for p in args.photos))
+    for photo in photos:
+        if not Path(photo).is_file():
+            raise FileNotFoundError(f"no photo {photo}")
+    with Landmarker(args.models, max_faces=2) as landmarker, Segmenter(args.models) as segmenter:
+        result = head_texture(list(photos), model, views=list(views), landmarker=landmarker, segmenter=segmenter,
+                              size=args.size, cache_dir=args.characters, debug=args.debug is not None)
+    print(result.summary())
+    print(f"texture: {result.save(args.output)}")
+    if args.views:
+        target = Path(args.views)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(target), np.vstack([preview(model, result), preview(model, None)]))
+        print(f"renders (top: with the texture, bottom: the avatar's own): {target}")
+    if args.debug:
+        folder = Path(args.debug)
+        folder.mkdir(parents=True, exist_ok=True)
+        for name, image in debug_images(result).items():
+            cv2.imwrite(str(folder / name), image)
+        print(f"debug images: {folder}")
+    return 0

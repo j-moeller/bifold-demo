@@ -434,6 +434,7 @@ class Outline:
     triangles: np.ndarray  # (T, 3, 3) character space
     normals: np.ndarray  # (T, 3) outward; zero for the hair cards (seen from both sides)
     labels: np.ndarray | None = None  # (T,) SKIN, HAIR, OTHER or UNSEEN, once known (see head_regions)
+    sources: np.ndarray | None = None  # (T, 2) the primitive and the triangle within it each triangle comes from
 
     @classmethod
     def of(cls, model, primitive: int) -> Outline:
@@ -457,34 +458,36 @@ class Outline:
         moved_by_head = np.zeros(len(skeleton), bool)
         if bone is not None:
             moved_by_head[skeleton.descendants(bone)] = True
-        triangles, normals = [], []
+        triangles, normals, sources = [], [], []
         for k, prim in enumerate(model.primitives):
             name = prim.name.lower()
             if k != primitive and not any(w in name for w in ("hair", "opacity")):
                 continue
             tri = np.asarray(prim.indices, np.int64).reshape(-1, 3)
+            index = np.arange(len(tri))
             if bone is not None:
                 joints, weights = np.asarray(prim.joints, np.int64), np.asarray(prim.weights, np.float64)
                 head_share = (weights * moved_by_head[np.clip(joints, 0, len(skeleton) - 1)]).sum(axis=1)
-                tri = tri[(head_share[tri] >= 0.8).all(axis=1)]
+                index = index[(head_share[tri[index]] >= 0.8).all(axis=1)]
             if k != primitive:
                 try:
                     alpha = as_texture(prim.texture).rgba[..., 3] if prim.texture is not None else None
                 except (OSError, ValueError):
                     alpha = None
                 if alpha is not None:
-                    uv = np.asarray(prim.uvs, np.float64)[tri].mean(axis=1)
+                    uv = np.asarray(prim.uvs, np.float64)[tri[index]].mean(axis=1)
                     h, w = alpha.shape
                     rows = np.clip(((1.0 - uv[:, 1]) * h).astype(int), 0, h - 1)
                     cols = np.clip((uv[:, 0] * w).astype(int), 0, w - 1)
-                    tri = tri[alpha[rows, cols] >= 128]
-            triangles.append(np.asarray(prim.positions, np.float64)[tri])
+                    index = index[alpha[rows, cols] >= 128]
+            triangles.append(np.asarray(prim.positions, np.float64)[tri[index]])
+            sources.append(np.c_[np.full(len(index), k), index])
             if k == primitive:  # a closed surface: only the side facing the camera makes its outline
-                n = np.asarray(prim.normals, np.float64)[tri].sum(axis=1)
+                n = np.asarray(prim.normals, np.float64)[tri[index]].sum(axis=1)
                 normals.append(n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12))
             else:
-                normals.append(np.zeros((len(tri), 3)))
-        return cls(np.concatenate(triangles), np.concatenate(normals))
+                normals.append(np.zeros((len(index), 3)))
+        return cls(np.concatenate(triangles), np.concatenate(normals), sources=np.concatenate(sources))
 
     def _seen(self, camera: PhotoCamera, shape):
         """The triangles' pixels (``(T, 3, 2)``), depths (``(T, 3)``) and which of them ``camera`` may see."""

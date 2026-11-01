@@ -70,9 +70,12 @@ class ThinPlateWarp:
 
     def __call__(self, points) -> np.ndarray:
         """Where the warp takes ``points`` (``(N, 2)``)."""
+        return self._warp(points, precise=True)
+
+    def _warp(self, points, precise: bool) -> np.ndarray:
         points = np.asarray(points, np.float64).reshape(-1, 2)
         if self.falloff is None:
-            return self._spline(points)
+            return self._spline(points, precise)
         centre, inner, outer = self.falloff
         distance = np.linalg.norm(points - centre, axis=1)
         out = points.copy()
@@ -80,7 +83,7 @@ class ThinPlateWarp:
         if near.any():
             u = np.clip((distance[near] - inner) / max(outer - inner, 1e-9), 0.0, 1.0)
             keep = 1.0 - u * u * (3.0 - 2.0 * u)  # 1 within inner, 0 beyond outer, smooth in between
-            out[near] += (self._spline(points[near]) - points[near]) * keep[:, None]
+            out[near] += (self._spline(points[near], precise) - points[near]) * keep[:, None]
         return out
 
     def on_grid(self, points, step: float | None = None) -> np.ndarray:
@@ -104,7 +107,8 @@ class ThinPlateWarp:
             axis = np.arange(cells) * step
             gx, gy = np.meshgrid(origin[0] + axis, origin[1] + axis)
             grid = np.c_[gx.ravel(), gy.ravel()]
-            self._grid = (step, origin, (self(grid) - grid).reshape(cells, cells, 2))
+            # (in single precision: about 1e-4 pixels off, ten times faster)
+            self._grid = (step, origin, (self._warp(grid, precise=False) - grid).reshape(cells, cells, 2))
         step, origin, field = self._grid
         out = points.copy()
         f = np.clip((points[near] - origin) / step, 0.0, cells - 1.000001)
@@ -115,15 +119,21 @@ class ThinPlateWarp:
                       + (field[y + 1, x] * (1 - fx) + field[y + 1, x + 1] * fx) * fy)
         return out
 
-    def _spline(self, points: np.ndarray) -> np.ndarray:
+    def _spline(self, points: np.ndarray, precise: bool = True) -> np.ndarray:
         if self._weights is None:
             return points + self._shift
         p = (points - self._centre) / self._scale
         out = np.empty_like(p)
+        dtype = np.float64 if precise else np.float32
+        controls = self._points.astype(dtype)
+        weights = self._weights.astype(dtype)
+        tiny = dtype(1e-300 if precise else 1e-30)
         for start in range(0, len(p), 4096):
             chunk = p[start:start + 4096]
-            u = _kernel(((chunk[:, None] - self._points[None]) ** 2).sum(axis=2))
-            out[start:start + 4096] = u @ self._weights + self._affine[0] + chunk @ self._affine[1:]
+            c = chunk.astype(dtype)
+            r2 = (c[:, :1] - controls[:, 0]) ** 2 + (c[:, 1:] - controls[:, 1]) ** 2
+            u = dtype(0.5) * r2 * np.log(np.maximum(r2, tiny))  # r^2 log r (0 at a control point)
+            out[start:start + 4096] = u @ weights + self._affine[0] + chunk @ self._affine[1:]
         return out * self._scale + self._centre
 
     def bending_energy(self) -> float:

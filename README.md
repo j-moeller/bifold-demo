@@ -730,7 +730,8 @@ three-quarter, the sides, maybe the back; casual phone photos), into a texture
 for an avatar's own head mesh that blends into the whole body. The approach is
 the one of the literature review
 ([docs/research/face_head_texture.md](docs/research/face_head_texture.md),
-section 3), in eight stages; stages 0 and 1 are done:
+section 3), in eight stages; stages 0, 1, 3 and 4 are done (3 and 4
+[below](#stages-3-and-4-the-texture)):
 
 0. **Landmarks on the head mesh**, once per head model. The avatar's head is
    rendered with its own texture in the bind pose (flat light) from five
@@ -874,6 +875,115 @@ for view in views:
     print(view.summary())                             # yaw, pitch, roll, error, quality, warnings
     pixels = view.photo_pixels(head.points)           # where each 3D point of the head is in the photo
 ```
+
+### Stages 3 and 4: the texture
+
+3. **Project and fuse the photos** (`headtex/fuse.py`). Every texel of the
+   head texture knows its point on the head (the UV bake). For each photo it
+   is depth-tested against the head as the photo's camera sees it (a z-buffer
+   in numpy) and read from the photo through the face warp, at the mipmap
+   level that matches its size in the photo. Its weight is the product of
+   the viewing angle (cos³), the segmenter's class at the pixel (face skin on
+   the face; hair only on the avatar's scalp and at its hairline; face and
+   body skin on the neck; never background, clothes or other people), the
+   distance from the masks' edges, the photo's border and the head's
+   outlines, the view's quality and the photo pixels per texel. A gain per
+   photo and channel evens out exposure and white balance on the overlaps
+   (least squares, anchored on the most frontal photo). A five-band blend in
+   UV, island by island (nothing blurs across islands), takes the fine detail
+   from the best photo at each texel and mixes the tone over wide areas. The
+   avatar's own texture, tone-matched to the person's skin, is one more
+   source with a small weight: what no photo shows keeps it, and the photos
+   feather into it. Push-pull padding fills the gutters. The eyeballs and the
+   inside of the mouth stay the avatar's own (a photo's eyes look wherever
+   the person looked; no camera sees inside the mouth), the brows come from
+   the photos (the segmenter calls them face skin, on renders and photos
+   alike). Every texel gets a confidence and a keep / refine / generate
+   trimap for stage 5.
+4. **Take the light out, set the skin tone** (`headtex/light.py`). Each
+   photo's light is fitted to its face skin as order-2 spherical harmonics of
+   the normal (luminance only, robust) and divided out; the avatar's own
+   painted soft light, fitted the same way to its texture, is multiplied back
+   in, so the new face sits on the body as the old one did. The person's skin
+   tone, a trimmed Lab median of the cheeks and forehead over all photos, is
+   kept for stage 6 (matching the body to it).
+
+```bash
+bifold-faces headtex front.jpg left.jpg:left right.jpg:right --avatar Male_Adult_05 -o faces/head.png \
+    --views faces/head_views.jpg --debug faces/head_debug/
+```
+
+`headtex` prints each photo's pose and share of the texture, how much of the
+face, scalp and neck the photos show, the skin tone, each photo's light and
+gains, warnings and timings. `--views` renders the avatar wearing the texture
+(front, three-quarter, side) above the avatar as it is; `--debug` writes the
+texture's parts, confidence, trimap and each photo's colours and weights in
+the texture's layout.
+
+```python
+from bifold_demo.characters.headtex import head_texture, head_texture_async, wear
+
+result = head_texture(["front.jpg", "left.jpg"], model, views=[None, "left"])  # a HeadTexture
+print(result.summary())
+wear(person, result)                  # a scene Character of that model wears it (texture_overrides)
+result.skin                           # the person's skin tone (a Tone: Lab, sRGB), for stage 6
+result.confidence, result.trimap      # per texel: 0-1, and keep / refine / generate for stage 5
+future = head_texture_async(photos, model)   # the same on a worker thread (a Future)
+```
+
+How well it works (`tests/test_headtex_fuse.py`, synthetic;
+`tests/test_headtex_fuse_avatars.py` and measurements: four 1280×960 renders
+of Male_Adult_05 stand in for a person's photos: front, turned 40° each way
+and from below, each under a light of its own direction and colour):
+
+- Fused back onto his own head, the face's texels the photos show surely
+  (62 % of the face; 73 % at all) come back within ΔE 4.5 of the avatar's own
+  texture (the median; 90 % within 9.3; PSNR 24 dB; about 2 L darker), the
+  skin tone within ΔE 2-3.5. The eyes come back unchanged, the inside of the
+  mouth within ΔE 3.
+- On five other avatars, the same photos show 54-61 % of the face surely,
+  23-50 % of the neck and 4-5 % of the scalp (they see little of it); the
+  skin tone comes out nearly the same on all (Lab 63-66, +20, +22-23: the
+  lightness follows each avatar's painted light). Where an open neckline shows the
+  neck seam (Female_Adult_04, Female_Adult_01) the head and the body are ΔE
+  3.5 and 6.0 apart across it (1.9 and 4.0 with their own heads); the face
+  and the hands 2.8-12.9 apart (4.4-12.3 before): matching the body is stage
+  6's.
+- Harsh light, one light from the side: the difference between the two
+  halves of the face (Lab L) with the light left in and taken out:
+
+  | renderer's ambient light (fitted contrast) | 4 photos | the front photo alone |
+  |---|---|---|
+  | 0.55 (5×) | 20.7 → 2.8 | 14.8 → 3.8 |
+  | 0.35 (18×) | 30.2 → 8.8 | 21.7 → 6.6 |
+  | 0.2 (51×) | 36.8 → 10.5 | 26.8 → 7.1 |
+  | 0.1 (51×) | 40.7 → 12.0 | 30.1 → 4.8 |
+
+  Up to a contrast of about 5 (2.3 stops) the light comes out; beyond, 5-12 L
+  stay, the lit half comes out 5-10 L darker than it should, and photos of
+  the shadowed side add little (they see it only in shadow). Photos with a
+  contrast over 8 get a warning. Shadows the face casts on itself (a nose's
+  under a spotlight) and highlights stay.
+- Real photos (portraits from the web, not in the repository; checks only)
+  gave plausible textures, with flaws: a hand in front of the neck (body
+  skin to the segmenter) leaves a smudge on the neck, a microphone over the
+  chin leaves the avatar's goatee there, and a single blurred photo with a
+  colour cast gives a greyish face.
+- Time: four 1280×960 photos take 4-8 s on four cores (registration 1 s,
+  projection 1.3-2.4 s, light and gains 0.7 s, blend 0.5-1.5 s); the first
+  time for an avatar about 10 s more (its landmarks, regions and texture
+  atlas, then cached on disk). `head_texture_async` runs it on a worker
+  thread. Beside a render loop paced to 30 frames a second the frames were
+  not slowed (16 ms against 14) and the texture took 9 s instead of 5; a
+  render loop that never waits (the software renderer at 50 ms a frame)
+  starved the worker (55 s): the renderer keeps Python's interpreter lock
+  while it draws.
+
+What it does not do yet: the hair the photos show goes onto the avatar's own
+scalp texels only, and the avatar's hair cards (buns, long hair, a fringe: a
+mesh with a texture of its own) keep their colour until stage 6; what no
+photo shows (the back of the head, under the chin) is the avatar's own
+texture, tone-matched, until stage 5 completes it.
 
 Photos of people and textures made from them are personal data: keep them in
 git-ignored folders (like `faces/`) and never commit them.
@@ -1274,7 +1384,8 @@ src/bifold_demo/
                uvbake.py (what each texel of a texture is on the body),
                outfit/ (garment regions, cloth coordinates, fabrics, prompts,
                         presets.json, the compositor: new clothes on an avatar),
-               headtex/ (head textures from photos: landmarks on the mesh, photos registered),
+               headtex/ (head textures from photos: landmarks on the mesh, photos registered,
+                         projected, fused, de-lit; the skin tone),
                created.py (characters from the character creator, saved),
                rocketbox.py + library.py + cli.py (bifold-characters),
                rocketbox_catalog.json (avatar labels)                   ← 3D people
