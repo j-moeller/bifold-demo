@@ -206,7 +206,13 @@ class Renderer:
         self._frames = 0
 
     def render(self, scene: Scene) -> np.ndarray:
-        """Draw ``scene`` as evaluated by its last ``update`` and return an HxWx3 BGR image."""
+        """Draw ``scene`` as evaluated by its last ``update`` and return an HxWx3 BGR image. The renderer's own
+        OpenGL context is made current for it (with several renderers in one thread, the one made last is current
+        otherwise, and another one would draw into it)."""
+        with self.ctx:
+            return self._render(scene)
+
+    def _render(self, scene: Scene) -> np.ndarray:
         ctx, fbo = self.ctx, self._draw_fbo
         fbo.use()
         ctx.viewport = (0, 0, self.width, self.height)
