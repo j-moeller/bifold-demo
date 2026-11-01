@@ -44,7 +44,7 @@ from .requests import (
     head_point_region,
 )
 
-MULTIPLE = 16  # window sides are grown to a multiple of this, so that sizes repeat and their framebuffers are reused
+MULTIPLE = 16  # window sides are grown to a multiple of this: few sizes, in whole 16-pixel blocks
 EYE_BONES = ("Bip01 REye", "Bip01 LEye")  # the eyes of the Rocketbox skeleton (the person's right, then left)
 HEAD_BONES = ("Bip01 Head", "Head")  # the head bone (Rocketbox, then others)
 SHORT_GAP = 0.1  # seconds: frames closer than this give a person's speed from their eyes' own move

@@ -115,24 +115,20 @@ class Sensor:
     def window(self, region, level: int = 1, multiple: int = 1) -> Window:
         """The smallest window at ``level`` that covers ``region`` = ``(x0, y0, x1, y1)`` (view pixels), its sides
         grown to a multiple of ``multiple`` pixels (about the region's centre), and moved (or cut) to lie within the
-        frame: a sensor has no pixels beyond its edges, so a region at an edge is off-centre in its window."""
+        frame: a sensor has no pixels beyond its edges, so a region at an edge is off-centre in its window.
+
+        Its bottom-left corner lies on an even pixel of the frame at that level, as OpenGL counts them (from the
+        bottom): a renderer's 2x2 pixel quads, and with them its texture filtering, then line up with those of a
+        render of the whole frame. The window moves by a pixel for that, or grows by ``multiple`` more when it has
+        no room; a region at the frame's edge may leave no way (an odd frame or ``multiple``)."""
         self._check_level(level)
         x0, y0, x1, y1 = (float(v) for v in region)
         if not (x1 > x0 and y1 > y0):
             raise ValueError(f"empty region {tuple(region)}")
         sx, sy = self.scale_xy
-        lx0, lx1, ly0, ly1 = x0 * sx / level, x1 * sx / level, y0 * sy / level, y1 * sy / level
-        left, top = math.floor(lx0 + _EPS), math.floor(ly0 + _EPS)
-        width = max(1, math.ceil(lx1 - _EPS) - left)
-        height = max(1, math.ceil(ly1 - _EPS) - top)
-        if multiple > 1:
-            grown_w, grown_h = -(-width // multiple) * multiple, -(-height // multiple) * multiple
-            left -= (grown_w - width) // 2
-            top -= (grown_h - height) // 2
-            width, height = grown_w, grown_h
         fw, fh = self.frame(level)
-        width, height = min(width, fw), min(height, fh)
-        left, top = min(max(left, 0), fw - width), min(max(top, 0), fh - height)
+        left, width = _span(x0 * sx / level, x1 * sx / level, fw, multiple, lambda _length: 0)
+        top, height = _span(y0 * sy / level, y1 * sy / level, fh, multiple, lambda length: (fh - length) % 2)
         return Window(self, level, left, top, width, height)
 
     def plan(self, region, ied: float | None = None, face_px: float | None = None, max_pixels: int | None = None,
@@ -153,6 +149,28 @@ class Sensor:
                     (max_side is None or max(window.size) <= max_side):
                 break
         return window
+
+
+def _span(lo: float, hi: float, frame: int, multiple: int, parity) -> tuple[int, int]:
+    """``(start, length)`` of the pixels of a frame ``frame`` pixels long that cover ``[lo, hi)`` (what of it lies in
+    the frame): the length grown to a multiple of ``multiple`` about the middle and cut to the frame, the start moved
+    into the frame and, where there is room, to the parity ``parity(length)``, growing the length by ``multiple``
+    once more for it if need be (else the start nearest the middle)."""
+    a = math.floor(lo + _EPS)
+    b = max(a + 1, math.ceil(hi - _EPS))
+    need, step = b - a, max(1, int(multiple))
+    first = min(-(-need // step) * step, frame)
+    inside_a, inside_b = min(max(a, 0), frame), max(min(b, frame), 0)
+    nearest = None
+    for length in (first, min(first + step, frame)):
+        lowest, highest = max(inside_b - length, 0), min(inside_a, frame - length)  # the starts that cover it
+        centred = min(max(a - (length - need) // 2, lowest), highest)
+        nearest = nearest or (centred, length)
+        middle = a - (length - need) / 2
+        for start in sorted((centred, centred - 1, centred + 1), key=lambda s: (abs(s - middle), s)):
+            if lowest <= start <= highest and start % 2 == parity(length):
+                return start, length
+    return nearest
 
 
 @dataclass(frozen=True)

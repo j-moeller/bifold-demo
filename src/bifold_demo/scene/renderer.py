@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 
 from .frustum import Bounds, boxes_outside, frustum_planes, spheres_outside, world_boxes
-from .scene import Scene, SceneObject
+from .scene import Scene, SceneObject, SubCamera
 from .textures import Texture, VideoTexture, as_texture, color_to_linear, upload_levels
 from .transforms import crop_matrix, gl_bytes
 
@@ -192,7 +192,15 @@ void main() {
     f_color = vec4(1.0);
 }
 """
-WINDOW_TARGETS = 6  # window sizes whose framebuffers are kept (least recently used dropped first)
+WINDOW_BYTES = 192 << 20  # window framebuffers kept, in bytes (least recently used freed first; Renderer.window_bytes)
+
+
+def _bucket(side: int) -> int:
+    """A window side rounded up for its framebuffer: to a multiple of a quarter of the next power of two (at least
+    16), so that windows of nearby sizes share framebuffers (a side at most half as long again as the window's, above
+    32 pixels)."""
+    step = max(16, (1 << max(0, int(side) - 1).bit_length()) // 4)
+    return -(-int(side) // step) * step
 
 
 class Renderer:
@@ -245,7 +253,8 @@ class Renderer:
         self._probes = None  # (object program, skinned program, shadow program): see visible_pixels
         self._drawn = None  # (view-projection, camera position) of the last frame
         self._samples = samples  # MSAA samples per pixel (0: none), for windows too
-        self._window_targets: dict[tuple[int, int], tuple] = {}  # (w, h) -> (draw fbo, resolve fbo, renderbuffers)
+        self._window_targets: dict[tuple[int, int], tuple] = {}  # bucket (w, h) -> (draw, resolve, buffers, bytes)
+        self.window_bytes = WINDOW_BYTES  # how much the window framebuffers kept may take
         self._bounds = Bounds()  # for culling (see frustum.py)
         self._frame_id = 0  # counts the frames drawn by render(), for the joint palettes windows reuse
         self.cull_view = False  # also cull the whole view (windows always do, unless asked not to)
@@ -287,7 +296,9 @@ class Renderer:
         same thread), so that everything it needs is on the GPU and its windows show the frame's moment.
 
         With ``cull`` only what may show in the window is drawn (:mod:`.frustum`; no pixel changes), and the joint
-        palettes the frame uploaded are used again. :attr:`window_stats` then says what was drawn and left out."""
+        palettes the frame uploaded are used again. :attr:`window_stats` then says what was drawn and left out. The
+        window is drawn in the corner of a framebuffer of its size bucket; those used last are kept within
+        :attr:`window_bytes`."""
         with self.ctx:  # its own context (another renderer's may be current)
             return self._render_window(scene, ndc, size, aspect, cull)
 
@@ -306,10 +317,10 @@ class Renderer:
         mgl, ctx = self._moderngl, self.ctx
         objects, skinned = self._mask_programs()
         fbo.use()
-        ctx.viewport = (0, 0, width, height)
+        ctx.viewport = viewport = (0, 0, width, height)  # (the window's corner of its framebuffer)
         fbo.depth_mask = False  # keep the window's depth: the clear below only clears the colour
         try:
-            fbo.clear(0.0, 0.0, 0.0, 0.0)
+            fbo.clear(0.0, 0.0, 0.0, 0.0, viewport=viewport)
             ctx.enable(mgl.DEPTH_TEST)
             ctx.depth_func = "<="  # the person meets their own depth where they are in front
             if person.current_visible:
@@ -333,7 +344,7 @@ class Renderer:
             fbo.depth_mask = True
         if fbo is not resolve:
             ctx.copy_framebuffer(resolve, fbo)
-        data = resolve.read(components=1, alignment=1)
+        data = resolve.read(viewport=viewport, components=1, alignment=1)
         mask = np.frombuffer(data, dtype=np.uint8).reshape(height, width)
         return np.flipud(mask).astype(np.float32) / 255.0  # OpenGL rows start at the bottom
 
@@ -351,8 +362,9 @@ class Renderer:
         self._frame_id += 1
         camera = scene.camera
         view_proj = camera.projection_matrix(self.aspect) @ camera.view_matrix()
+        part = (camera.aspect, camera.ndc) if isinstance(camera, SubCamera) else (None, None)  # a window's background
         image = self._draw_scene(scene, (self._draw_fbo, self._resolve_fbo), (self.width, self.height), view_proj,
-                                 cull=self.cull_view)
+                                 *part, cull=self.cull_view)
         self._drawn = (view_proj, camera.current_position)
         self._frames += 1
         if self._frames % 300 == 0:
@@ -391,17 +403,17 @@ class Renderer:
         fbo, resolve = target
         width, height = size
         fbo.use()
-        ctx.viewport = (0, 0, width, height)
+        ctx.viewport = viewport = (0, 0, width, height)  # (a window's corner of its framebuffer)
         background = scene.background
         if callable(background):
             background = background(scene.time)
         bg_texture = None
         if isinstance(background, (tuple, list)) or (isinstance(background, str) and background.startswith("#")):
             r, g, b = color_to_linear(background)  # a clear is encoded like a drawing
-            fbo.clear(b, g, r, 1.0)
+            fbo.clear(b, g, r, 1.0, viewport=viewport)
         else:
             bg_texture = as_texture(background)
-            fbo.clear(0.0, 0.0, 0.0, 1.0)
+            fbo.clear(0.0, 0.0, 0.0, 1.0, viewport=viewport)
 
         if bg_texture is not None:
             ctx.disable(self._moderngl.DEPTH_TEST)
@@ -446,22 +458,24 @@ class Renderer:
 
         if fbo is not resolve:
             ctx.copy_framebuffer(resolve, fbo)
-        data = resolve.read(components=3, alignment=1)
+        data = resolve.read(viewport=viewport, components=3, alignment=1)
         image = np.frombuffer(data, dtype=np.uint8).reshape(height, width, 3)
         return cv2.flip(image, 0)  # OpenGL rows start at the bottom
 
     def _window_target(self, width: int, height: int) -> tuple:
-        """(draw framebuffer, resolve framebuffer) of a window size, with the view's MSAA; the last
-        ``WINDOW_TARGETS`` sizes used are kept."""
+        """(draw framebuffer, resolve framebuffer) for a window of ``width`` x ``height`` pixels, with the view's
+        MSAA: of the size bucket (:func:`_bucket`) it falls in, drawn in its bottom-left corner. The framebuffers
+        used last are kept while they take at most :attr:`window_bytes` together (the one in use always)."""
         limit = self.max_window
         if not (0 < width <= limit and 0 < height <= limit):
             raise ValueError(f"a window of {width}x{height} pixels cannot be drawn (at most {limit} a side)")
-        key = (width, height)
+        key = (min(_bucket(width), limit), min(_bucket(height), limit))
         entry = self._window_targets.pop(key, None)
         if entry is None:
-            while len(self._window_targets) >= WINDOW_TARGETS:
-                self._release_target(self._window_targets.pop(next(iter(self._window_targets))))
             ctx, samples = self.ctx, self._samples
+            size = key[0] * key[1] * (4 + (8 * samples if samples else 4))  # colour, depth (and their samples)
+            while self._window_targets and self.window_target_bytes + size > self.window_bytes:
+                self._release_target(self._window_targets.pop(next(iter(self._window_targets))))
             colour = self._colour_buffer(key)
             depth = None if samples else ctx.depth_renderbuffer(key)
             resolve = ctx.framebuffer(color_attachments=[colour], depth_attachment=depth)
@@ -473,13 +487,18 @@ class Renderer:
                 buffers += [ms_colour, ms_depth]
             else:
                 draw = resolve
-            entry = (draw, resolve, buffers)
+            entry = (draw, resolve, buffers, size)
         self._window_targets[key] = entry  # the most recently used last
         return entry[0], entry[1]
 
+    @property
+    def window_target_bytes(self) -> int:
+        """Bytes the window framebuffers kept take (colour and depth, with their MSAA samples)."""
+        return sum(entry[3] for entry in self._window_targets.values())
+
     @staticmethod
     def _release_target(entry: tuple) -> None:
-        draw, resolve, buffers = entry
+        draw, resolve, buffers, _size = entry
         for resource in {id(draw): draw, id(resolve): resolve}.values():
             resource.release()
         for buffer in buffers:

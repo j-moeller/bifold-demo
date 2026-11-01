@@ -1190,8 +1190,13 @@ their blob shadows and fog, eleven windows of 16 to 420 pixels at levels 1 to
 5 of 4x and 6x sensors had 99.9 % or more of their pixels identical to the
 crop (four windows all of them) and a PSNR of 64.7 dB or more; the pixels
 that differ lie on silhouettes, where the MSAA samples fall a little
-differently. `tests/test_sensor.py` checks this, also with a background image
-and on real avatars' heads.
+differently. A window's bottom-left corner lies on an even pixel of the frame
+(as OpenGL counts rows, from the bottom), so that its 2x2 pixel quads, and
+with them the texture filtering, line up with the whole frame's: in the
+fair's head windows that keeps 99.8 % of the pixels identical, against
+99.2-99.5 % at odd offsets. `tests/test_sensor.py` checks this, also with a
+background image and on real avatars' heads. Windows share framebuffers of a
+few size buckets, kept within `Renderer.window_bytes` (192 MB).
 
 ## High-resolution heads
 

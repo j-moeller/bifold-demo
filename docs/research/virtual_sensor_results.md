@@ -39,8 +39,11 @@ resolution: the same camera, MSAA (4 samples), fog and texture filtering.
 | The fair at 6 s | 3840x2160 (level 2) | the same 25, 33-528 px | 98.72-99.90 % | 52.9-82.0 dB (median 63.8) | at most 0.125 % |
 
 The pixels that differ lie on silhouettes and on alpha-tested hair: the window's matrix is a different float32
-product than the full frame's, so a vertex can land a fraction of a sample away and flip a sample's coverage there. The
-tests also check a background image (its part of the "cover" picture) and real avatars' heads.
+product than the full frame's, so a vertex can land a fraction of a sample away and flip a sample's coverage there.
+Texture filtering adds a few more where a window's 2x2 pixel quads (OpenGL's derivatives) do not line up with the whole
+frame's: since the review, windows start at even pixels of the frame (counted from the bottom, as OpenGL does), and in
+the fair's head windows at level 2 the median of identical pixels is 99.80 % for them against 99.20-99.54 % at odd
+offsets. The tests also check a background image (its part of the "cover" picture) and real avatars' heads.
 
 ## 2. Render time: windows, culling, whole frames
 
@@ -63,8 +66,10 @@ Culling the whole 1280x720 view gained nothing (most of the fair is in it), so i
 
 What the cost is made of: on llvmpipe a window costs about its pixels (the large audience windows are fill-rate
 bound; a 1056 px window has more pixels than the whole view), plus a few milliseconds of fixed cost (framebuffer
-resolve and read-back; a window size not seen before also makes its framebuffers, 2-7 ms, which is why sides are
-rounded up to multiples of 16). In the demo with `W` on, four windows of the audience (768-928 px) took 1.9 s in
+resolve and read-back; a framebuffer size not seen before takes 2-7 ms to make, which is why windows share
+framebuffers of a few size buckets, each side rounded up to a quarter of the next power of two, kept within
+`Renderer.window_bytes`, 192 MB: six windows of about 1024x1024 now share one framebuffer of 36 MB, where they took
+205 MB before the review). In the demo with `W` on, four windows of the audience (768-928 px) took 1.9 s in
 one frame and four windows of people further away 0.36 s in the next. On a GPU these costs are a few milliseconds.
 
 ## 3. The eye distance reached, and the face detector

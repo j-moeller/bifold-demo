@@ -53,10 +53,34 @@ def test_windows_are_snapped_to_the_level_grid_and_cover_the_region():
         assert all(v % level == 0 for v in (x0, y0, x1, y1))  # on the level's grid
         vx0, vy0, vx1, vy1 = w.view_rect
         assert vx0 <= region[0] and vy0 <= region[1] and vx1 >= region[2] and vy1 >= region[3]
-        assert vx0 > region[0] - level / 6 and vx1 < region[2] + level / 6  # the smallest such window
+        # the smallest such window, but for a pixel more to an even corner (see the next test)
+        assert vx0 > region[0] - 2 * level / 6 and vx1 < region[2] + 2 * level / 6
         assert w.size == (w.width, w.height) and w.pixels == w.width * w.height
     exact = sensor.window((10, 20, 30, 40), 1)  # on the grid already: no extra pixel from rounding
     assert exact.sensor_rect == (60, 120, 180, 240)
+
+
+def test_windows_have_even_corners_where_a_renderers_pixel_quads_line_up():
+    """A window's left and its bottom (OpenGL counts rows from the bottom) lie on even pixels of the frame at its
+    level, so that its 2x2 pixel quads, and with them the texture filtering, line up with a render of the whole frame;
+    it still covers the region, and its sides stay multiples of ``multiple`` unless cut to the frame."""
+    rng = np.random.default_rng(5)
+    sensor = Sensor(7680, 4320, (1280, 720))
+    for _ in range(400):
+        x0, y0 = rng.uniform(-30, 1275), rng.uniform(-30, 715)
+        region = (x0, y0, x0 + rng.uniform(0.3, 150), y0 + rng.uniform(0.3, 150))
+        level, multiple = int(rng.choice([1, 2, 3, 5, 6])), int(rng.choice([1, 16]))
+        w = sensor.window(region, level, multiple)
+        fw, fh = sensor.frame(level)
+        assert w.x % 2 == 0 and (fh - w.y - w.height) % 2 == 0, (region, level, multiple, w)
+        vx0, vy0, vx1, vy1 = w.view_rect
+        assert vx0 <= max(region[0], 0) + 1e-9 and vy0 <= max(region[1], 0) + 1e-9
+        assert vx1 >= min(region[2], 1280) - 1e-9 and vy1 >= min(region[3], 720) - 1e-9
+        assert 0 <= w.x and w.x + w.width <= fw and 0 <= w.y and w.y + w.height <= fh
+        assert all(side % multiple == 0 or side == full for side, full in ((w.width, fw), (w.height, fh)))
+    odd = Sensor(1921, 1080, (1280, 720))  # an odd frame leaves no even corner at its right edge
+    edge = odd.window((1250, 100, 1280, 130), 1, 16)
+    assert edge.sensor_rect[2] == 1921 and edge.x % 2 == 1 and edge.width == 48
 
 
 def test_windows_grow_to_a_multiple_and_stay_inside_the_frame():
@@ -219,10 +243,17 @@ def test_a_window_shows_its_part_of_a_background_image(gl):
     _windows_against_full_renders(scene, sensor, [((0, 0, 60, 40), 1), ((250, 10, 320, 60), 1), ((60, 20, 200, 90), 3)])
 
 
-def test_a_sub_camera_draws_the_same_window_with_its_own_renderer(gl):
+@pytest.mark.parametrize("background", ["colour", "image"])
+def test_a_sub_camera_draws_the_same_window_with_its_own_renderer(gl, background):
     from bifold_demo.scene.renderer import Renderer
 
-    scene = sample_scene()
+    if background == "image":  # its part of the picture's background, not the whole of it
+        rgb = np.zeros((90, 300, 3), np.uint8)
+        rgb[:, :, 0] = np.linspace(0, 255, 300)[None, :]
+        rgb[:, :, 1] = np.linspace(0, 255, 90)[:, None]
+        scene = sample_scene(background=Texture.from_array(rgb, order="rgb"))
+    else:
+        scene = sample_scene()
     w = Sensor.scaled(4, VIEW).window((110, 50, 170, 110), 1)
     view = Renderer(*VIEW)
     try:
@@ -240,24 +271,34 @@ def test_a_sub_camera_draws_the_same_window_with_its_own_renderer(gl):
 
 
 def test_windows_draw_in_the_renderers_own_context(gl):
-    """With another renderer made after it (its context current), a renderer's windows are still its own."""
-    from bifold_demo.scene.renderer import WINDOW_TARGETS, Renderer
+    """With another renderer made after it (its context current), a renderer's windows are still its own; their
+    framebuffers come in size buckets and are kept within a byte budget."""
+    from bifold_demo.scene.renderer import WINDOW_BYTES, Renderer, _bucket
 
+    assert [_bucket(s) for s in (1, 16, 17, 64, 65, 100, 128, 129, 300, 600, 900, 1100)] == \
+        [16, 16, 32, 64, 96, 128, 128, 192, 384, 768, 1024, 1536]
     scene = sample_scene()
     sensor = Sensor.scaled(4, VIEW)
     view = Renderer(*VIEW)
     other = None
     try:
         view.render(scene)
+        assert view.window_bytes == WINDOW_BYTES
         w = sensor.window((100, 40, 160, 100), 1)
         before = view.render_window(scene, w.ndc, w.size)
         other = Renderer(64, 64)  # current now
         assert np.array_equal(view.render_window(scene, w.ndc, w.size), before)
-        for k in range(WINDOW_TARGETS + 2):  # more sizes than are kept: the oldest framebuffers are freed
-            v = sensor.window((10 + k, 10, 40 + 3 * k, 50), 1)
+        assert w.size == (240, 240) and list(view._window_targets) == [(256, 256)]
+        for side in (300, 380):  # one bucket (384 x 384): one framebuffer for both
+            assert view.render_window(scene, w.ndc, (side, side)).shape == (side, side, 3)
+        assert list(view._window_targets) == [(256, 256), (384, 384)]
+        per_pixel = view.window_target_bytes / sum(kx * ky for kx, ky in view._window_targets)
+        view.window_bytes = int(per_pixel * 3 * 256 * 256)  # room for three such buckets
+        for k in range(6):  # more sizes than fit: the framebuffers used longest ago are freed
+            v = sensor.window((10 + 9 * k, 10, 40 + 30 * k, 50 + 2 * k), 1)
             assert view.render_window(scene, v.ndc, v.size).shape == (v.height, v.width, 3)
-        assert len(view._window_targets) == WINDOW_TARGETS
-        assert np.array_equal(view.render_window(scene, w.ndc, w.size), before)
+            assert view.window_target_bytes <= view.window_bytes or len(view._window_targets) == 1
+        assert np.array_equal(view.render_window(scene, w.ndc, w.size), before)  # drawn again in a new one
         with pytest.raises(ValueError, match="cannot be drawn"):
             view.render_window(scene, w.ndc, (view.max_window + 1, 10))
     finally:
