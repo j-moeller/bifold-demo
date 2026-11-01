@@ -102,3 +102,10 @@ branch and pushed; its results go into the progress log.
     - the measured results and the preview;
     - window limits per renderer.
   - The tests of the new and touched modules: 158 passed, 3 skipped.
+- **1 November, 16:10 UTC:** S1 finished: all seven commits are on the branch.
+  - The builder's full suite: 779 passed, 9 skipped.
+  - With the default 7680x4320 sensor a frontal face has six times the eye distance of the 720p view (75 px
+    against 12.5 px at 4 m).
+  - YuNet finds 36 of 36 frontal faces at 2-30 m in the windows, against 20 of 36 in the view.
+  - Details in [virtual_sensor_results.md](virtual_sensor_results.md).
+  - Its independent review is running.
