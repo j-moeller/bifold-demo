@@ -1011,7 +1011,13 @@ sensor are levels, so the whole frame at that level is again a sensor
 (7680x4320 has 24 of them: 1, 2, 3, 4, 5, 6, 8, ... 480). `Sensor.plan`
 picks the coarsest level at which the face still has the wanted eye
 distance (level 1 when no level gets there), then a coarser one while the
-window has more pixels than allowed. Pixel coordinates map between the view,
+window has more pixels than allowed. `Sensor.with_lines` and `Sensor.scaled`
+choose sizes with many levels: for a view of an odd shape the width moves by
+a few pixels (a 1366x768 view's 1080-line sensor is 1920x1080, not 1921x1080
+with level 1 alone). On a declared sensor whose sides still share few factors
+the plan goes on to whole binnings beyond the levels, whose frame leaves out
+the last few pixels at the right and bottom edges, so a window never has more
+pixels than allowed. Pixel coordinates map between the view,
 the sensor and a window by a scale and a shift, exactly, both ways, so what is
 found in a window maps back to the main frame:
 
@@ -1085,7 +1091,34 @@ never fail for a request, and one that cannot be served after all is left
 out, said once and kept in `service.problems`.
 `render_windows(scene, renderer, requests, sensor)` renders windows directly,
 for the evaluation; there a request can name its `subject` and its own
-`sensor`. With a scene, each window also carries the `truth`: who the scene
+`sensor`.
+
+**Exact eye distances (evaluation).** `face_px` asks for at least that many
+pixels and is quantised by the levels (48 asked for an audience face at 4 m
+gives 75 with the 8K sensor). An evaluation that sweeps face sizes asks for
+`eye_px` instead: the window is drawn at a scale of its own (level 1 of a
+sensor of exactly that scale), so that the face turned to the camera gets
+that many pixels between the subject's own eyes, whatever the sensor's
+levels, `max_pixels` or the preset's sensor size; the preset's faults still
+apply, at the window's pixels. On the fair's people, 8 to 160 pixels asked
+came out within 0.1 % (`truth.frontal_eye_distance`):
+
+```python
+from bifold_demo.sensor import WindowRequest, render_windows
+from bifold_demo.sensor.service import eye_points
+
+head = tuple(eye_points(person).mean(axis=0))   # or any point of the head
+requests = [WindowRequest((person.name, px), head=head, subject=person, eye_px=px, preset="good 4K")
+            for px in (12, 24, 48, 96)]
+for result in render_windows(scene, renderer, requests):   # after renderer.render(scene)
+    result.truth.frontal_eye_distance, result.truth.facing, result.truth.visible
+```
+
+Without a `subject` the face's size is estimated as for `face_px` (`eye_m`
+metres at a head point, a box's head region, or `eye_distance`). These
+windows are for scene renders; a real camera's picture leaves them out.
+
+With a scene, each window also carries the `truth`: who the scene
 knows is in it (the person the window was placed on, not a small face behind
 them), where their eye bones are in the window, the face's frontal eye
 distance (its size if it were turned to the camera where it is, the same

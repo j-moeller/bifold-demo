@@ -139,8 +139,10 @@ class WindowResult:
 def plan_request(request: WindowRequest, sensor: Sensor, camera=None, head: HeadRegion | None = None,
                  multiple: int = 1, max_side: int | None = None) -> tuple[Window, float | None] | None:
     """``(window, eye distance in window pixels or None)`` for ``request`` on ``sensor``, or ``None`` when nothing of
-    its region is in the view (or its head point is behind the camera). ``camera``: the scene's, for head points;
-    ``max_side``: the longest side a window may have (a renderer's limit)."""
+    its region is in the view (or its head point is behind the camera). ``camera``: the scene's, for head points and
+    ``eye_px``; ``max_side``: the longest side a window may have (a renderer's limit). A request with ``eye_px`` gets
+    a window on a sensor of its own exact scale (see :class:`~.requests.WindowRequest`); one that cannot be served
+    raises ValueError."""
     head = head or HeadRegion()
     view = sensor.view
     if request.head is not None:
@@ -159,8 +161,26 @@ def plan_request(request: WindowRequest, sensor: Sensor, camera=None, head: Head
     x0, y0, x1, y1 = region
     if x1 <= 0 or y1 <= 0 or x0 >= view[0] or y0 >= view[1]:
         return None
+    if request.eye_px is not None:
+        return _exact_window(request, region, eyes, view, camera, multiple, max_side)
     window = sensor.plan(region, eyes, request.face_px, request.max_pixels, multiple, max_side)
     return window, (eyes * window.scale if eyes else None)
+
+
+def _exact_window(request: WindowRequest, region, eyes: float | None, view, camera, multiple: int,
+                  max_side: int | None) -> tuple[Window, float]:
+    """The window of an ``eye_px`` request: level 1 of a sensor of the scale that gives the face exactly that."""
+    measured = subject_eye_distance(request.subject, camera, view) if request.subject is not None else None
+    eyes = measured or eyes
+    if not eyes:
+        raise ValueError(f"the request for {request.tag!r} asks for {request.eye_px} px between the eyes but gives no "
+                         "face size to scale (a subject with eye bones, a head point, a box or eye_distance)")
+    exact = Sensor.scaled(float(request.eye_px) / eyes, view, exact=True)
+    window = exact.window(region, 1, multiple)
+    if max_side is not None and max(window.size) > max_side:
+        raise ValueError(f"{request.eye_px} px between the eyes of the request for {request.tag!r} need a "
+                         f"{window.width}x{window.height} window, more than the renderer can draw ({max_side} a side)")
+    return window, eyes * window.scale
 
 
 # -- what the scene knows: eyes and their motion -----------------------------------------------------------------------
@@ -190,6 +210,18 @@ def eye_points(person) -> np.ndarray | None:
     placed = person.matrices()[0]
     local = np.asarray(person.pose, dtype=np.float64)[list(eyes), :3, 3]
     return local @ placed[:3, :3].T + placed[:3, 3]
+
+
+def subject_eye_distance(person, camera, view) -> float | None:
+    """The view pixels (of a view of ``view`` = (width, height)) between ``person``'s own eyes (their eye bones) on
+    their face turned to ``camera`` where it is (:func:`~.requests.frontal_eye_distance`, as :class:`Truth` measures
+    it); ``None`` without eye bones or a camera, or behind the camera."""
+    eyes = eye_points(person)
+    if eyes is None or camera is None:
+        return None
+    clip_from_world = camera.projection_matrix(view[0] / view[1]) @ camera.view_matrix()
+    return frontal_eye_distance(clip_from_world, view, camera, eyes.mean(axis=0),
+                                float(np.linalg.norm(eyes[0] - eyes[1])))
 
 
 def head_axes(person) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -470,8 +502,8 @@ def _picture_sensor(image: np.ndarray, view, sensor: Sensor | None) -> Sensor:
 def plan_crop(request: WindowRequest, sensor: Sensor, head: HeadRegion | None = None, multiple: int = MULTIPLE,
               preset="ideal") -> Plan | None:
     """The :class:`Plan` of ``request`` on a real camera's picture ``sensor``, or ``None`` when it has none there (a
-    head point, or a region outside the view)."""
-    if request.head is not None:
+    head point, an exact eye distance, or a region outside the view)."""
+    if request.head is not None or request.eye_px is not None:
         return None
     model = camera_preset(request.preset if request.preset is not None else preset)
     planned = plan_request(request, sensor, None, head, multiple)

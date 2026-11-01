@@ -4,7 +4,8 @@ A request names a region of the main view in one of three ways: a person's box (
 pixels), from which :class:`HeadRegion` takes a square around the top of the box; a region given as it is (a face
 found in an earlier window, with a margin); or a head point in the scene (for the evaluation, which knows where the
 heads are). It also says how many pixels the face should get between the eyes (``face_px``) and how many pixels the
-window may have at most; :meth:`.geometry.Sensor.plan` turns that into a level of the sensor.
+window may have at most; :meth:`.geometry.Sensor.plan` turns that into a level of the sensor. An evaluation that sweeps
+face sizes asks for an exact eye distance instead (``eye_px``): its window gets a scale of its own.
 
 At most a few windows are rendered a frame. :class:`Scheduler` picks them: the highest priority first, and among
 equal priorities the tag (a person track) that has waited longest, so that tracks take turns. Its ``priority`` hook is
@@ -74,19 +75,27 @@ class WindowRequest:
             metres wide around it, as the camera sees it.
 
     The scale:
-        face_px: pixels wanted between the eyes: the window is at the coarsest level of the sensor that still gives
-            them (the sensor itself when it cannot); ``None`` for the sensor's own scale.
+        face_px: pixels wanted between the eyes, at least: the window is at the coarsest level of the sensor that
+            still gives them (the sensor itself when it cannot); ``None`` for the sensor's own scale.
         eye_distance: view pixels between the eyes, when known (else estimated from the box, or from ``eye_m``
-            metres at the head point).
+            metres, the eye distance of an adult by default, at the head point).
         max_pixels: the most pixels the window may have (coarser levels until it fits); ``None`` for no limit.
+        eye_px: exactly this many pixels between the eyes, for evaluation renders: the window is drawn at a scale of
+            its own (level 1 of a sensor of that scale, to its whole lines: within 0.1 % on the fair's people at
+            8-160 px), not at a level of the declared sensor; ``face_px``, ``max_pixels``, ``sensor`` and the
+            preset's sensor size do not apply, the preset's faults do (at the window's pixels). The face's size is
+            that of the ``subject``'s own eyes (their eye bones) turned to the camera, as :class:`~.service.Truth`
+            measures it, else the estimate above. Scenes only: a real camera's picture leaves it out.
 
     And:
         priority: higher first (see :class:`Scheduler`).
         frame: the index of the frame the box or region comes from (the window is rendered with a later frame).
         sensor: a sensor for this request alone (else the preset's, else the service's).
         preset: a camera preset for this request alone (a name or a :class:`~.camera_model.CameraModel`).
-        subject: the scene's person this is about, when the caller knows it (the evaluation): the truth and the
-            camera model's motion blur use it; otherwise the person whose eyes are nearest the window's middle.
+        subject: the scene's person this is about, when the caller knows it (the evaluation): the truth, the
+            camera model's motion blur and ``eye_px`` use it; otherwise the person whose eyes are nearest the window's
+            middle.
+        head_size: the side of a head point's square, metres.
     """
 
     tag: Hashable
@@ -103,11 +112,14 @@ class WindowRequest:
     subject: object = None
     head_size: float = 0.5
     eye_m: float = EYE_DISTANCE_M
+    eye_px: float | None = None
 
     def __post_init__(self):
         given = [name for name in ("box", "region", "head") if getattr(self, name) is not None]
         if len(given) != 1:
             raise ValueError(f"a window request needs exactly one of box, region and head (got {given or 'none'})")
+        if self.eye_px is not None and not float(self.eye_px) > 0:
+            raise ValueError(f"eye_px must be a number of pixels above 0, got {self.eye_px}")
         if self.preset is not None:
             camera_preset(self.preset)  # an unknown preset fails here, where the request is made
         if self.sensor is not None and not isinstance(self.sensor, Sensor):

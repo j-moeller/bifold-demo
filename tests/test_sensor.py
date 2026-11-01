@@ -37,11 +37,43 @@ def test_a_sensor_has_the_views_shape_and_its_binnings_as_levels():
     assert sensor.frame(6) == (1280, 720)
     assert Sensor.with_lines(2160, (1280, 720)).size == (3840, 2160)
     assert Sensor.scaled(1.5, (1280, 720)).size == (1920, 1080)
-    assert Sensor.with_lines(4320, (1366, 768)).size == (7684, 4320)  # rounded, within the tolerance
     with pytest.raises(ValueError, match="shape"):
         Sensor(4096, 3072, (1280, 720))
-    with pytest.raises(ValueError, match="level"):
-        sensor.frame(7)
+    with pytest.raises(ValueError, match="binning"):
+        sensor.frame(0)
+    assert sensor.frame(7) == (1097, 617)  # no level: the whole bins, the last pixels left out
+
+
+def test_odd_views_get_sensors_with_useful_levels():
+    """An odd view's shape gives no whole width with many levels: the width moves by a few pixels for them."""
+    for lines, size, levels in ((1080, (1920, 1080), (1, 2, 3, 4, 5, 6)), (2160, (3840, 2160), (1, 2, 3, 4, 5, 6)),
+                                (4320, (7680, 4320), (1, 2, 3, 4, 5, 6))):
+        sensor = Sensor.with_lines(lines, (1366, 768))  # 1920.9, 3841.9 and 7683.8 wide by the view's shape
+        assert sensor.size == size and sensor.levels[:6] == levels
+        exact = Sensor.with_lines(lines, (1366, 768), exact=True)
+        assert exact.width == round(lines * 1366 / 768) and len(exact.levels) < len(sensor.levels)
+    assert Sensor.with_lines(1080, (1366, 768), exact=True).levels == (1,)  # 1921 x 1080
+    assert Sensor.with_lines(2160, (1280, 720)).size == (3840, 2160)  # a view of a good shape keeps its width
+    assert Sensor.scaled(6, (1366, 768)).levels[:6] == (1, 2, 3, 4, 6, 8)
+
+
+def test_the_plan_keeps_its_limits_on_a_sensor_with_few_levels():
+    """A sensor whose sides share few factors (1921 x 1080: level 1 alone) still keeps the window within the pixels
+    and the side allowed, at whole binnings beyond its levels (the last pixels of the frame left out)."""
+    odd = Sensor(1921, 1080, (1366, 768))
+    assert odd.levels == (1,)
+    region = (300, 100, 900, 700)
+    window = odd.plan(region, ied=40, face_px=20, max_pixels=256 * 256)
+    assert window.level == 4 and window.pixels <= 256 * 256 and odd.frame(4) == (480, 270)
+    _x0, _y0, x1, y1 = window.sensor_rect
+    assert all(v % 4 == 0 for v in window.sensor_rect) and x1 <= 1920 and y1 <= 1080
+    vx0, vy0, vx1, vy1 = window.view_rect
+    assert vx0 <= region[0] and vy0 <= region[1] and vx1 >= region[2] and vy1 >= region[3]
+    assert max(odd.plan(region, max_side=300).size) <= 300
+    edge = odd.window((1300, 700, 1366, 768), 4)  # at the right edge: the last column is no whole bin
+    assert edge.sensor_rect[2] == 1920
+    good = Sensor(1920, 1080, (1366, 768))
+    assert good.plan(region, ied=40, face_px=20, max_pixels=256 * 256).level in good.levels
 
 
 def test_windows_are_snapped_to_the_level_grid_and_cover_the_region():

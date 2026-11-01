@@ -7,10 +7,13 @@ corner of the top-left pixel; pixel ``(i, j)`` is the square ``[i, i + 1) x [j, 
 a shift, exactly, so boxes found in a window map back to the main frame without rounding.
 
 **Levels.** A window at level ``k`` has one pixel for every ``k x k`` sensor pixels: a binned read-out of the sensor.
-Only binnings that divide both sides of the sensor are levels, so that the whole frame at level ``k`` is a sensor of
-``width / k`` x ``height / k`` pixels and a window at that level is exactly a crop of it. Level 1 is the sensor itself.
+The binnings that divide both sides of the sensor are its levels (:attr:`Sensor.levels`): the whole frame at level
+``k`` is then a sensor of ``width / k`` x ``height / k`` pixels and a window at that level is exactly a crop of it.
+Level 1 is the sensor itself. :meth:`Sensor.with_lines` and :meth:`Sensor.scaled` choose sizes with many levels.
 :meth:`Sensor.plan` picks the coarsest level whose face is still as large as asked for (or level 1, when no level is),
-then coarser ones while the window has more pixels than allowed.
+then coarser ones while the window has more pixels than allowed or a side longer than a renderer can draw; when no
+level gets there (a sensor whose sides share few factors), it takes the whole binnings beyond them, whose frame leaves
+out the last ``width % k`` columns and ``height % k`` rows: a window never exceeds its limits.
 """
 
 from __future__ import annotations
@@ -55,15 +58,26 @@ class Sensor:
         object.__setattr__(self, "view", view)
 
     @classmethod
-    def with_lines(cls, lines: int, view) -> Sensor:
-        """A sensor ``lines`` pixels high with the view's shape (``with_lines(2160, (1280, 720))``: 3840 x 2160)."""
-        w, h = int(view[0]), int(view[1])
-        return cls(max(1, round(int(lines) * w / h)), int(lines), (w, h))
+    def with_lines(cls, lines: int, view, exact: bool = False) -> Sensor:
+        """A sensor ``lines`` pixels high with the view's shape (``with_lines(2160, (1280, 720))``: 3840 x 2160): of
+        the widths within half the aspect tolerance of the view's shape, the one with the most levels up to 16 (the
+        nearest of those), so that an odd view still gets useful binnings (``with_lines(1080, (1366, 768))``: 1920 x
+        1080, where 1921 would have level 1 alone). ``exact``: the nearest width, levels or not."""
+        w, h, lines = int(view[0]), int(view[1]), max(1, int(lines))
+        ideal = lines * w / h
+        nearest = max(1, round(ideal))
+        if exact:
+            return cls(nearest, lines, (w, h))
+        slack = int(ideal * ASPECT_TOLERANCE / 2)
+        widths = range(max(1, nearest - slack), nearest + slack + 1)
+        width = max(widths, key=lambda c: (sum(c % k == 0 and lines % k == 0 for k in range(1, 17)), -abs(c - ideal)))
+        return cls(width, lines, (w, h))
 
     @classmethod
-    def scaled(cls, scale: float, view) -> Sensor:
-        """A sensor ``scale`` times the view in each direction (rounded to whole lines)."""
-        return cls.with_lines(max(1, round(int(view[1]) * float(scale))), view)
+    def scaled(cls, scale: float, view, exact: bool = False) -> Sensor:
+        """A sensor ``scale`` times the view in each direction (rounded to whole lines; the width as
+        :meth:`with_lines` chooses it)."""
+        return cls.with_lines(max(1, round(int(view[1]) * float(scale))), view, exact)
 
     def __str__(self) -> str:
         return f"{self.width}x{self.height}"
@@ -96,13 +110,15 @@ class Sensor:
         return tuple(sorted({*small, *(g // k for k in small)}))
 
     def frame(self, level: int = 1) -> tuple[int, int]:
-        """The whole frame's size at ``level``."""
+        """The whole frame's size at ``level`` (at a binning that is no level, the whole bins: see the module docs)."""
         self._check_level(level)
         return self.width // level, self.height // level
 
     def _check_level(self, level: int) -> None:
-        if level not in self.levels:
-            raise ValueError(f"{level} is no level of a {self} sensor (its levels: {', '.join(map(str, self.levels))})")
+        if level != int(level) or not 1 <= level <= min(self.width, self.height):
+            levels = ", ".join(map(str, self.levels))
+            raise ValueError(f"{level} is no binning of a {self} sensor (its levels: {levels}; other whole numbers up "
+                             f"to {min(self.width, self.height)} leave out the last pixels)")
 
     def from_view(self, points) -> np.ndarray:
         """View pixels ``(..., 2)`` to sensor pixels."""
@@ -136,17 +152,22 @@ class Sensor:
         """The window for ``region`` (view pixels): at the coarsest level at which a face with ``ied`` view pixels
         between the eyes still has ``face_px`` (at level 1 when no level gets there, or when ``ied`` or ``face_px`` is
         not given), then coarser while it has more than ``max_pixels`` pixels or a side longer than ``max_side`` (what
-        a renderer can draw). The face then has ``ied * window.scale`` pixels between the eyes."""
+        a renderer can draw), beyond the levels if need be (see the module docs). The face then has
+        ``ied * window.scale`` pixels between the eyes."""
         levels = self.levels
         start = 0
         if ied is not None and ied > 0 and face_px is not None and face_px > 0:
             reaching = [i for i, k in enumerate(levels) if ied * self.scale / k >= face_px]
             start = reaching[-1] if reaching else 0
+
+        def fits(window: Window) -> bool:
+            return (max_pixels is None or window.pixels <= max_pixels) and \
+                (max_side is None or max(window.size) <= max_side)
+
         window = None
-        for k in levels[start:]:
+        for k in (*levels[start:], *range(levels[-1] + 1, min(self.width, self.height) + 1)):
             window = self.window(region, k, multiple)
-            if (max_pixels is None or window.pixels <= max_pixels) and \
-                    (max_side is None or max(window.size) <= max_side):
+            if fits(window):
                 break
         return window
 

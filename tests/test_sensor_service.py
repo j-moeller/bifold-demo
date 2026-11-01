@@ -387,6 +387,51 @@ def test_the_truth_finds_the_person_and_their_motion():
     assert find_truth(scene, sensor.window((0, 0, 50, 50)), motion) is None  # nobody's eyes there
 
 
+def test_exact_eye_distances_for_evaluation_renders(gl):
+    """eye_px: the subject's face turned to the camera gets that many pixels between their eyes, at a scale of the
+    request's own, whatever the sensor's levels, the preset's sensor size or max_pixels say."""
+    from bifold_demo.characters.character import Character
+    from bifold_demo.scene import Scene
+    from bifold_demo.scene.renderer import Renderer
+
+    model = _eyes_model()
+    scene = Scene(background=(90, 90, 90))
+    scene.camera = Camera(position=(0, 1.6, 6), target=(0, 1.6, -6), fov=55)
+    near = scene.add(Character(model, lambda t: CharacterState((0.4, 0.0, 3.0), 20.0, [])), name="near")  # turned
+    far = scene.add(Character(model, lambda t: CharacterState((-1.5, 0.0, -6.0), 0.0, [])), name="far")  # 12 m
+    scene.update(0.0, 0.0)
+    renderer = Renderer(*VIEW)
+    try:
+        renderer.render(scene)
+        sensor = Sensor.scaled(6, VIEW)
+        requests = [WindowRequest((person.name, px), head=tuple(eye_points(person).mean(axis=0)), subject=person,
+                                  eye_px=px, max_pixels=64 * 64, preset="budget 1080p")
+                    for person in (near, far) for px in (12, 48, 100)]
+        results = render_windows(scene, renderer, requests, sensor)
+        assert len(results) == 6
+        for result in results:
+            px = result.request.eye_px
+            assert result.window.level == 1 and result.window.sensor not in (sensor, Sensor.with_lines(1080, VIEW))
+            assert result.truth.name == result.request.subject.name and result.preset == "budget 1080p"
+            assert result.truth.frontal_eye_distance == pytest.approx(px, rel=0.005)
+            assert result.eye_distance == pytest.approx(px, rel=0.005)
+        guess = WindowRequest("guess", head=tuple(eye_points(far).mean(axis=0)), eye_px=30)  # eye_m at the point
+        (guessed,) = render_windows(scene, renderer, [guess], sensor)
+        assert guessed.eye_distance == pytest.approx(30, rel=0.005)
+        assert guessed.truth.frontal_eye_distance == pytest.approx(30 * 0.064 / 0.063, rel=0.005)  # 64 mm eyes
+        huge = WindowRequest("huge", head=tuple(eye_points(near).mean(axis=0)), subject=near,
+                             eye_px=renderer.max_window)
+        with pytest.raises(ValueError, match="more than the renderer can draw"):
+            render_windows(scene, renderer, [huge], sensor)
+        with pytest.raises(ValueError, match="eye_px"):
+            WindowRequest("bad", head=(0, 1.6, 0), eye_px=0)
+        picture = np.zeros((360, 640, 3), np.uint8)
+        exact = WindowRequest("r", region=(10, 10, 50, 50), eye_distance=10, eye_px=20)
+        assert crop_windows(picture, VIEW, [exact]) == []  # for scene renders only
+    finally:
+        renderer.release()
+
+
 def test_speeds_hold_with_frames_far_apart():
     """A slow demo's frames are far apart: the speed then comes from the person's behaviour's track (from the first
     frame on), else from the frames up to MOTION_GAP apart."""
