@@ -109,3 +109,19 @@ branch and pushed; its results go into the progress log.
   - YuNet finds 36 of 36 frontal faces at 2-30 m in the windows, against 20 of 36 in the view.
   - Details in [virtual_sensor_results.md](virtual_sensor_results.md).
   - Its independent review is running.
+- **1 November, 17:05 UTC:** S1 reviewed independently: no high-severity findings, 5 medium, 9 low.
+  - **Confirmed:**
+    - near-exact crops and exact pixel maps;
+    - culling is conservative: no triangle wrongly left out in about 330,000 random windows;
+    - the main view renders pixel-identical to before;
+    - the measurements reproduce;
+    - 816 passed, 12 skipped.
+  - **To fix:**
+    - the evaluation truth's 'frontal' eye distance is biased off-axis, up to 1.3x;
+    - the truth has no head orientation;
+    - requests off the view use up window slots;
+    - invalid requests fail on the render thread instead of at the caller;
+    - `--sensor` of another shape ends the demo.
+  - **Lows:** camera faults applied at binned scale, motion blur off at long frame gaps, windows at odd pixel
+    offsets, framebuffer memory, doc numbers, test gaps, E1's control of the eye distance.
+  - The S1 builder is fixing them.
