@@ -157,7 +157,7 @@ def _translation(x, y, z):
     return m
 
 
-def _synthetic_scene(path: Path, animation=None, version=7400):
+def _synthetic_scene(path: Path, animation=None, version=7400, skin="C:\\art\\SKIN_color.TGA"):
     """A Z-up, centimetre (3ds Max style) scene: a root, two legs, and a skinned quad plus a triangle.
 
     The figure faces -Y in the file (+Z after conversion). ``animation`` maps (model id, property) to
@@ -207,7 +207,7 @@ def _synthetic_scene(path: Path, animation=None, version=7400):
     for material_id, name in ((50, "skin"), (51, "hair")):
         objects.append(N("Material", I64(material_id), f"{name}\x00\x01Material", ""))
         connections.append(N("C", "OO", I64(material_id), I64(20)))
-    for texture_id, file_name, material_id, slot in ((60, "C:\\art\\SKIN_color.TGA", 50, "DiffuseColor"),
+    for texture_id, file_name, material_id, slot in ((60, skin, 50, "DiffuseColor"),
                                                      (61, "D:/x/hair_opacity.tga", 51, "DiffuseColor"),
                                                      (62, "hair_opacity.tga", 51, "TransparentColor")):
         objects.append(N("Texture", I64(texture_id), "t\x00\x01Texture", "", children=[N("FileName", file_name)]))
@@ -291,6 +291,47 @@ def test_load_character_lod_and_texture_options(synthetic_avatar):
         load_character(synthetic_avatar, lod="20")  # the mesh's FBX object id is not its name
     small = load_character(synthetic_avatar, max_texture_size=2)
     assert max(small.primitives[0].texture.shape[:2]) == 2
+
+
+def test_a_head_gets_packed_maps_detail_textures_and_tangents(tmp_path):
+    from PIL import Image
+
+    from bifold_demo.characters.tangents import normal_green
+
+    textures = tmp_path / "Textures"
+    textures.mkdir()
+    rows, cols = np.mgrid[0:64, 0:64].astype(float)
+    colour = np.dstack([rows * 4, cols * 4, np.full_like(rows, 90)]).astype(np.uint8)
+    Image.fromarray(colour).save(textures / "test_head_color.tga")
+    height = 0.03 * np.sin(cols / 5.0) * np.cos(rows / 7.0)  # bumps, baked with green towards -v (DirectX)
+    dh_du, dh_dv = np.gradient(height, axis=1), -np.gradient(height, axis=0)  # rows run down the image, v up
+    n = np.dstack([-dh_du, dh_dv, np.full_like(height, 0.01)])  # -v: green holds +dh/dv instead of -dh/dv
+    n /= np.linalg.norm(n, axis=2, keepdims=True)
+    normal = np.round((n + 1) * 127.5).astype(np.uint8)
+    assert normal_green(normal)[0] == "-v"
+    Image.fromarray(normal).save(textures / "Test_Head_Normal.TGA")  # found by name, in any case
+    Image.fromarray(np.full((64, 64, 3), 40, np.uint8)).save(textures / "test_head_specular.tga")
+    path = _synthetic_scene(tmp_path / "Export" / "Test.fbx", skin="C:\\art\\test_head_color.tga")
+
+    model = load_character(path, max_texture_size=32, detail_size=64)
+    head, hair = model.primitives
+    assert head.texture.shape == (32, 32, 4) and head.maps.shape == (32, 32, 4)
+    assert head.detail.texture.shape == (64, 64, 4) and head.detail.maps.shape == (64, 64, 4)
+    assert np.array_equal(head.detail.texture[..., :3], colour) and head.full_texture is head.detail.texture
+    maps = head.detail.maps
+    assert np.array_equal(maps[..., 0], normal[..., 0]) and np.array_equal(maps[..., 1], 255 - normal[..., 1])
+    assert (maps[..., 2] == 40).all() and (maps[..., 3] == 255).all()  # specular level; no occlusion yet
+    assert normal_green(maps[..., :3])[0] == "+v"  # stored the library's way round
+    assert head.tangents.shape == (4, 4) and np.allclose(np.linalg.norm(head.tangents[:, :3], axis=1), 1)
+    np.testing.assert_allclose(head.tangents[:, :3], np.tile([1.0, 0.0, 0.0], (4, 1)), atol=1e-6)  # u grows to +x
+    info = model.metadata["head_maps"]["skin"]
+    assert info["green"] == "-v" and info["normal"] == "Test_Head_Normal.TGA" and info["specular"]
+    assert hair.maps is None and hair.detail is None and hair.tangents is None  # only heads get maps
+
+    plain = load_character(path, max_texture_size=64, detail_size=64)  # no larger version: maps, no detail
+    assert plain.primitives[0].detail is None and plain.primitives[0].maps.shape == (64, 64, 4)
+    none = load_character(path, max_texture_size=32, detail_size=0)
+    assert none.primitives[0].maps is None and none.primitives[0].tangents is None
 
 
 def test_load_clip_makes_walks_in_place(tmp_path):

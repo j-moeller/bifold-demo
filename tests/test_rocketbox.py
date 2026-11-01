@@ -23,7 +23,14 @@ import pytest
 
 from bifold_demo.characters import cli, crowd, rocketbox
 from bifold_demo.characters.library import CharacterLibrary, DamagedFileWarning, default_folder
-from bifold_demo.characters.model import AnimationClip, CharacterModel, Skeleton, SkinnedPrimitive, quat_from_axis_angle
+from bifold_demo.characters.model import (
+    AnimationClip,
+    CharacterModel,
+    Detail,
+    Skeleton,
+    SkinnedPrimitive,
+    quat_from_axis_angle,
+)
 
 # the Rocketbox file listing (default: the part of it committed next to this file) and a folder with downloaded
 # Rocketbox files (Avatars/ and Animations/, e.g. the Assets folder of a clone; the real-file tests skip without it)
@@ -103,6 +110,20 @@ def test_names_sizes_and_urls():
     assert rocketbox.url_for("Assets/a b.tga") == rocketbox.BASE_URL + "Assets/a%20b.tga"
 
 
+def test_heads_come_with_their_normal_and_specular_maps():
+    maps = {name: rocketbox.AVATARS[name].maps for name in ("Male_Adult_05", "Chef_Female_01", "Military_Male_02",
+                                                             "Female_Adult_16", "Police_Male_03")}
+    assert maps["Male_Adult_05"] == ("m009_head_normal.tga", "m009_head_specular.tga")
+    assert maps["Chef_Female_01"] == ("f110_head_normal_a.tga", "f110_head_specular_a.tga")  # the variant's own
+    assert maps["Military_Male_02"] == ("sm024_head_normal.tga", "sm024_head_specular.tga")  # camouflage: shared
+    assert maps["Female_Adult_16"] == ()  # one texture for everything, no maps
+    assert len(maps["Police_Male_03"]) == 4  # two heads
+    files = rocketbox.AVATARS["Male_Adult_05"].files
+    assert files[-2:] == ["Assets/Avatars/Adults/Male_Adult_05/Textures/m009_head_normal.tga",
+                          "Assets/Avatars/Adults/Male_Adult_05/Textures/m009_head_specular.tga"]
+    assert all(rocketbox.estimate_size(f) == 12_582_956 for f in files[-2:])  # 2048 x 2048 RGB TGA files
+
+
 # -- download --------------------------------------------------------------------------------------
 
 
@@ -169,18 +190,19 @@ def test_fetch_downloads_in_parallel_with_progress(tmp_path):
     remote = _remote()
     calls = []
     report = _fetch(tmp_path, FakeOpener(remote), jobs=3, progress=lambda *a: calls.append(a))
-    assert report.downloaded == 4 and report.skipped == 0 and report.bytes == sum(map(len, remote.values()))
+    assert report.downloaded == 6 and report.skipped == 0 and report.bytes == sum(map(len, remote.values()))
     for path, local in zip(rocketbox.files_for(["Female_Child_01"], ["m_walk_neutral_01"]), report.files):
         assert local == tmp_path / path and local.read_bytes() == remote[rocketbox.url_for(path)]
     assert not list(tmp_path.rglob("*.part"))
-    assert sorted(c[0] for c in calls) == [1, 2, 3, 4] and all(c[1] == 4 and "downloaded" in c[3] for c in calls)
+    assert sorted(c[0] for c in calls) == [1, 2, 3, 4, 5, 6] and all(c[1] == 6 and "downloaded" in c[3]
+                                                                 for c in calls)
 
 
 def test_fetch_retries_and_gives_clear_errors(tmp_path):
     remote = _remote()
     urls = list(remote)
     opener = FakeOpener(remote, failures={urls[1]: 2})
-    assert _fetch(tmp_path / "a", opener, retries=2).downloaded == 4
+    assert _fetch(tmp_path / "a", opener, retries=2).downloaded == 6  # FBX, 2 colour textures, 2 maps, 1 clip
     assert opener.count(urls[1]) == 3
 
     missing = dict(remote)
@@ -192,7 +214,7 @@ def test_fetch_retries_and_gives_clear_errors(tmp_path):
     assert len(failed) == 2 and "404" in failed[rocketbox.files_for(["Female_Child_01"])[2]]
     assert opener.count(urls[2]) == 1  # not found: no retries
     assert opener.count(urls[1]) == 3
-    assert info.value.report.downloaded == 2
+    assert info.value.report.downloaded == 4
 
 
 def test_fetch_resumes_and_skips_complete_files(tmp_path):
@@ -204,7 +226,7 @@ def test_fetch_resumes_and_skips_complete_files(tmp_path):
     (tmp_path / (paths[1] + ".part")).write_bytes(remote[rocketbox.url_for(paths[1])][:1000])
     opener = FakeOpener(remote)
     report = _fetch(tmp_path, opener)
-    assert report.skipped == 1 and report.downloaded == 3
+    assert report.skipped == 1 and report.downloaded == 5
     assert opener.count(rocketbox.url_for(paths[0])) == 0
     assert (rocketbox.url_for(paths[1]), "bytes=1000-") in opener.requests
     assert (tmp_path / paths[1]).read_bytes() == remote[rocketbox.url_for(paths[1])]
@@ -218,7 +240,7 @@ def test_incomplete_downloads_never_appear_under_the_final_name(tmp_path):
     assert not any((tmp_path / p).exists() for p in paths)
     assert all((tmp_path / (p + ".part")).stat().st_size > 0 for p in paths)
     opener = FakeOpener(remote)
-    assert _fetch(tmp_path, opener, clips=()).downloaded == 3  # resumes the .part files
+    assert _fetch(tmp_path, opener, clips=()).downloaded == 5  # resumes the .part files
     assert all(r for _, r in opener.requests)
     assert all((tmp_path / p).read_bytes() == remote[rocketbox.url_for(p)] for p in paths)
 
@@ -270,8 +292,8 @@ def test_fetch_gives_up_soon_when_the_server_cannot_be_reached(tmp_path):
     report = info.value.report
     assert report.stopped and report.downloaded == 0
     assert rocketbox.UNREACHABLE_AFTER <= len(report.failed) <= rocketbox.UNREACHABLE_AFTER + 1  # + one running
-    assert len(calls) <= 3 * (rocketbox.UNREACHABLE_AFTER + 1)  # not 3 attempts for every one of the 37 files
-    assert "check the network connection" in str(info.value) and "37 of 37 files are still missing" in str(info.value)
+    assert len(calls) <= 3 * (rocketbox.UNREACHABLE_AFTER + 1)  # not 3 attempts for every one of the 43 files
+    assert "check the network connection" in str(info.value) and "43 of 43 files are still missing" in str(info.value)
 
 
 def test_cli_fetch_without_a_network_ends_soon_with_one_clear_error(tmp_path, monkeypatch, capsys):
@@ -281,7 +303,7 @@ def test_cli_fetch_without_a_network_ends_soon_with_one_clear_error(tmp_path, mo
     assert cli.main(["fetch", "--set", "small", "--dest", str(tmp_path)]) == 1
     out, err = capsys.readouterr()
     assert "error: cannot reach raw.githubusercontent.com" in err and "[prepare]" not in out
-    assert len((out + err).splitlines()) < 20 and len(calls) <= 4 * (rocketbox.UNREACHABLE_AFTER + 8)  # of 69 files
+    assert len((out + err).splitlines()) < 20 and len(calls) <= 4 * (rocketbox.UNREACHABLE_AFTER + 8)  # of 95 files
 
 
 def _timing_out(calls: list, answer=None):
@@ -317,7 +339,7 @@ def test_a_timeout_is_retried_once_the_server_has_answered(tmp_path):
             raise TimeoutError("timed out")  # (waiting for the answer: not wrapped in a URLError)
         return _timing_out(calls, answer)(request, timeout)
 
-    assert _fetch(tmp_path, opener, jobs=1, retries=3).downloaded == 4
+    assert _fetch(tmp_path, opener, jobs=1, retries=3).downloaded == 6
     assert calls.count(urls[1]) == 1 and not late[urls[1]]
 
 
@@ -381,7 +403,7 @@ def test_fetch_stops_at_the_first_certificate_failure_with_one_clear_error(tmp_p
     report = info.value.report
     assert report.stopped and len(report.failed) == 1 and len(calls) <= 4  # the same for every file of the host
     assert "install certificates" in str(info.value) and "intercepts HTTPS" in str(info.value)
-    assert "37 of 37 files are still missing" in str(info.value)
+    assert "43 of 43 files are still missing" in str(info.value)
 
     monkeypatch.setattr(rocketbox, "_default_opener", lambda: _untrusted([]))
     assert cli.main(["fetch", "--set", "conference", "--dest", str(tmp_path / "cli")]) == 1
@@ -408,6 +430,11 @@ def _model(name: str) -> CharacterModel:
                                            rng.integers(0, n, (n - 2, 3)).astype(np.uint32),
                                            rng.integers(0, 4, (n, 4)).astype(np.int32),
                                            np.full((n, 4), 0.25, np.float32), texture))
+    head = primitives[2]  # a head: maps, tangents and larger detail textures
+    head.tangents = rng.random((len(head.positions), 4), dtype=np.float32)
+    head.maps = rng.integers(0, 256, (16, 8, 4), dtype=np.uint8)
+    head.detail = Detail(rng.integers(0, 256, (32, 16, 4), dtype=np.uint8),
+                         rng.integers(0, 256, (32, 16, 4), dtype=np.uint8))
     return CharacterModel(name, skeleton, primitives, np.linalg.inv(skeleton.rest_global),
                           {"lod": "hipoly", "triangles": sum(len(p.indices) for p in primitives)})
 
@@ -429,7 +456,7 @@ def stub_convert(monkeypatch):
     """A fake ``fbx_convert`` (no FBX parsing) that records what it converts."""
     calls = []
 
-    def load_character(fbx_path, texture_dir=None, lod="auto", max_texture_size=1024):
+    def load_character(fbx_path, texture_dir=None, lod="auto", max_texture_size=1024, detail_size=2048):
         calls.append(Path(fbx_path).name)
         model = _model(Path(fbx_path).stem)
         model.metadata["source"] = str(fbx_path)
@@ -467,7 +494,7 @@ def test_prepare_and_load_round_trip(tmp_path, stub_convert):
     meta = available["Female_Child_01"]
     assert (meta["sex"], meta["age_group"], meta["category"]) == ("female", "child", "Children")
     assert meta["source"] == rocketbox.AVATARS["Female_Child_01"].fbx and meta["lod"] == "hipoly"
-    assert len(list((cache / "avatars").glob("Female_Child_01.*.png"))) == 2  # shared texture written once
+    assert len(list((cache / "avatars").glob("Female_Child_01.*.png"))) == 5  # shared texture written once; maps
 
     original, model = _model("Female_Child_01"), library.load("Female_Child_01", textures="array")
     assert model.skeleton.names == BONES and np.array_equal(model.skeleton.parents, original.skeleton.parents)
@@ -477,12 +504,22 @@ def test_prepare_and_load_round_trip(tmp_path, stub_convert):
     for a, b in zip(original.primitives, model.primitives):
         for key in ("positions", "normals", "uvs", "indices", "joints", "weights"):
             assert np.array_equal(getattr(a, key), getattr(b, key)) and getattr(b, key).dtype == getattr(a, key).dtype
-        assert (b.texture is None) if a.texture is None else np.array_equal(a.texture, b.texture)
+        for key in ("texture", "maps", "tangents"):
+            assert (getattr(b, key) is None) if getattr(a, key) is None else np.array_equal(getattr(a, key),
+                                                                                             getattr(b, key))
+        assert (b.detail is None) if a.detail is None else (np.array_equal(a.detail.texture, b.detail.texture)
+                                                            and np.array_equal(a.detail.maps, b.detail.maps))
     assert model.primitives[0].texture is model.primitives[1].texture
+    assert model.primitives[2].full_texture is model.primitives[2].detail.texture
+    assert model.primitives[0].full_texture is model.primitives[0].texture and model.metadata["format"] == 2
     assert library.load("Female_Child_01", textures="array") is model
 
     paths = library.load("Female_Child_01").primitives
     assert isinstance(paths[0].texture, str) and paths[3].texture is None
+    assert isinstance(paths[2].maps, str) and isinstance(paths[2].detail.texture, str) and paths[2].detail.maps
+    nothing = library.load("Female_Child_01", textures="none").primitives[2]
+    assert nothing.texture is None and nothing.maps is None and nothing.detail.texture is None
+    assert nothing.tangents is not None  # arrays are not textures
     rgba = cv2.cvtColor(cv2.imread(paths[2].texture, cv2.IMREAD_UNCHANGED), cv2.COLOR_BGRA2RGBA)
     assert np.array_equal(rgba, original.primitives[2].texture)
     with pytest.raises(KeyError, match="not prepared yet"):
@@ -550,8 +587,8 @@ def _cut(path: Path, fraction: float) -> None:
     path.write_bytes(data[: int(len(data) * fraction)])
 
 
-def _older_format(path: Path) -> None:
-    path.write_text(json.dumps({**json.loads(path.read_text()), "format": rocketbox.FORMAT - 1}))
+def _newer_format(path: Path) -> None:
+    path.write_text(json.dumps({**json.loads(path.read_text()), "format": rocketbox.FORMAT + 1}))
 
 
 def _spoil(npz: Path, member: str) -> None:
@@ -584,7 +621,8 @@ AVATAR_DAMAGE = {
     "texture missing": lambda folder: (folder / "Business_Male_02.tex0.png").unlink(),
     "texture cut off": lambda folder: _cut(folder / "Business_Male_02.tex1.png", 0.6),
     "metadata cut off": lambda folder: _cut(folder / "Business_Male_02.json", 0.5),
-    "older format": lambda folder: _older_format(folder / "Business_Male_02.json"),
+    "detail texture cut off": lambda folder: _cut(folder / "Business_Male_02.tex3.png", 0.6),
+    "newer format": lambda folder: _newer_format(folder / "Business_Male_02.json"),
 }
 
 
@@ -675,6 +713,40 @@ def test_damage_found_only_when_loading_leaves_the_file_out(prepared):
     rocketbox.prepare(raw, cache, avatars=["Business_Male_02"], clips=["f_idle_neutral_01"], force=True)
     assert sorted(library.available()) == sorted(AVATARS) and "f_idle_neutral_01" in library.clips()
     assert library.load("Business_Male_02").name == "Business_Male_02" and not library.damaged()
+
+
+def _as_format_1(cache: Path, name: str) -> None:
+    """Make the prepared avatar ``name`` look as the previous version prepared it: no maps, no tangents, no detail."""
+    path = cache / "avatars" / f"{name}.json"
+    meta = json.loads(path.read_text())
+    for p in meta["primitives"]:
+        for key in ("maps", "detail", "tangents"):
+            p.pop(key, None)
+    path.write_text(json.dumps({**meta, "format": 1}))
+
+
+def test_an_avatar_of_the_older_format_loads_and_fetch_makes_it_again(prepared, capsys):
+    raw, cache = prepared
+    _as_format_1(cache, "Business_Male_02")
+    library = CharacterLibrary(cache)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DamagedFileWarning)  # it is not damaged
+        assert sorted(library.available()) == sorted(AVATARS) and not library.damaged()
+        model = library.load("Business_Male_02")
+    head = model.primitives[2]
+    assert head.maps is None and head.detail is None and head.tangents is None and isinstance(head.texture, str)
+    assert head.full_texture == head.texture
+    assert "1 of the avatars were prepared by an older version" in library.describe()
+    assert "fetch --avatars Business_Male_02 --clips basic" in library.describe()
+    assert not rocketbox.is_prepared(cache, "avatar", "Business_Male_02")  # fetch and prepare make it again
+    assert rocketbox.is_prepared(cache, "avatar", "Female_Child_01")
+    assert cli.main(["fetch", "--avatars", "Business_Male_02", "--clips", "basic", "--dest", str(cache),
+                     "--dry-run"]) == 0
+    assert "1 of the avatars were prepared by an older version: they are made again" in capsys.readouterr().out
+    report = rocketbox.prepare(raw, cache, clips=[])
+    assert report.avatars == ["Business_Male_02"] and report.skipped == ["Female_Child_01"]
+    assert library.load("Business_Male_02").primitives[2].maps is not None
+    assert "older version" not in library.describe()
 
 
 def test_load_says_how_to_get_an_avatar_that_is_not_prepared(tmp_path, stub_convert):
@@ -812,7 +884,7 @@ def test_cli_fetch_downloads_prepares_and_lists(tmp_path, stub_convert, monkeypa
     assert cli.main(["fetch", "--avatars", "Female_Child_01", "--clips", "basic", "--dest", str(dest),
                      "--delete-raw"]) == 0
     out = capsys.readouterr().out
-    assert "29 files" in out and "[prepare]" in out and "\n  ready\n" in out
+    assert "31 files" in out and "[prepare]" in out and "\n  ready\n" in out
     assert not [p for p in (dest / "raw").rglob("*") if p.is_file()]
     assert cli.main(["fetch", "--avatars", "Female_Child_01", "--clips", "basic", "--dest", str(dest)]) == 0
     assert "27 already prepared" in capsys.readouterr().out
@@ -844,7 +916,7 @@ def test_cli_fetch_repairs_what_the_library_leaves_out(tmp_path, stub_convert, m
     assert "left out, damaged: Female_Child_01" in out and "left out, damaged: m_walk_neutral_01" in out
     assert repair[:2] == ["bifold-characters", "fetch"] and cli.main(repair[1:]) == 0  # the suggested command
     out = capsys.readouterr().out
-    assert "(25 already prepared): 4 files" in out and "[prepare] 1 avatars and 1 clips converted" in out  # not 78
+    assert "(25 already prepared): 6 files" in out and "[prepare] 1 avatars and 1 clips converted" in out  # not 78
     assert cli.main(["list", "--dest", str(dest)]) == 0
     out = capsys.readouterr().out
     assert "Female_Child_01" in out and "damaged" not in out and "\n  ready\n" in out
@@ -860,7 +932,7 @@ def test_cli_fetch_takes_an_assets_folder_like_prepare(tmp_path, stub_convert, m
     dest = tmp_path / "characters"
     assert cli.main(["fetch", "--avatars", *avatar, "--clips", "basic", "--raw", str(assets), "--dest", str(dest)]) == 0
     out = capsys.readouterr().out
-    assert "29 files, about 12.6 MB to download (28 files already there)" in out
+    assert "31 files, about 12.6 MB to download (30 files already there)" in out
     assert opener.requests == [(rocketbox.url_for(texture), None)]
     assert (assets / texture.removeprefix("Assets/")).is_file() and not (assets / "Assets").exists()
     assert "[prepare] 1 avatars and 26 clips converted" in out and "\n  ready\n" in out

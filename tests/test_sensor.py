@@ -195,7 +195,8 @@ def _windows_against_full_renders(scene, sensor, cases, min_psnr=50.0):
             crop = fulls[level][w.y:w.y + w.height, w.x:w.x + w.width]
             diff = np.abs(crop.astype(np.int16) - image.astype(np.int16)).max(axis=2)
             assert psnr(crop, image) >= min_psnr, (w, psnr(crop, image))
-            assert (diff > 8).mean() < 0.002, w  # only a few silhouette pixels, where MSAA samples fall differently
+            # only a few pixels of silhouettes and alpha-tested hair cards, where MSAA samples fall differently
+            assert (diff > 8).sum() <= max(6, 0.002 * diff.size), w
     finally:
         view.release()
 

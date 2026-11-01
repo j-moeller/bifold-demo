@@ -79,7 +79,7 @@ def load_or_build(model: CharacterModel, pose: str, path: Path | None, key: str,
 
 def _light(model: CharacterModel) -> CharacterModel:
     """``model`` without its textures (all the worker needs, and cheap to send)."""
-    return replace(model, primitives=[replace(p, texture=None) for p in model.primitives])
+    return replace(model, primitives=[replace(p, texture=None, maps=None, detail=None) for p in model.primitives])
 
 
 class YogaClips:

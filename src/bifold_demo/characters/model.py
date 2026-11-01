@@ -178,6 +178,17 @@ class Skeleton:
 # -- meshes and models -----------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class Detail:
+    """Larger versions of a primitive's textures, for close-ups: ``texture`` (the colour) and ``maps`` (the packed
+    normal and specular map), each given like the primitive's own (an image path, an RGBA array or a texture), or
+    ``None``. The renderer draws them only where a picture needs them (a face large in a window), and the head-texture
+    pipeline works at their size (see :attr:`SkinnedPrimitive.full_texture`)."""
+
+    texture: object = None
+    maps: object = None
+
+
 @dataclass
 class SkinnedPrimitive:
     """Part of a character's mesh with one material.
@@ -188,6 +199,13 @@ class SkinnedPrimitive:
         indices: ``(M, 3)`` uint32 triangles.
         joints: ``(N, 4)`` int bone indices, weights: ``(N, 4)`` float32 summing to 1.
         texture: anything :func:`bifold_demo.scene.as_texture` accepts (RGBA with alpha = cut-out).
+        tangents: ``(N, 4)`` float32 or ``None``: per vertex the direction the texture's ``u`` grows in and the
+            handedness (+1, or -1 where the UV layout is mirrored), for normal mapping (:mod:`.tangents`).
+        maps: the packed normal and specular map, given like ``texture`` (data, not colour): the normal's x and y in
+            red and green (green towards ``+v``), the specular level in blue, ambient occlusion in alpha; or ``None``.
+            Drawn only with ``tangents``.
+        detail: larger versions of ``texture`` and ``maps`` (:class:`Detail`; prepared heads: 2048 against 1024), or
+            ``None``.
     """
 
     name: str
@@ -198,11 +216,25 @@ class SkinnedPrimitive:
     joints: np.ndarray
     weights: np.ndarray
     texture: object = None
+    tangents: np.ndarray | None = None
+    maps: object = None
+    detail: Detail | None = None
 
     def interleaved(self) -> np.ndarray:
         """Rows of ``x y z nx ny nz u v j0 j1 j2 j3 w0 w1 w2 w3`` as float32."""
         return np.hstack([self.positions, self.normals, self.uvs, self.joints.astype(np.float32),
                           self.weights]).astype(np.float32)
+
+    @property
+    def full_texture(self):
+        """The largest version of the colour texture: the :attr:`detail` one when there is one, else ``texture``
+        (what work on the texture itself, like a head texture from photos, starts from)."""
+        return self.detail.texture if self.detail is not None and self.detail.texture is not None else self.texture
+
+    @property
+    def full_maps(self):
+        """The largest version of :attr:`maps` (the :attr:`detail` one when there is one)."""
+        return self.detail.maps if self.detail is not None and self.detail.maps is not None else self.maps
 
 
 @dataclass

@@ -6,6 +6,12 @@
 
 Both apply the same conversion from the file's axis system and units: one rigid transform plus a
 uniform scale above the root bone. Bone-local rotations are kept; local translations are scaled.
+
+Textures are made smaller by averaging in linear light (:func:`~bifold_demo.scene.textures.downsample`), as the
+renderer's mipmaps are. A head (a material whose colour texture is ``<x>_head_color*.tga``, with ``<x>_head_normal.tga``
+beside it; the Rocketbox FBX files do not link the maps, so they are found by name) also gets its colour texture at
+the larger ``detail_size``, a packed normal and specular map at both sizes (:func:`.tangents.pack_maps`; the green
+channel's direction is checked per map, :func:`.tangents.normal_green`) and a tangent per vertex.
 """
 
 from __future__ import annotations
@@ -17,9 +23,10 @@ from pathlib import Path
 import numpy as np
 
 from .fbx import FBXNode, read_fbx
-from .model import AnimationClip, CharacterModel, Skeleton, SkinnedPrimitive
+from .model import AnimationClip, CharacterModel, Detail, Skeleton, SkinnedPrimitive
 
 KTIME_PER_SECOND = 46186158000
+HEAD_COLOR = re.compile(r"^(?P<stem>.+_head)_colou?r(?P<variant>[^.\\/]*)\.tga$", re.IGNORECASE)  # a head's colour
 _TIME_MODES = {1: 120.0, 2: 100.0, 3: 60.0, 4: 50.0, 5: 48.0, 6: 30.0, 7: 30.0, 8: 29.97, 9: 29.97, 10: 25.0,
                11: 24.0, 12: 1000.0, 13: 23.976, 15: 96.0, 16: 72.0, 17: 59.94, 18: 119.88}
 _EULER_ORDERS = ("xyz", "xzy", "yzx", "yxz", "zxy", "zyx", "xyz")
@@ -33,7 +40,7 @@ _BIPED_PREFIX = re.compile(r"^Bip\d+(?=\s|$)")
 # -- public API ------------------------------------------------------------------------------------
 
 
-def load_character(fbx_path, texture_dir=None, lod="auto", max_texture_size=1024) -> CharacterModel:
+def load_character(fbx_path, texture_dir=None, lod="auto", max_texture_size=1024, detail_size=2048) -> CharacterModel:
     """Load a skinned avatar from a binary FBX file.
 
     Args:
@@ -44,6 +51,8 @@ def load_character(fbx_path, texture_dir=None, lod="auto", max_texture_size=1024
             that range), a level name such as ``"hipoly"`` / ``"lowpoly"`` / ``"lod1"``, or the name of one
             mesh (case-insensitive; only that mesh is loaded).
         max_texture_size: textures are downscaled so that their longer side is at most this.
+        detail_size: a head's colour texture and packed maps also at up to this size (``detail``), when that is
+            larger than ``max_texture_size``; 0: heads get no maps (see the module docs).
 
     Bones keep their FBX names except that Biped prefixes are unified (``Bip02 Head`` -> ``Bip01 Head``)
     so that every clip fits every avatar. Raises ``ValueError`` for an unknown ``lod`` (the message lists
@@ -93,7 +102,7 @@ def load_character(fbx_path, texture_dir=None, lod="auto", max_texture_size=1024
     primitives = []
     for mesh_id, mesh_clusters in zip(meshes, clusters):
         primitives += _mesh_primitives(scene, mesh_id, mesh_clusters, index, skeleton, conversion, folders,
-                                       max_texture_size, textures, prefix=len(meshes) > 1)
+                                       max_texture_size, textures, prefix=len(meshes) > 1, detail_size=detail_size)
     triangles = int(sum(len(p.indices) for p in primitives))
     metadata = {
         "source": str(fbx_path),
@@ -102,6 +111,10 @@ def load_character(fbx_path, texture_dir=None, lod="auto", max_texture_size=1024
         "lods": {name or "default": info["triangles"] for name, info in levels.items()},
         "meshes": [scene.name(m) for m in meshes],
     }
+    maps = {name: info for name, info in textures.get("head maps", {}).items() if any(p.name == name
+                                                                                       for p in primitives)}
+    if maps:
+        metadata["head_maps"] = maps
     return CharacterModel(fbx_path.name.split(".")[0], skeleton, primitives, np.linalg.inv(skeleton.rest_global),
                           metadata)
 
@@ -696,7 +709,7 @@ def _layer_values(layer: FBXNode | None, data_key: str, index_key: str, width: i
 
 def _mesh_primitives(scene: _Scene, mesh_id: int, clusters: list, bone_index: dict, skeleton: Skeleton,
                      conversion: np.ndarray, folders: list[Path], max_texture_size: int, cache: dict,
-                     prefix: bool) -> list[SkinnedPrimitive]:
+                     prefix: bool, detail_size: int = 0) -> list[SkinnedPrimitive]:
     geometry = scene.objects[scene.sources(mesh_id, "Geometry")[0]]
     vertices = np.asarray(geometry.find("Vertices").props[0], dtype=np.float64).reshape(-1, 3)
     pvi = np.asarray(geometry.find("PolygonVertexIndex").props[0], dtype=np.int64)
@@ -761,7 +774,7 @@ def _mesh_primitives(scene: _Scene, mesh_id: int, clusters: list, bone_index: di
         cp = control[pv]
         material = materials[m] if 0 <= m < len(materials) else None
         name = scene.name(material) if material is not None else f"material{m}"
-        primitives.append(SkinnedPrimitive(
+        primitive = SkinnedPrimitive(
             name=f"{scene.name(mesh_id)}/{name}" if prefix else name,
             positions=positions[cp].astype(np.float32),
             normals=normals[pv].astype(np.float32),
@@ -770,8 +783,68 @@ def _mesh_primitives(scene: _Scene, mesh_id: int, clusters: list, bone_index: di
             joints=joints[cp],
             weights=weights[cp],
             texture=_material_texture(scene, material, folders, max_texture_size, cache) if material else None,
-        ))
+        )
+        if material and detail_size and primitive.texture is not None:
+            _add_head_maps(primitive, scene, material, folders, max_texture_size, detail_size, cache)
+        primitives.append(primitive)
     return primitives
+
+
+def _add_head_maps(primitive: SkinnedPrimitive, scene: _Scene, material: int, folders: list[Path], base: int,
+                   detail: int, cache: dict) -> None:
+    """Give a head primitive (see the module docs) its packed maps (at the size of its colour texture, and at up to
+    ``detail``), its colour texture at up to ``detail`` and its tangents; other primitives stay as they are."""
+    from ..scene.textures import downsample
+    from .tangents import normal_green, pack_maps, vertex_tangents
+
+    color = _texture_path(scene, material, _COLOR_SLOTS, folders)
+    match = HEAD_COLOR.match(color.name) if color is not None else None
+    if match is None:
+        return
+
+    def find(kind: str) -> Path | None:  # the variant's own map (f110_head_normal_a.tga), else the plain one
+        return _resolve(f"{match['stem']}_{kind}{match['variant']}.tga", folders) or \
+            _resolve(f"{match['stem']}_{kind}.tga", folders)
+
+    normal = find("normal")
+    if normal is None:
+        return
+    specular = find("specular")
+    key = ("head maps", str(normal), str(specular), detail)
+    if key not in cache:
+        from PIL import Image
+
+        with Image.open(normal) as image:
+            normal_rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
+        spec = None
+        if specular is not None:
+            with Image.open(specular) as image:
+                spec = np.asarray(image.convert("RGB"), dtype=np.uint8)
+            if spec.shape[:2] != normal_rgb.shape[:2]:
+                spec = np.asarray(Image.fromarray(spec).resize(normal_rgb.shape[1::-1], Image.BILINEAR))
+        green, up, down = normal_green(normal_rgb)
+        maps = pack_maps(normal_rgb, spec, green)
+        longest = max(maps.shape[:2])
+        if longest > detail:
+            maps = downsample(maps, _scaled(maps.shape, detail / longest), srgb=False)
+        cache[key] = (maps, {"normal": normal.name, "specular": specular.name if specular else None, "green": green,
+                             "curl": [round(up, 3), round(down, 3)]})
+    maps, info = cache[key]
+    colour = primitive.texture
+    if max(maps.shape[:2]) > max(colour.shape[:2]):  # a larger version is worth keeping
+        large = _material_texture(scene, material, folders, detail, cache)
+        primitive.detail = Detail(texture=large, maps=maps)
+        primitive.maps = downsample(maps, colour.shape[1::-1], srgb=False)
+    else:
+        primitive.maps = maps if maps.shape[:2] == colour.shape[:2] else downsample(maps, colour.shape[1::-1],
+                                                                                    srgb=False)
+    primitive.tangents = vertex_tangents(primitive.positions, primitive.normals, primitive.uvs, primitive.indices)
+    cache.setdefault("head maps", {})[primitive.name] = info
+
+
+def _scaled(shape, factor: float) -> tuple[int, int]:
+    """``(width, height)`` of an image of ``shape`` scaled by ``factor`` (at least 1 pixel)."""
+    return max(1, round(shape[1] * factor)), max(1, round(shape[0] * factor))
 
 
 def _skin_weights(clusters: list, bone_index: dict, count: int, positions: np.ndarray, skeleton: Skeleton,
@@ -848,9 +921,12 @@ def _texture_path(scene: _Scene, material: int, slots: tuple[str, ...], folders:
     return None
 
 
+_COLOR_SLOTS = ("DiffuseColor", "Diffuse", "Maya|baseColor", "base_color")
+
+
 def _material_texture(scene: _Scene, material: int, folders: list[Path], max_size: int, cache: dict):
     """RGBA ``uint8`` texture (row 0 = top) of a material; alpha from its opacity map, else 255."""
-    color = _texture_path(scene, material, ("DiffuseColor", "Diffuse", "Maya|baseColor", "base_color"), folders)
+    color = _texture_path(scene, material, _COLOR_SLOTS, folders)
     if color is None:
         return None
     opacity = _texture_path(scene, material, ("TransparentColor", "TransparencyFactor", "Opacity",
@@ -861,7 +937,7 @@ def _material_texture(scene: _Scene, material: int, folders: list[Path], max_siz
         rgba = rgba.copy()
         rgba[..., 3] = 255
         if opacity is not None:
-            image, has_alpha = _read_image(opacity, max_size, cache)
+            image, has_alpha = _read_image(opacity, max_size, cache, srgb=False)
             if has_alpha:  # e.g. Rocketbox *_opacity_color.tga: colour plus coverage in alpha
                 mask = image[..., 3]
             else:
@@ -876,22 +952,20 @@ def _material_texture(scene: _Scene, material: int, folders: list[Path], max_siz
     return cache[key]
 
 
-def _read_image(path: Path, max_size: int, cache: dict) -> tuple[np.ndarray, bool]:
-    """RGBA ``uint8`` pixels (row 0 = top) downscaled to ``max_size``, and whether the file has alpha."""
-    key = ("image", str(path), max_size)
+def _read_image(path: Path, max_size: int, cache: dict, srgb: bool = True) -> tuple[np.ndarray, bool]:
+    """RGBA ``uint8`` pixels (row 0 = top) downscaled to ``max_size`` by averaging in linear light (``srgb``: a
+    colour image; else data, averaged as it is), and whether the file has alpha."""
+    key = ("image", str(path), max_size, srgb)
     if key not in cache:
         from PIL import Image
 
+        from ..scene.textures import downsample
+
         with Image.open(path) as image:
             has_alpha = image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info
-            image.load()
-            longest = max(image.size)
-            if longest > max_size:
-                factor = longest / max_size
-                if factor == int(factor) and image.width % int(factor) == 0 and image.height % int(factor) == 0:
-                    image = image.reduce(int(factor))
-                else:
-                    size = (max(1, round(image.width / factor)), max(1, round(image.height / factor)))
-                    image = image.resize(size, Image.BOX)
-            cache[key] = (np.asarray(image.convert("RGBA"), dtype=np.uint8), has_alpha)
+            rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8)
+        longest = max(rgba.shape[:2])
+        if longest > max_size:
+            rgba = downsample(rgba, _scaled(rgba.shape, max_size / longest), srgb=srgb)
+        cache[key] = (rgba, has_alpha)
     return cache[key]

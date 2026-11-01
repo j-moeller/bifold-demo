@@ -8,6 +8,12 @@ rigged human avatars and hundreds of shared animation clips. This module knows w
 * ``<cache>/avatars/<Name>.npz``: skeleton and skinned mesh arrays; ``<Name>.tex<k>.png``: RGBA textures;
   ``<Name>.json``: metadata (catalog entry, height, triangles, primitives and their textures);
 * ``<cache>/clips/<name>.npz``: an in-place animation clip with its metadata.
+
+Format 2 of the cache (:data:`FORMAT`) adds what high-resolution heads need: each head's normal and specular maps
+are downloaded with it (:attr:`Avatar.maps`), and its primitive keeps a packed normal and specular map (``maps``), a
+tangent per vertex and, as ``detail``, its colour texture and packed map at 2048 pixels (the others are 1024, like
+every other texture). An avatar prepared in format 1 still loads (without the maps and the 2048 textures), but counts
+as not prepared for :func:`prepare` and ``bifold-characters fetch``, which make it again.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ import importlib
 import json
 import os
 import queue
+import re
 import ssl
 import threading
 import urllib.error
@@ -32,13 +39,17 @@ from pathlib import Path
 
 import numpy as np
 
-from .model import AnimationClip, CharacterModel, Skeleton, SkinnedPrimitive
+from .model import AnimationClip, CharacterModel, Detail, Skeleton, SkinnedPrimitive
 
 BASE_URL = "https://raw.githubusercontent.com/microsoft/Microsoft-Rocketbox/master/"
 CATALOG_PATH = Path(__file__).with_name("rocketbox_catalog.json")
-FORMAT = 1
+FORMAT = 2  # 2: heads with packed normal and specular maps, tangents and 2048-pixel detail textures
+READABLE_FORMATS = (1, 2)  # what read_character still reads (format 1: no maps, no detail)
+DETAIL_SIZE = 2048  # pixels: the heads' detail textures (the sources' own size)
 LICENSE = "MIT, Microsoft Rocketbox (https://github.com/microsoft/Microsoft-Rocketbox)"
 FBX_MAGIC = b"Kaydara FBX Binary  \x00"
+_HEAD_TEXTURE = re.compile(r"^(?P<stem>.+_head)_colou?r(?P<variant>[^.]*)\.tga$", re.IGNORECASE)
+SHARED_MAP_VARIANTS = ("_acu",)  # colour variants of a head that use its plain maps
 
 
 # -- manifest --------------------------------------------------------------------------------------
@@ -62,9 +73,22 @@ class Avatar:
         return f"Assets/Avatars/{self.path}/Export/{self.name}.fbx"
 
     @property
+    def maps(self) -> tuple[str, ...]:
+        """The heads' normal and specular map file names: ``<x>_head_normal<v>.tga`` and ``<x>_head_specular<v>.tga``
+        for every colour texture ``<x>_head_color<v>.tga`` (every Rocketbox head has both; no wrinkle maps). The
+        camouflage variants (``_acu``) share the head's plain maps."""
+        names = []
+        for texture in self.textures:
+            match = _HEAD_TEXTURE.match(texture)
+            if match:
+                variant = "" if match["variant"].lower() in SHARED_MAP_VARIANTS else match["variant"]
+                names += [f"{match['stem']}_{kind}{variant}.tga" for kind in ("normal", "specular")]
+        return tuple(names)
+
+    @property
     def files(self) -> list[str]:
-        """Repository paths to download: the FBX and its colour textures."""
-        return [self.fbx] + [f"Assets/Avatars/{self.path}/Textures/{t}" for t in self.textures]
+        """Repository paths to download: the FBX, its colour textures and the head's normal and specular maps."""
+        return [self.fbx] + [f"Assets/Avatars/{self.path}/Textures/{t}" for t in self.textures + self.maps]
 
     @property
     def sex(self) -> str:
@@ -703,7 +727,10 @@ def _write_json(path: Path, data: dict) -> None:
 
 
 def save_character(model: CharacterModel, cache_dir, metadata: dict | None = None) -> Path:
-    """Write ``model`` into ``<cache_dir>/avatars/`` (arrays, PNG textures, then the JSON); returns the JSON path."""
+    """Write ``model`` into ``<cache_dir>/avatars/`` (arrays, PNG textures, then the JSON); returns the JSON path.
+
+    Of each primitive the arrays (and ``tangents`` when it has them) and the textures given as arrays (``texture``,
+    ``maps`` and the :class:`~.model.Detail` ones; each array once) are written."""
     import cv2
 
     folder = Path(cache_dir).expanduser() / "avatars"
@@ -712,25 +739,37 @@ def save_character(model: CharacterModel, cache_dir, metadata: dict | None = Non
     arrays = {"names": np.array(model.skeleton.names), "parents": model.skeleton.parents,
               "rest_local": model.skeleton.rest_local, "inverse_bind": np.asarray(model.inverse_bind)}
     textures: dict[int, str] = {}
+
+    def write(image, what: str) -> str | None:
+        if not isinstance(image, np.ndarray):
+            return None
+        if id(image) not in textures:
+            file = f"{name}.tex{len(textures)}.png"
+            rgba = image if image.ndim == 3 else image[..., None]
+            bgra = cv2.cvtColor(rgba, {1: cv2.COLOR_GRAY2BGRA, 3: cv2.COLOR_RGB2BGRA,
+                                       4: cv2.COLOR_RGBA2BGRA}[rgba.shape[2]])
+            ok, png = cv2.imencode(".png", bgra, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+            if not ok:
+                raise ValueError(f"cannot encode the {what} of {name}")
+            _write_atomic(folder / file, lambda f, data=png: f.write(data.tobytes()))
+            textures[id(image)] = file
+        return textures[id(image)]
+
     primitives = []
     for i, p in enumerate(model.primitives):
         for key in _PRIMITIVE_ARRAYS:
             arrays[f"p{i}_{key}"] = np.asarray(getattr(p, key))
-        file = None
-        if isinstance(p.texture, np.ndarray):
-            if id(p.texture) not in textures:
-                file = f"{name}.tex{len(textures)}.png"
-                rgba = p.texture if p.texture.ndim == 3 else p.texture[..., None]
-                bgra = cv2.cvtColor(rgba, {1: cv2.COLOR_GRAY2BGRA, 3: cv2.COLOR_RGB2BGRA,
-                                           4: cv2.COLOR_RGBA2BGRA}[rgba.shape[2]])
-                ok, png = cv2.imencode(".png", bgra, [cv2.IMWRITE_PNG_COMPRESSION, 1])
-                if not ok:
-                    raise ValueError(f"cannot encode the texture of {name}/{p.name}")
-                _write_atomic(folder / file, lambda f, data=png: f.write(data.tobytes()))
-                textures[id(p.texture)] = file
-            file = textures[id(p.texture)]
-        primitives.append({"name": p.name, "texture": file, "vertices": len(p.positions),
-                           "triangles": len(p.indices)})
+        entry = {"name": p.name, "texture": write(p.texture, f"texture of {p.name}"), "vertices": len(p.positions),
+                 "triangles": len(p.indices)}
+        if p.tangents is not None:
+            arrays[f"p{i}_tangents"] = np.asarray(p.tangents, np.float32)
+            entry["tangents"] = True
+        if p.maps is not None:
+            entry["maps"] = write(p.maps, f"maps of {p.name}")
+        if p.detail is not None:
+            detail = {key: write(getattr(p.detail, key), f"detail {key} of {p.name}") for key in ("texture", "maps")}
+            entry["detail"] = {key: file for key, file in detail.items() if file}
+        primitives.append(entry)
     _write_atomic(folder / f"{name}.npz", lambda f: np.savez(f, **arrays))
     meta = {**model.metadata, **(metadata or {})}
     meta.update(name=name, format=FORMAT, height=round(model.height, 4), bones=len(model.skeleton),
@@ -756,8 +795,10 @@ def read_character(cache_dir, name: str, textures: str = "path", metadata: dict 
 
     ``textures="path"`` puts the PNG file paths into the primitives (the renderer decodes each file once and
     shares it); ``"array"`` decodes them into RGBA ``uint8`` arrays (row 0 = top), like the FBX loader;
-    ``"none"`` leaves them out. ``metadata`` replaces the stored JSON metadata. A slip in the skinning of a few heads
-    is mended on the way (:func:`mend_tongue`), so a model is the same from its first use on.
+    ``"none"`` leaves them out. This holds for all of a primitive's textures: ``texture``, ``maps`` and the
+    ``detail`` ones. ``metadata`` replaces the stored JSON metadata. A slip in the skinning of a few heads is mended
+    on the way (:func:`mend_tongue`), so a model is the same from its first use on. Avatars prepared in format 1 load
+    without maps, tangents and detail.
     """
     if textures not in ("path", "array", "none"):
         raise ValueError("textures must be 'path', 'array' or 'none'")
@@ -766,7 +807,7 @@ def read_character(cache_dir, name: str, textures: str = "path", metadata: dict 
     with np.load(folder / f"{name}.npz") as z:
         arrays = {k: z[k] for k in z.files}
     skeleton = Skeleton([str(n) for n in arrays["names"]], arrays["parents"], arrays["rest_local"])
-    files = sorted({p["texture"] for p in meta["primitives"] if p.get("texture")})
+    files = _texture_files(meta["primitives"])
     if textures == "array" and files:
         with ThreadPoolExecutor(max_workers=min(4, len(files))) as pool:
             images = dict(zip(files, pool.map(lambda f: _read_png(folder / f), files)))
@@ -774,11 +815,23 @@ def read_character(cache_dir, name: str, textures: str = "path", metadata: dict 
         images = {f: (str(folder / f) if textures == "path" else None) for f in files}
     primitives = []
     for i, p in enumerate(meta["primitives"]):
-        primitives.append(SkinnedPrimitive(p["name"], *(arrays[f"p{i}_{k}"] for k in _PRIMITIVE_ARRAYS),
-                                           texture=images.get(p.get("texture"))))
+        detail = p.get("detail")
+        primitives.append(SkinnedPrimitive(
+            p["name"], *(arrays[f"p{i}_{k}"] for k in _PRIMITIVE_ARRAYS), texture=images.get(p.get("texture")),
+            tangents=arrays.get(f"p{i}_tangents") if p.get("tangents") else None, maps=images.get(p.get("maps")),
+            detail=Detail(images.get(detail.get("texture")), images.get(detail.get("maps"))) if detail else None))
     model = CharacterModel(name, skeleton, primitives, arrays["inverse_bind"], dict(meta))
     mend_tongue(model)
     return model
+
+
+def _texture_files(primitives: list[dict]) -> list[str]:
+    """The texture files a prepared avatar's primitives name (``texture``, ``maps``, ``detail``), each once."""
+    files = set()
+    for p in primitives:
+        detail = p.get("detail") if isinstance(p.get("detail"), dict) else {}
+        files.update(f for f in (p.get("texture"), p.get("maps"), detail.get("texture"), detail.get("maps")) if f)
+    return sorted(files)
 
 
 def mend_tongue(model: CharacterModel) -> int:
@@ -893,7 +946,8 @@ def check_avatar(cache_dir, name: str) -> dict:
 
     The arrays are read to compare them with their checksums; of the textures only the start and the end are read.
     Raises ``FileNotFoundError`` when it is not prepared, ``ValueError`` saying what is wrong when one of its files
-    is missing, damaged (e.g. cut off, or changed inside) or was written by another version.
+    is missing, damaged (e.g. cut off, or changed inside) or was written by a version that this one cannot read
+    (one of :data:`READABLE_FORMATS` is fine: an older one loads without what the newer ones add).
     """
     folder = Path(cache_dir).expanduser() / "avatars"
     path = folder / f"{name}.json"
@@ -906,11 +960,13 @@ def check_avatar(cache_dir, name: str) -> dict:
     primitives = meta.get("primitives") if isinstance(meta, dict) else None
     if not isinstance(primitives, list) or not all(isinstance(p, dict) for p in primitives):
         raise ValueError(f"{path.name} is damaged (no list of primitives)")
-    if meta.get("format") != FORMAT:
-        raise ValueError(f"prepared by another version (format {meta.get('format')!r}, this version reads {FORMAT})")
+    if meta.get("format") not in READABLE_FORMATS:
+        raise ValueError(f"prepared by another version (format {meta.get('format')!r}, this version reads "
+                         f"{' and '.join(map(str, READABLE_FORMATS))})")
     _check_npz(folder / f"{name}.npz",
-               [*_SKELETON_ARRAYS, *(f"p{i}_{k}" for i in range(len(primitives)) for k in _PRIMITIVE_ARRAYS)])
-    for file in sorted({p["texture"] for p in primitives if p.get("texture")}):
+               [*_SKELETON_ARRAYS, *(f"p{i}_{k}" for i, p in enumerate(primitives)
+                                     for k in _PRIMITIVE_ARRAYS + (("tangents",) if p.get("tangents") else ()))])
+    for file in _texture_files(primitives):
         _check_png(folder / file)
     return meta
 
@@ -927,17 +983,18 @@ def check_clip(path) -> None:
 
 
 def is_prepared(cache_dir, kind: str, name: str) -> bool:
-    """Whether the ``kind`` (``"avatar"`` or ``"clip"``) ``name`` is in the cache and passes the quick check.
+    """Whether the ``kind`` (``"avatar"`` or ``"clip"``) ``name`` is in the cache, passes the quick check and, for an
+    avatar, is in the current :data:`FORMAT`.
 
-    The one test for "prepared" that :func:`prepare`, ``bifold-characters fetch`` and :mod:`.library` share: a
-    damaged item counts as not prepared, so preparing (or fetching) it again repairs it.
+    The test for "prepared" that :func:`prepare` and ``bifold-characters fetch`` share: a damaged item counts as not
+    prepared, so preparing (or fetching) it again repairs it; so does an avatar of an older format, which they make
+    again with what the newer format adds (:mod:`.library` still loads it as it is).
     """
     cache = Path(cache_dir).expanduser()
     try:
         if kind == "avatar":
-            check_avatar(cache, name)
-        else:
-            check_clip(cache / "clips" / f"{name}.npz")
+            return check_avatar(cache, name).get("format") == FORMAT
+        check_clip(cache / "clips" / f"{name}.npz")
     except (OSError, ValueError):
         return False
     return True
@@ -977,13 +1034,14 @@ def _delete(root: Path, files: list[Path]) -> None:
 
 
 def prepare(raw_dir, cache_dir, avatars=None, clips=None, delete_raw: bool = False, *, force: bool = False,
-            max_texture_size: int = 1024, progress=None) -> PrepareReport:
+            max_texture_size: int = 1024, detail_size: int = DETAIL_SIZE, progress=None) -> PrepareReport:
     """Convert downloaded avatars and clips (names; ``None`` = all that are in ``raw_dir``) into the cache.
 
     Needs :mod:`.fbx_convert` (imported here only). Items already in the cache (see :func:`is_prepared`; damaged
-    ones are converted again) are skipped unless ``force``. ``delete_raw`` removes each item's downloaded files
-    once it is converted. Failures are collected in the report instead of stopping the run.
-    ``progress(done, total, name, status)`` is called after every item.
+    ones, and avatars of an older format, are converted again) are skipped unless ``force``. Textures are at most
+    ``max_texture_size`` pixels; heads also get their maps and, at up to ``detail_size``, their detail textures.
+    ``delete_raw`` removes each item's downloaded files once it is converted. Failures are collected in the report
+    instead of stopping the run. ``progress(done, total, name, status)`` is called after every item.
     """
     (root, local), cache = raw_files(raw_dir), Path(cache_dir).expanduser()
     if avatars is None:
@@ -1011,13 +1069,16 @@ def prepare(raw_dir, cache_dir, avatars=None, clips=None, delete_raw: bool = Fal
                     raise ImportError(f"converting Rocketbox files needs {__package__}.fbx_convert: {exc}") from exc
             try:
                 if kind == "avatar":
-                    model = converter.load_character(local(files[0]), max_texture_size=max_texture_size)
+                    model = converter.load_character(local(files[0]), max_texture_size=max_texture_size,
+                                                     detail_size=detail_size)
                     model.name = name
                     meta = {**avatar_metadata(name, catalog), "source": files[0], "license": LICENSE}
                     save_character(model, cache, meta)
                     report.avatars.append(name)
+                    heads = sum(p.maps is not None for p in model.primitives)
                     status = (f"prepared ({meta.get('sex', '?')}, {model.height:.2f} m, "
-                              f"{sum(len(p.indices) for p in model.primitives)} triangles)")
+                              f"{sum(len(p.indices) for p in model.primitives)} triangles"
+                              + (f", {heads} head{'s' if heads > 1 else ''} with maps" if heads else "") + ")")
                 else:
                     clip = converter.load_clip(local(files[0]), name=name)
                     save_clip(clip, cache, {"role": CLIPS[name].role, "sex": CLIPS[name].sex, "source": files[0]})

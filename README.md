@@ -33,7 +33,7 @@ cd bifold-demo
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-bifold-characters fetch --set conference   # once: download + convert the 3D people (~2.3 GB)
+bifold-characters fetch --set conference   # once: download + convert the 3D people (~3.8 GB)
 
 bifold-demo                      # the trade-fair hall (default scene)
 bifold-demo --source webcam      # start with the webcam
@@ -669,10 +669,12 @@ into animated people. It has five parts:
 
 1. **Assets** (`rocketbox.py`, `library.py`, `bifold-characters`).
    `bifold-characters fetch` downloads exactly the files it needs from GitHub:
-   per avatar its FBX file and colour/opacity textures, plus the animation
-   clips. It then converts them with a pure-Python FBX reader (`fbx.py`,
-   `fbx_convert.py`), so no Blender or FBX SDK is needed. The result is a fast
-   cache: an avatar loads in a few milliseconds.
+   per avatar its FBX file, its colour/opacity textures and its head's normal
+   and specular maps, plus the animation clips. It then converts them with a
+   pure-Python FBX reader (`fbx.py`, `fbx_convert.py`), so no Blender or FBX
+   SDK is needed. The result is a fast cache: an avatar loads in a few
+   milliseconds. Heads are kept at 2048 pixels as well (see "High-resolution
+   heads").
 2. **Model and posing** (`model.py`). A skeleton (81 Biped bones), skinned
    meshes and animation clips. Clips drive the bone rotations and the avatar
    keeps its own proportions, so one clip fits adults and children.
@@ -698,9 +700,9 @@ into animated people. It has five parts:
    `Character` objects.
 
 ```bash
-bifold-characters fetch --set small         # 12 diverse avatars, a quick start (~0.5 GB)
-bifold-characters fetch --set conference    # 58 avatars that suit a fair, incl. children (~2.3 GB)
-bifold-characters fetch --set all           # all 115, incl. uniforms (~5 GB)
+bifold-characters fetch --set small         # 12 diverse avatars, a quick start (~0.8 GB)
+bifold-characters fetch --set conference    # 58 avatars that suit a fair, incl. children (~3.8 GB)
+bifold-characters fetch --set all           # all 115, incl. uniforms (~8 GB)
 bifold-characters fetch --avatars Business_Female_01 Male_Adult_04 --clips basic
 bifold-characters list                      # what is prepared: sex, age group, skin tone, height
 bifold-characters info Business_Female_01
@@ -1179,6 +1181,62 @@ crop (four windows all of them) and a PSNR of 64.7 dB or more; the pixels
 that differ lie on silhouettes, where the MSAA samples fall a little
 differently. `tests/test_sensor.py` checks this, also with a background image
 and on real avatars' heads.
+
+## High-resolution heads
+
+The windows of the virtual sensor give a face 75 pixels between the eyes at
+4 m and up to about 230 close by. A 1024-pixel head texture has about 112
+texels between the eyes, so beyond about 110 pixels it is magnified and the
+face goes soft; the Rocketbox sources are 2048 pixels, with a normal and a
+specular map for every head ([docs/research/high_res_faces.md](docs/research/high_res_faces.md),
+sections 2.2 and 3.1). Step S2 of the plan
+([docs/research/face_recognition_focus.md](docs/research/face_recognition_focus.md))
+brings them in.
+
+**The assets** (cache format 2). `bifold-characters fetch` also downloads each
+head's `<x>_head_normal.tga` and `<x>_head_specular.tga` (25 MB more per
+avatar; no wrinkle maps), and preparing an avatar keeps, for its head:
+
+- the colour texture at 2048 pixels as the head's `detail` texture, and a 1024
+  copy as its ordinary `texture`. Textures are made smaller by averaging
+  light, not sRGB-encoded values (`scene.textures.downsample`; every texture
+  of a prepared avatar is now), so a fine dark-and-light pattern keeps its
+  brightness;
+- a *packed map* at both sizes, in one RGBA image: the normal's x and y in red
+  and green (z is rebuilt when drawing), the specular level in blue, and room
+  for ambient occlusion in alpha (255 for now);
+- a tangent per vertex (`tangents.py`): the direction the texture's `u` grows
+  in, laid into the plane of the vertex normal, angle-weighted and summed over
+  the vertices that share a position and a UV (split only by their normals),
+  with the handedness (+1, or -1 where the UV layout is mirrored: only a few
+  triangles of the mouth on the Rocketbox heads).
+
+`SkinnedPrimitive` gained `tangents`, `maps` and `detail` (a `Detail` with the
+larger `texture` and `maps`); `primitive.full_texture` is the largest colour
+texture, which work on the texture itself (head textures from photos) starts
+from. Bodies, hair cards and props stay at 1024 without maps. A prepared
+avatar takes about 20 MB on disk instead of 5.
+
+**The green channel.** A tangent-space normal map can store its y component
+pointing either way along the texture's `v` (OpenGL and Unity: green up;
+DirectX: green down), and the Rocketbox maps were baked in 3ds Max. A normal
+map baked from a height field holds its gradient, and a gradient has no curl,
+unless one of its components is read backwards: `tangents.normal_green` checks
+every map while preparing, at the scale of the folds (a blur of 4 texels at
+2048). On the 20 prepared heads the residual curl is 0.33-0.56 of the terms
+read green-up and 0.85-0.96 read green-down: the Rocketbox heads are
+green-up (`+v`), and the check would flip a map stored the other way (the
+result is in each avatar's metadata, `head_maps`). One head, `Male_Adult_04`,
+has a fine skin texture that reads the other way below about 2 texels, while
+its folds read like every other head's; the folds decide.
+
+**Older caches** (format 1, without maps) still load and draw as before;
+`bifold-characters list` names them, and `fetch` makes them again with the
+maps (it downloads their files again). To upgrade a library in place:
+
+```bash
+bifold-characters fetch --avatars NAME ... --clips basic --delete-raw   # the avatars it names
+```
 
 ## Head textures from photos
 

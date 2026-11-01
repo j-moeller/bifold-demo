@@ -280,6 +280,10 @@ class CharacterLibrary:
             problems = self._problems(kind)
             if problems:
                 lines.append(f"  left out, damaged: {_summary(problems)}; to repair: {self._repair(kind, problems)}")
+        older = [name for name, meta in avatars.items() if meta.get("format") != rocketbox.FORMAT]
+        if older:
+            lines.append(f"  {len(older)} of the avatars were prepared by an older version (no head maps, no "
+                         f"2048-pixel heads); to update them: {fetch_command(_avatar_option(older), self.folder)}")
         missing, optional = self.missing(), [r for r in empty if r not in READY_ROLES]
         if missing:
             hint = "--set small" if "avatars" in missing else "--avatars --clips basic"

@@ -263,6 +263,109 @@ def sample_image(name: str) -> Path | None:
 
 
 # ---------------------------------------------------------------------------
+# Colour spaces: image files hold sRGB-encoded colours; light adds up, and pixels average, in linear light
+
+
+def _srgb_decode_table() -> np.ndarray:
+    c = np.arange(256, dtype=np.float64) / 255.0
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4).astype(np.float32)
+
+
+def _srgb_encode_table(steps: int = 65536) -> np.ndarray:
+    lin = np.arange(steps, dtype=np.float64) / (steps - 1)
+    c = np.where(lin <= 0.0031308, lin * 12.92, 1.055 * lin ** (1 / 2.4) - 0.055)
+    return np.clip(np.round(c * 255.0), 0, 255).astype(np.uint8)
+
+
+_DECODE = _srgb_decode_table()
+_ENCODE = _srgb_encode_table()
+_LINEAR = (np.arange(256, dtype=np.float32) / 255.0).astype(np.float32)
+_RGBA_TABLES = {True: np.stack([_DECODE, _DECODE, _DECODE, _LINEAR], axis=1).reshape(1, 256, 4),  # colour, alpha
+                False: np.stack([_LINEAR] * 4, axis=1).reshape(1, 256, 4)}  # data
+
+
+def to_linear(values) -> np.ndarray:
+    """sRGB-encoded ``uint8`` values (any shape) as linear light, ``float32`` 0-1."""
+    return _DECODE[np.asarray(values, dtype=np.uint8)]
+
+
+def to_srgb(linear) -> np.ndarray:
+    """Linear light (``float`` 0-1, any shape; clipped) as sRGB-encoded ``uint8`` values (exact to the nearest
+    level)."""
+    steps = len(_ENCODE) - 1
+    index = np.clip(np.asarray(linear, dtype=np.float32) * steps + 0.5, 0, steps).astype(np.uint16)
+    return _ENCODE[index]
+
+
+def color_to_linear(color) -> tuple[float, float, float]:
+    """A colour (anything :func:`parse_color` takes) as linear-light ``(r, g, b)``, 0-1 (for a shader)."""
+    return tuple(float(v) for v in _DECODE[list(parse_color(color))])
+
+
+def _premultiplied(rgba: np.ndarray, srgb: bool) -> tuple[np.ndarray, bool]:
+    """``(HxWx4 float32, opaque)``: colour in linear light (``srgb``) or as it is, times alpha; alpha 0-1."""
+    out = cv2.LUT(np.ascontiguousarray(rgba), _RGBA_TABLES[bool(srgb)]).reshape(rgba.shape)
+    opaque = bool(rgba[..., 3].min(initial=255) == 255)
+    if not opaque:
+        out[..., :3] *= out[..., 3:]
+    return out, opaque
+
+
+def _unpremultiplied(level: np.ndarray, plain: np.ndarray | None, srgb: bool) -> np.ndarray:
+    """``uint8`` RGBA of a premultiplied level (:func:`_premultiplied`); ``plain``: the same level averaged without
+    the alpha weights, for the texels no coverage reached (``None``: the image is opaque)."""
+    out = np.empty(level.shape, np.uint8)
+    rgb = level[..., :3]
+    if plain is not None:
+        alpha = level[..., 3:]
+        rgb = np.where(alpha > 1e-6, rgb / np.maximum(alpha, 1e-6), plain[..., :3])
+    out[..., :3] = to_srgb(rgb) if srgb else np.clip(rgb * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    out[..., 3] = np.clip(level[..., 3] * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    return out
+
+
+def _shrink(values: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    """``float32`` HxWxC averaged over the area of each new pixel (an exact 2x2 mean when the size halves)."""
+    width, height = size
+    if values.shape[2] <= 4:
+        return cv2.resize(values, (width, height), interpolation=cv2.INTER_AREA).reshape(height, width, -1)
+    return np.concatenate([_shrink(values[..., k:k + 4], size) for k in range(0, values.shape[2], 4)], axis=2)
+
+
+def downsample(rgba: np.ndarray, size: tuple[int, int], srgb: bool = True) -> np.ndarray:
+    """``rgba`` (HxWx4 ``uint8``) made smaller, to ``size`` = ``(width, height)``, by averaging over each new
+    pixel's area: in linear light for colours (``srgb``; data such as normal maps are averaged as they are), the
+    colour weighted by alpha, so that transparent texels lend no colour to the edges of cut-outs (hair)."""
+    rgba = np.asarray(rgba, np.uint8)
+    if (rgba.shape[1], rgba.shape[0]) == tuple(size):
+        return rgba.copy()
+    values, opaque = _premultiplied(rgba, srgb)
+    plain = None if opaque else _shrink(_premultiplied(np.dstack([rgba[..., :3], np.full(rgba.shape[:2], 255,
+                                                                                         np.uint8)]), srgb)[0], size)
+    return _unpremultiplied(_shrink(values, size), plain, srgb)
+
+
+def mip_chain(rgba: np.ndarray, srgb: bool = True) -> list[np.ndarray]:
+    """The mipmap levels of ``rgba`` (HxWx4 ``uint8``) below it, each half the size of the one before (rounded
+    down, at least 1 pixel), down to 1x1: ``uint8`` RGBA, averaged as :func:`downsample` does (in linear light for
+    colours), each level from the unrounded values of the level above."""
+    rgba = np.asarray(rgba, np.uint8)
+    values, opaque = _premultiplied(rgba, srgb)
+    plain = None
+    if not opaque:
+        plain, _ = _premultiplied(np.dstack([rgba[..., :3], np.full(rgba.shape[:2], 255, np.uint8)]), srgb)
+    levels = []
+    width, height = rgba.shape[1], rgba.shape[0]
+    while width > 1 or height > 1:
+        width, height = max(1, width // 2), max(1, height // 2)
+        values = _shrink(values, (width, height))
+        if plain is not None:
+            plain = _shrink(plain, (width, height))
+        levels.append(_unpremultiplied(values, plain, srgb))
+    return levels
+
+
+# ---------------------------------------------------------------------------
 # Pixel helpers
 
 

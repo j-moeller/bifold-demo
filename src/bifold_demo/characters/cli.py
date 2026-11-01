@@ -70,10 +70,14 @@ def cmd_fetch(args) -> int:
     present = [p for p in paths if local(p).is_file()]
     size = sum(rocketbox.estimate_size(p) for p in paths if not local(p).is_file())
     done = len(avatars) - len(todo_avatars) + len(clips) - len(todo_clips)
+    older = [n for n in todo_avatars if _older_format(dest, n)]
     print(f"[fetch] {len(avatars)} avatars and {len(clips)} animation clips"
           + (f" ({done} already prepared)" if done else "")
           + f": {len(paths)} files, about {_human(size)} to download"
           + (f" ({len(present)} files already there)" if present else ""))
+    if older:
+        print(f"[fetch] {len(older)} of the avatars were prepared by an older version: they are made again, with "
+              f"their heads' normal and specular maps and 2048-pixel textures")
     print(f"[fetch] from {rocketbox.BASE_URL}\n[fetch] into {raw}, prepared into {dest}")
     if args.dry_run:
         return 0
@@ -97,6 +101,14 @@ def cmd_fetch(args) -> int:
             return 1
     code = _prepare(raw, dest, todo_avatars, todo_clips, args)
     return 1 if failed else code
+
+
+def _older_format(dest: Path, name: str) -> bool:
+    """Whether the avatar ``name`` in ``dest`` loads but was prepared in an older format."""
+    try:
+        return rocketbox.check_avatar(dest, name).get("format") != rocketbox.FORMAT
+    except (OSError, ValueError):
+        return False
 
 
 def cmd_prepare(args) -> int:
