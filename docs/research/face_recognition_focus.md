@@ -137,3 +137,12 @@ branch and pushed; its results go into the progress log.
     against the 10 % required.
   - The pipeline's own renders of the avatar (landmarks, regions, shading) change under linear light.
   - The S2 builder is fixing it; the rest of the suite is running.
+- **1 November, 21:00 UTC** (after the usage limit, 18:00-20:30, stopped all builders):
+  - the rest of the suite on the branch before these commits: 841 passed, 12 skipped, beside the known
+    regression;
+  - S1 review fixes 6-14 on the branch: the camera model at the camera's own pixels, speeds from frames far
+    apart, even window corners, SubCamera backgrounds, framebuffers bounded by bytes, sensors with useful
+    binning levels, exact eye distances for E1, the doc numbers, tests for the surviving mutants;
+  - F1 part 4: the engine built from a profile, the new gallery, model checks;
+  - one conflict in `renderer.py` (S1's framebuffer budget against S2's sRGB colour buffers), combined;
+  - the builders are resumed and the full suite is running.
