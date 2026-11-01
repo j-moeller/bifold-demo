@@ -891,9 +891,27 @@ and `BIFOLD_FACE_THREADS` override). ONNX Runtime 1.29 and later send usage
 telemetry to Microsoft by default; the recognition switches it off
 (`ORT_DISABLE_TELEMETRY=1`) before ONNX Runtime loads.
 
-The demo itself still uses YuNet and SFace as described above; the detectors,
-alignment, embedders, quality measures and gallery of the new core follow in
-the next steps.
+**Detection and alignment**
+([`detect.py`](src/bifold_demo/recognition/detect.py),
+[`align.py`](src/bifold_demo/recognition/align.py)). Every detector gives a
+box, five landmarks in one order (the eye on the image's left first, then the
+other eye, the nose tip and the mouth corners left to right) and a score.
+SCRFD's anchor decoding and suppression of overlapping boxes are written from
+InsightFace's reference code and tested against hand-made network outputs;
+SCRFD and YuNet put the landmarks within a fifth of the eye distance of each
+other on every test photo. SCRFD looks at a *canvas*: 640 x 640 for photos,
+the frame's own size for small faces in a camera picture, 160-192 pixels for a
+head cut out of a frame (measured here on four shared cores: 12 ms at 160, 35
+ms at 320, 120 ms at 640, 300-390 ms at 1280 x 736; YuNet 44 ms for a
+1280 x 720 frame). Faces are lined up on the ArcFace five-point template at
+112 x 112 by a least-squares similarity transform, exactly as InsightFace's
+`norm_crop` and OpenCV's `alignCrop` do (the same pixels as `alignCrop`); the
+crop is black where it reaches beyond the picture (as in training), the share
+of it that does is a quality signal, and faces much bigger than the crop are
+shrunk with area averaging first so that they do not alias.
+
+The demo itself still uses YuNet and SFace as described above; the embedders,
+quality measures and gallery of the new core follow in the next steps.
 
 ### Known faces on the 3D people
 
@@ -1747,6 +1765,7 @@ src/bifold_demo/
   recognition/ engine.py (find and fingerprint faces), gallery.py (known people),
                recognizer.py (faces over frames), cast.py (known faces on 3D people),
                registry.py (face models and profiles), runtime.py (ONNX Runtime),
+               detect.py (SCRFD, YuNet), align.py (the five-point template),
                models.py, cli.py (bifold-faces)                          ← face recognition
   people/      prompts.py, generator.py (text-to-image), cutout.py,
                library.py, defaults.py, cli.py (bifold-people)          ← 2D people generator
