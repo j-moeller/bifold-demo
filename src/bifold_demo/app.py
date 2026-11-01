@@ -19,8 +19,8 @@ from .scene import Scene
 from .selection import Selection, person_name
 from .sources import FixedStepClock, Frame, SceneSource, SimulationClock, SourceSwitcher, WebcamSource
 
-HELP = ("S source | D detect | N names | Space pause | R reset | [ ] confidence | Y / click people | C creator | "
-        "F fullscreen | P screenshot | H hide | Q quit")
+HELP = ("S source | D detect | N names | W windows | Space pause | R reset | [ ] confidence | Y / click people | "
+        "C creator | F fullscreen | P screenshot | H hide | Q quit")
 STALE_AFTER = 1.0  # seconds after which old detections are no longer drawn
 
 
@@ -54,6 +54,11 @@ class DemoConfig:
     recognize: bool = False  # start with the face recognition on (N toggles it)
     cast: bool = True  # put the known people's faces on 3D people (when the faces folder has photos)
     created: str | None = "created"  # characters made in the character creator, shown in the fair (None: not)
+    windows: bool = False  # start with the virtual sensor's windows shown (W toggles them; see bifold_demo.sensor)
+    max_windows: int = 4  # windows a frame
+    sensor: tuple[int, int] | None = None  # the declared high-resolution sensor (None: six times the frame)
+    camera_preset: str = "ideal"  # the camera model of the windows (sensor.camera_model.PRESETS)
+    webcam_capture: tuple[int, int] | None = None  # capture the webcam at this size, windows cut from it
     title: str = "bifold demo"
 
 
@@ -81,10 +86,15 @@ class DemoApp:
         self._prepare_scene(scene)
         clock = FixedStepClock(config.fps) if config.headless else SimulationClock()
         self.scene_source = SceneSource(scene, config.width, config.height, config.fps, clock)
+        self.window_service = None  # the virtual sensor's windows (W), made when first shown
+        self.windows_on = False
+        self._window_tags = None
         self.switcher = SourceSwitcher(
             {
                 "scene": lambda: self.scene_source,
-                "webcam": lambda: WebcamSource(config.camera, config.width, config.height, config.fps, config.mirror),
+                "webcam": lambda: WebcamSource(config.camera, config.width, config.height, config.fps, config.mirror,
+                                               capture=config.webcam_capture,
+                                               windows=self.window_service if self.windows_on else None),
             },
             initial=config.source,
         )
@@ -235,6 +245,52 @@ class DemoApp:
     def _creating(self) -> bool:
         return self.creator is not None and self.creator.active
 
+    # -- the virtual sensor's windows (W) -------------------------------------------------------------------------
+
+    def _show_windows(self, on: bool) -> str:
+        """Show the windows of the virtual high-resolution sensor (or stop): high-resolution views of the heads of
+        the people the detector finds, delivered with the frames (see bifold_demo.sensor). Until the person tracker
+        asks for them, they follow the person boxes of the detections."""
+        if on and self.window_service is None:
+            from .display.sensor_view import BoxTags
+            from .sensor import Sensor, WindowService
+
+            cfg = self.config
+            sensor = Sensor(*cfg.sensor, (cfg.width, cfg.height)) if cfg.sensor else None
+            self.window_service = WindowService(sensor, cfg.max_windows, preset=cfg.camera_preset)
+            self._window_tags = BoxTags()
+        self.windows_on = on
+        for source in {id(s): s for s in (self.scene_source, *self.switcher.started())}.values():
+            if hasattr(source, "windows"):
+                source.windows = self.window_service if on else None
+        if not on:
+            if self.window_service is not None:
+                self.window_service.clear()
+            return "windows off"
+        from .sensor import DEFAULT_SCALE, Sensor
+
+        service, cfg = self.window_service, self.config
+        preset = service.preset
+        if preset.lines is not None:
+            sensor = Sensor.with_lines(preset.lines, (cfg.width, cfg.height))
+        else:
+            sensor = service.sensor or Sensor.scaled(DEFAULT_SCALE, (cfg.width, cfg.height))
+        need = "" if self.detect_enabled and self.detector is not None else " (they follow the people found: D)"
+        return f"windows on: up to {cfg.max_windows} a frame, {sensor} sensor, {preset.name} camera{need}"
+
+    def _request_windows(self, frame: Frame, result: DetectionResult | None) -> None:
+        """Ask for windows on the heads of the people in ``result`` (the latest detections of ``frame``'s source)."""
+        if result is None or result.source != frame.source:
+            return
+        from .sensor import WindowRequest
+
+        sx, sy = frame.size[0] / result.frame_size[0], frame.size[1] / result.frame_size[1]
+        boxes = [(d.box[0] * sx, d.box[1] * sy, d.box[2] * sx, d.box[3] * sy) for d in result.detections
+                 if d.label == "person" and d.box[2] > d.box[0] and d.box[3] > d.box[1]]
+        tags = self._window_tags.assign(boxes)
+        self.window_service.request([WindowRequest(tag, box=box, frame=result.frame_index)
+                                     for tag, box in zip(tags, boxes)])
+
     def _faces_for(self, frame: Frame):
         """The recognised faces of ``frame`` (or of a frame just before it), or ``None``; kept for the status panel."""
         self._last_faces = self._recognized(frame)
@@ -273,6 +329,8 @@ class DemoApp:
             self._load_detector()
         if cfg.recognize:
             self.recognize_enabled = self._load_recognizer()
+        if cfg.windows:
+            print(f"[demo] {self._show_windows(True)}")
         self._load_cast()
         self._update_created(wait=True)  # the first frame has them
         window = None if cfg.headless else Window(cfg.title, cfg.fullscreen)
@@ -295,6 +353,8 @@ class DemoApp:
                         for note in self.creator.update():
                             self.notify(note, 4.0, error=note.startswith("cannot"))
                     result = self._detections_for(frame)
+                    if self.windows_on:  # for the frames to come: windows show their own moment
+                        self._request_windows(frame, result)
                     self._last_canvas = self._compose(frame, result, self._faces_for(frame))
                     self.display_rate.tick(time.perf_counter())
                     if cfg.record:
@@ -363,6 +423,10 @@ class DemoApp:
             t = self.scene_source.scene.time
             draw_selection(canvas, self.selection.box, person_name(self.selection.selected),
                            self.selection.detail(self.selection.selected, t))
+        if self.windows_on and frame.windows:
+            from .display.sensor_view import draw_windows
+
+            draw_windows(canvas, frame.windows)
         if self.show_hud:
             draw_panel(canvas, self._status_lines(frame, result))
             if not self.config.headless:
@@ -411,6 +475,11 @@ class DemoApp:
                 line += f", in the picture: {', '.join(names) or 'nobody known'}"
                 line += f" (+{strangers} unknown)" if strangers else ""
             lines.append(line)
+        if self.windows_on and self.window_service is not None:
+            asked = len(self.window_service.requests)
+            spent = sum(w.render_ms + w.camera_ms for w in frame.windows)
+            lines.append(f"windows: {len(frame.windows)} of {asked} asked ({self.window_service.preset.name}), "
+                         f"{spent:.0f} ms")
         if frame.source == "scene":
             created = self.created.status() if self.created is not None else None
             lines += ([created] if created else []) + self.selection.status_lines(self.scene_source.scene.time)
@@ -452,6 +521,8 @@ class DemoApp:
                 return
             self.recognize_enabled = not self.recognize_enabled
             self.notify(f"face recognition {'on' if self.recognize_enabled else 'off'}")
+        elif key == ord("w"):
+            self.notify(self._show_windows(not self.windows_on), 3.0)
         elif key == ord(" "):
             self.notify("paused" if clock.toggle_pause() else "running", 1.0)
         elif key == ord("r"):
@@ -553,6 +624,15 @@ def _size(text: str) -> tuple[int, int]:
         raise argparse.ArgumentTypeError("size must look like 1280x720") from None
 
 
+def _preset(text: str) -> str:
+    from .sensor import camera_preset
+
+    try:
+        return camera_preset(text).name
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
 def parse_args(argv=None) -> DemoConfig:
     p = argparse.ArgumentParser(
         prog="bifold-demo",
@@ -590,6 +670,18 @@ def parse_args(argv=None) -> DemoConfig:
     g.add_argument("--no-detect", dest="detect", action="store_false", help="start with detection off")
     g.add_argument("--sync", action="store_true",
                    help="wait for detections on every frame (boxes never lag, frame rate follows the model)")
+    g = p.add_argument_group("high-resolution windows (the virtual sensor; W shows them)")
+    g.add_argument("--windows", action="store_true",
+                   help="start with the windows on the heads of the people found shown")
+    g.add_argument("--max-windows", type=int, default=4, metavar="N", help="windows a frame (default 4)")
+    g.add_argument("--sensor", type=_size, metavar="WxH",
+                   help="the declared high-resolution sensor, the frame's shape (default: six times the frame, "
+                        "7680x4320 for 1280x720)")
+    g.add_argument("--camera-preset", type=_preset, default="ideal", metavar="NAME",
+                   help="the windows' camera model: ideal, good_8k, good_4k or budget_1080p (default ideal)")
+    g.add_argument("--webcam-capture", type=_size, metavar="WxH",
+                   help="capture the webcam at this size (e.g. 3840x2160), detect on a copy of the frame size and "
+                        "cut the windows from the full picture")
     g = p.add_argument_group("output")
     g.add_argument("--fullscreen", action="store_true", help="start in fullscreen")
     g.add_argument("--record", metavar="FILE.mp4", help="also write the annotated video to a file")
@@ -601,7 +693,8 @@ def parse_args(argv=None) -> DemoConfig:
         mirror=a.mirror, model=a.model, device=a.device, conf=a.conf, iou=a.iou, imgsz=a.imgsz, classes=a.classes,
         detect=a.detect, sync=a.sync, fullscreen=a.fullscreen, record=a.record, headless=a.headless,
         frames=a.frames, reload=a.reload, uploads=a.uploads or None, items=a.items or None, faces=a.faces,
-        recognize=a.recognize, cast=a.cast, created=a.created or None,
+        recognize=a.recognize, cast=a.cast, created=a.created or None, windows=a.windows, max_windows=a.max_windows,
+        sensor=a.sensor, camera_preset=a.camera_preset, webcam_capture=a.webcam_capture,
     )
 
 

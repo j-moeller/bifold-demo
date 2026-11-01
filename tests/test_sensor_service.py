@@ -173,11 +173,9 @@ def test_the_service_delivers_a_few_windows_with_every_frame_of_its_moment(gl):
         source.stop()
 
 
-def test_the_truth_finds_the_person_and_their_motion():
-    """With eye bones: who is in a window, where their eyes are and how fast they move (window pixels)."""
-    from bifold_demo.characters.character import Character
+def _eyes_model():
+    """A box person 1.7 m tall with Rocketbox eye bones 64 mm apart at 1.6 m, 0.1 m in front of the root."""
     from bifold_demo.characters.model import CharacterModel, Skeleton, SkinnedPrimitive
-    from bifold_demo.scene import Scene
     from bifold_demo.scene.geometry import box_mesh
 
     rest = np.repeat(np.eye(4)[None], 3, axis=0)
@@ -188,7 +186,33 @@ def test_the_truth_finds_the_person_and_their_motion():
     weights[:, 0] = 1.0
     part = SkinnedPrimitive("body", body.positions + np.float32([0, 0.85, 0]), body.normals, body.uvs, body.indices,
                             joints, weights, np.full((2, 2, 4), 200, np.uint8))
-    model = CharacterModel("eyes", skeleton, [part], np.linalg.inv(skeleton.rest_global))
+    return CharacterModel("eyes", skeleton, [part], np.linalg.inv(skeleton.rest_global))
+
+
+def test_the_truth_is_the_person_the_window_is_on_not_a_small_face_behind():
+    from bifold_demo.characters.character import Character
+    from bifold_demo.scene import Scene
+
+    model = _eyes_model()
+    scene = Scene()
+    scene.camera = Camera(position=(0, 1.6, 6), target=(0, 1.6, -6), fov=55)
+    # eyes 3 m away, 34.6 view pixels right of the middle; and 30 m away, 15 pixels right of it
+    scene.add(Character(model, lambda t: CharacterState((0.15, 0.0, 2.9), 0.0, [])), name="near")
+    scene.add(Character(model, lambda t: CharacterState((0.65, 0.0, -24.1), 0.0, [])), name="far")
+    scene.update(0.0, 0.0)
+    sensor = Sensor(7680, 4320, (1280, 720))
+    window = sensor.window((620, 320, 700, 400), 1)  # the far face nearer its middle (5 pixels) than the near one (15)
+    truth = find_truth(scene, window)
+    assert truth.name == "near" and truth.inside and truth.eye_distance > 8 * find_truth(
+        scene, window, subject=scene["far"]).eye_distance
+
+
+def test_the_truth_finds_the_person_and_their_motion():
+    """With eye bones: who is in a window, where their eyes are and how fast they move (window pixels)."""
+    from bifold_demo.characters.character import Character
+    from bifold_demo.scene import Scene
+
+    model = _eyes_model()
     scene = Scene()
     scene.camera = Camera(position=(0, 1.6, 6), target=(0, 1.6, -6), fov=55)
     # facing the camera (+Z): the eyes 0.1 m in front of the root, the person's left (+X) the camera's right
@@ -288,3 +312,124 @@ def test_a_webcam_captures_high_detects_on_a_copy_and_cuts_windows_from_the_full
 def test_frames_carry_their_time_and_windows():
     frame = Frame(np.zeros((2, 2, 3), np.uint8), 1, 0.0, "scene")
     assert frame.time is None and frame.windows == []
+
+
+# -- the demo ---------------------------------------------------------------------------------------------------------
+
+
+class _PeopleDetector:
+    """Finds the sample scene's people where they are (as a perfect person detector would)."""
+
+    model_name, device, conf = "people.pt", "cpu", 0.35
+    scene = None
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def detect_frame(self, frame):
+        from bifold_demo.detection import Detection, DetectionResult
+
+        boxes = [_person_box(self.scene, self.scene[name], frame.size) for name in ("near", "far")]
+        found = [Detection(box, 0.9, 0, "person") for box in boxes] + [Detection((1, 1, 9, 9), 0.8, 56, "chair")]
+        return DetectionResult(found, frame.index, frame.source, frame.size, 1.0, time.perf_counter())
+
+
+def test_the_demo_shows_the_windows_of_the_people_it_finds(gl, tmp_path, monkeypatch):
+    from bifold_demo import detection
+    from bifold_demo.app import DemoApp, DemoConfig, parse_args
+    from bifold_demo.display.sensor_view import BoxTags
+
+    scene = sample_scene()
+    _PeopleDetector.scene = scene
+    monkeypatch.setattr(detection, "YoloDetector", _PeopleDetector)
+    monkeypatch.chdir(tmp_path)
+    config = DemoConfig(headless=True, frames=4, width=VIEW[0], height=VIEW[1], windows=True, max_windows=1,
+                        sensor=(1280, 720), camera_preset="good 4K", created=None, uploads=None, items=None)
+    app = DemoApp(config, scene=scene)
+    shown = []
+    compose = app._compose
+    app._compose = lambda frame, *rest: shown.append((frame, compose(frame, *rest))) or shown[-1][1]
+    app.run()
+    assert app.windows_on and app.window_service.preset.name == "good 4K"
+    first, *later = [frame for frame, _canvas in shown]
+    assert first.windows == []  # nobody found yet
+    assert [[w.tag for w in f.windows] for f in later] == [[1], [2], [1]]  # one a frame, the two people in turn
+    for frame in later:
+        (window,) = frame.windows
+        assert window.time == frame.time and window.preset == "good 4K"
+        assert window.window.sensor.size == (3840, 2160)  # the preset's own sensor
+    canvas = shown[-1][1]
+    column = canvas[:, -round(0.2 * VIEW[0]) - 4:]  # the windows' column on the right
+    assert not np.array_equal(column, later[-1].image[:, -column.shape[1]:])
+    assert any(line.startswith("windows: 1 of 2 asked") for line in app._status_lines(later[-1], None))
+    window = type("W", (), {"toggle_fullscreen": lambda self: None})()
+    app._handle_key(ord("w"), window)
+    assert not app.windows_on and app.scene_source.windows is None and app.window_service.requests == []
+    tags = BoxTags()
+    assert tags.assign([(0, 0, 10, 10), (20, 0, 30, 10)]) == [1, 2]
+    assert tags.assign([(21, 0, 31, 10), (50, 0, 60, 10), (1, 0, 11, 10)]) == [2, 3, 1]  # kept where they overlap
+    cfg = parse_args(["--windows", "--max-windows", "2", "--sensor", "5120x2880", "--camera-preset", "budget_1080p",
+                      "--webcam-capture", "1920x1080"])
+    assert (cfg.windows, cfg.max_windows, cfg.sensor, cfg.camera_preset, cfg.webcam_capture) == \
+        (True, 2, (5120, 2880), "budget 1080p", (1920, 1080))
+    with pytest.raises(SystemExit):
+        parse_args(["--camera-preset", "vhs"])
+
+
+_SCENE_FILE = '''
+import numpy as np
+from bifold_demo.characters.character import Character
+from bifold_demo.characters.model import CharacterModel, CharacterState, Skeleton, SkinnedPrimitive
+from bifold_demo.scene import Box, Camera, Scene
+from bifold_demo.scene.geometry import box_mesh
+
+
+def build_scene():
+    rest = np.repeat(np.eye(4)[None], 3, axis=0)
+    rest[1, :3, 3], rest[2, :3, 3] = (-0.032, 1.6, 0.1), (0.032, 1.6, 0.1)
+    skeleton = Skeleton(["Root", "Bip01 REye", "Bip01 LEye"], [-1, 0, 0], rest)
+    body = box_mesh(0.4, 1.7, 0.2)
+    joints, weights = np.zeros((len(body.positions), 4), np.int64), np.zeros((len(body.positions), 4), np.float32)
+    weights[:, 0] = 1.0
+    part = SkinnedPrimitive("body", body.positions + np.float32([0, 0.85, 0]), body.normals, body.uvs,
+                            body.indices, joints, weights, np.full((2, 2, 4), 200, np.uint8))
+    model = CharacterModel("eyes", skeleton, [part], np.linalg.inv(skeleton.rest_global))
+    scene = Scene(background=(90, 90, 90))
+    scene.camera = Camera(position=(0, 1.6, 6), target=(0, 1.6, -6), fov=55)
+    scene.add(Box(size=(8, 3, 0.1), texture="#a0b4c8", position=(0, 1.5, -12)), name="wall")
+    scene.add(Character(model, lambda t: CharacterState((-0.5, 0.0, 2.9), 0.0, [])), name="near")
+    scene.add(Character(model, lambda t: CharacterState((0.3 * t, 0.0, -2.1), 0.0, [])), name="far")
+    scene.add(Character(model, lambda t: CharacterState((0.0, 0.0, 9.0), 0.0, [])), name="behind")
+    return scene
+'''
+
+
+def test_the_scene_command_writes_the_windows_of_a_moment(gl, tmp_path):
+    import json
+
+    from bifold_demo.recognition import models
+    from bifold_demo.sensor.cli import main
+
+    scene_file = tmp_path / "eyes_scene.py"
+    scene_file.write_text(_SCENE_FILE)
+    out = tmp_path / "out"
+    faces = (models.models_dir() / models.DETECTOR.name).is_file()  # the face detector, when downloaded
+    args = ["windows", "--scene", str(scene_file), "--time", "0.5", "--size", "320x180", "--people", "heads",
+            "--preset", "ideal", "--preset", "good_4k", "-o", str(out)] + (["--faces"] if faces else [])
+    assert main(args) == 0
+    manifest = json.loads((out / "windows.json").read_text())
+    assert manifest["view"] == [320, 180] and manifest["sensor"] == [1920, 1080] and manifest["time"] == 0.5
+    windows = manifest["windows"]
+    assert [(w["tag"], w["preset"]) for w in windows] == [("near", "ideal"), ("far", "ideal"), ("near", "good 4K"),
+                                                           ("far", "good 4K")]  # nearest first; "behind" not seen
+    near, far = windows[0]["truth"], windows[1]["truth"]
+    assert near["distance"] == pytest.approx(math.hypot(0.5, 3.0), abs=1e-3)  # to the eyes, 0.5 m to the side
+    assert far["distance"] == pytest.approx(math.hypot(0.15, 8.0), abs=1e-3)
+    assert near["visible"] == 1.0 and far["frontal_eye_distance"] == pytest.approx(far["eye_distance"], rel=0.01)
+    assert near["view_eye_distance"] * 6 == pytest.approx(near["eye_distance"], rel=0.01)  # 6 times the view's
+    assert windows[2]["sensor"] == [3840, 2160]  # good 4K's own sensor
+    assert all((out / w["file"]).is_file() for w in windows) and (out / "view.png").is_file()
+    assert cv2.imread(str(out / "sheet.png")).shape[1] == 6 * 240
+    if faces:
+        assert all("window_faces" in w for w in windows)
+    assert main(["windows", "--scene", str(scene_file), "--sensor", "1000x1000", "-o", str(out)]) == 1

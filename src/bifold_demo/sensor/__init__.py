@@ -23,6 +23,8 @@ Only what may show in a window is drawn (:mod:`bifold_demo.scene.frustum`).
 - :class:`CameraModel` (:mod:`.camera_model`): a camera's faults at the window's pixel scale (lens and motion blur,
   Poisson-Gaussian noise, a Bayer mosaic and demosaicing, tone, sharpening, JPEG), seeded; :data:`PRESETS` "ideal",
   "good 8K", "good 4K" and "budget 1080p".
+- ``bifold-scene windows`` (:mod:`.cli`): a scene at a moment and the windows on its people, with the face
+  detector's findings; ``W`` in the demo shows the windows (:mod:`bifold_demo.display.sensor_view`).
 
 The design and the measurements behind it are in ``docs/research/high_res_faces.md`` (sections 2.1 and 3.4).
 """

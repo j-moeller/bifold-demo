@@ -41,6 +41,10 @@ class SourceSwitcher:
     def active(self) -> FrameSource:
         return self.get(self.active_name)
 
+    def started(self) -> list[FrameSource]:
+        """The sources made so far."""
+        return list(self._sources.values())
+
     def switch(self, name: str) -> bool:
         """Make ``name`` the active source; on failure keep the current one and set ``last_error``."""
         try:

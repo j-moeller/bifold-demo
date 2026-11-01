@@ -55,6 +55,7 @@ for your terminal app. Allow it, then run the command again.
 | `S`       | switch the source: scene ↔ webcam                         |
 | `D`       | turn detection on or off                                  |
 | `N`       | face recognition on or off: names on the faces of known people (see [Face recognition](#face-recognition)) |
+| `W`       | high-resolution windows on the heads of the people found, shown on the right (see [the virtual sensor](#the-virtual-high-resolution-sensor)) |
 | `Space`   | pause or resume the scene's simulation time               |
 | `R`       | restart the scene (time 0, physics reset)                 |
 | `[` / `]` | lower / raise the confidence threshold                    |
@@ -1116,6 +1117,34 @@ trades motion blur for noise. On this machine's CPU a preset takes about
 8 ms for a 256x256 window, 30 ms for 512x512 (40 ms with motion blur) and
 60-85 ms for 768x768; `ideal` takes nothing.
 
+**In the demo**, `W` (or `--windows`) shows the windows: up to four a frame
+on the heads of the people the detector finds (so detection must be on),
+taking turns, in a column on the right with each window's place marked in
+the picture, its level, the eye distance in it and its time. Until the person
+tracker asks for windows itself, the demo follows the detector's person boxes
+and keeps their numbers from frame to frame by their overlap. The options:
+
+```bash
+bifold-demo --windows                          # start with them shown
+bifold-demo --windows --camera-preset good_4k  # through a camera preset
+bifold-demo --windows --sensor 15360x8640 --max-windows 2   # a larger sensor, two windows a frame
+bifold-demo --source webcam --webcam-capture 3840x2160 --windows   # cut from a 4K webcam picture
+```
+
+**From the command line**, `bifold-scene windows` renders a scene at a moment
+(as the headless demo would show it) and the windows on everyone in the
+picture, through one or more presets, and writes the view with the windows'
+places, every window, a contact sheet and `windows.json` (each window's place,
+level, scale, time, and who is in it: distance, eye distance in the view and
+in the window, whether a face is hidden behind someone). With `--faces` it
+also runs the face detector on the view and on each window:
+
+```bash
+bifold-scene windows --time 6 --faces -o windows/               # the fair, ground-truth person boxes
+bifold-scene windows --time 6 --people detect --model yolo26n.pt  # YOLO's person boxes
+bifold-scene windows --time 6 --people heads --preset ideal --preset budget_1080p
+```
+
 **Agreement.** Windows equal the same pixels cut from a render of the whole
 sensor: on a test scene with textured boxes, a sphere, skinned people with
 their blob shadows and fog, eleven windows of 16 to 420 pixels at levels 1 to
@@ -1906,7 +1935,7 @@ src/bifold_demo/
                animation.py, physics.py, renderer.py (ModernGL),
                frustum.py (culling for windows)                         ← the 3D scene
   detection/   yolo.py (YoloDetector), worker.py (AsyncDetector)      ← module 2: recognition
-  display/     overlay.py (boxes, HUD), window.py                      ← module 3: on screen
+  display/     overlay.py (boxes, HUD), window.py, sensor_view.py (the windows, W)  ← module 3: on screen
   characters/  model.py (skeleton, clips, posing), fbx.py + fbx_convert.py (FBX reader),
                character.py (skinned scene object), behaviour.py, crowd.py,
                yoga.py (yoga pose clips), yoga_clips.py (built in a worker process, cached),
@@ -1934,7 +1963,8 @@ src/bifold_demo/
   sensor/      geometry.py (a declared high-resolution sensor, its windows and
                pixel maps), requests.py (requests, head regions, the scheduler),
                service.py (windows with the frames, the truth),
-               camera_model.py (blur, noise, mosaic, tone, JPEG; presets)  ← the virtual high-resolution sensor
+               camera_model.py (blur, noise, mosaic, tone, JPEG; presets),
+               cli.py (bifold-scene windows)                            ← the virtual high-resolution sensor
   people/      prompts.py, generator.py (text-to-image), cutout.py,
                library.py, defaults.py, cli.py (bifold-people)          ← 2D people generator
   app.py       main loop and command line; loader.py loads and reloads scene files;

@@ -26,7 +26,7 @@ import threading
 import time
 import weakref
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import cv2
 import numpy as np
@@ -48,9 +48,12 @@ class Truth:
         name: the scene object's name; ``avatar``: its model's name.
         distance: metres from the camera to the point between the eyes.
         eyes: ``((x, y), (x, y))``: the person's right and left eye (the eye bones) in window pixels.
-        eye_distance: pixels between them in the window (smaller than ``face_px`` when the head is turned).
+        eye_distance: pixels between them in the window (fewer when the head is turned).
+        frontal_eye_distance: the pixels between them if the face were turned to the camera: the face's size.
         inside: both eyes lie in the window.
         velocity: ``(x, y)`` window pixels per second of the point between the eyes (0 when unknown).
+        visible: how much the person is the nearest surface where their eyes are (0-1: 0 hidden behind someone or
+            something; ``None``: not measured, see ``render_windows(visibility=True)``).
     """
 
     name: str
@@ -60,6 +63,8 @@ class Truth:
     eye_distance: float
     inside: bool
     velocity: tuple = (0.0, 0.0)
+    frontal_eye_distance: float = 0.0
+    visible: float | None = None
 
 
 @dataclass(eq=False)
@@ -195,8 +200,9 @@ class Motion:
 
 
 def find_truth(scene, window: Window, motion: Motion | None = None, subject=None) -> Truth | None:
-    """Who the scene knows is in ``window``: ``subject`` when given, else the visible person whose eyes are in the
-    window, nearest its middle (``None`` when nobody's are)."""
+    """Who the scene knows is in ``window``: ``subject`` when given, else, of the visible people whose eyes are in
+    the window, the one nearest its middle counted in their own (frontal) eye distances, so that the person the window
+    was placed on wins over a small face behind them (``None`` when nobody's eyes are in it)."""
     found = _find_person(scene, window, motion, subject)
     return None if found is None else found[1]
 
@@ -205,6 +211,8 @@ def _find_person(scene, window: Window, motion: Motion | None, subject) -> tuple
     """``(person, truth)`` for :func:`find_truth`."""
     camera = scene.camera
     clip_from_world = window.crop_matrix() @ camera.projection_matrix(window.sensor.view_aspect) @ camera.view_matrix()
+    view_matrix = camera.view_matrix()
+    focal = window.sensor.height / window.level / 2 / np.tan(np.radians(camera.current_fov) / 2)  # window pixels
     size = np.array(window.size, dtype=np.float64)
 
     def pixels(points):
@@ -228,12 +236,14 @@ def _find_person(scene, window: Window, motion: Motion | None, subject) -> tuple
         inside = bool(((px >= 0) & (px <= size)).all())
         if subject is None and not (0 <= middle[0] <= size[0] and 0 <= middle[1] <= size[1]):
             continue
-        rank = float(np.linalg.norm(middle - size / 2))
+        depth = -(view_matrix[2, :3] @ eyes.mean(axis=0) + view_matrix[2, 3])  # along the line of sight
+        frontal = focal * float(np.linalg.norm(eyes[0] - eyes[1])) / max(depth, 1e-6)  # turned heads too
+        rank = float(np.linalg.norm(middle - size / 2)) / max(frontal, 1e-6)
         if best is None or rank < best[0]:
-            best = (rank, person, eyes, px, inside)
+            best = (rank, person, eyes, px, inside, frontal)
     if best is None:
         return None
-    _rank, person, eyes, px, inside = best
+    _rank, person, eyes, px, inside, frontal = best
     middle = eyes.mean(axis=0)
     velocity = (0.0, 0.0)
     if motion is not None:
@@ -247,7 +257,22 @@ def _find_person(scene, window: Window, motion: Motion | None, subject) -> tuple
     return person, Truth(name=str(person.name), avatar=str(getattr(model, "name", "")),
                          distance=float(np.linalg.norm(middle - np.asarray(camera.current_position, dtype=np.float64))),
                          eyes=tuple(tuple(float(v) for v in p) for p in px),
-                         eye_distance=float(np.linalg.norm(px[0] - px[1])), inside=inside, velocity=velocity)
+                         eye_distance=float(np.linalg.norm(px[0] - px[1])), inside=inside, velocity=velocity,
+                         frontal_eye_distance=float(frontal))
+
+
+def eyes_visible(mask: np.ndarray, eyes) -> float:
+    """How much a person's coverage ``mask`` (of :meth:`~bifold_demo.scene.renderer.Renderer.window_mask`) holds at
+    their ``eyes`` (window pixels): the mean over the 3x3 pixels around each eye; 0 for eyes outside the window."""
+    h, w = mask.shape
+    values = []
+    for x, y in eyes:
+        cx, cy = int(np.floor(x)), int(np.floor(y))
+        if 0 <= cx < w and 0 <= cy < h:
+            values.append(float(mask[max(0, cy - 1):cy + 2, max(0, cx - 1):cx + 2].mean()))
+        else:
+            values.append(0.0)
+    return float(np.mean(values))
 
 
 # -- windows ----------------------------------------------------------------------------------------------------------
@@ -264,13 +289,14 @@ def _sensor_for(request: WindowRequest, model: CameraModel, declared: Sensor, vi
 
 def render_windows(scene, renderer, requests: Iterable[WindowRequest], sensor: Sensor | None = None, frame: int = 0,
                    head: HeadRegion | None = None, multiple: int = MULTIPLE, truth: bool = True,
-                   motion: Motion | None = None, preset="ideal") -> list[WindowResult]:
+                   motion: Motion | None = None, preset="ideal", visibility: bool = False) -> list[WindowResult]:
     """Render the windows of ``requests`` for ``scene`` as ``renderer`` drew it last (call it right after
     ``renderer.render(scene)``: the windows then show the frame's moment and reuse its uploads), through the camera
     ``preset`` (a name or a :class:`~.camera_model.CameraModel`; a request's own comes first).
 
     ``sensor``: the declared sensor (default: :data:`~.geometry.DEFAULT_SCALE` times the renderer's view); requests
     whose region is not in the view are left out. ``truth``: find who is in each window (see :class:`Truth`);
+    ``visibility``: also measure whether their eyes are hidden (``Truth.visible``: one more draw of the person);
     ``motion``: people's speeds, for the truth and the motion blur. ``frame``: the frame's index (results and the
     noise's seed)."""
     view = (renderer.width, renderer.height)
@@ -290,11 +316,18 @@ def render_windows(scene, renderer, requests: Iterable[WindowRequest], sensor: S
         image = renderer.render_window(scene, window.ndc, window.size, aspect=chosen.view_aspect)
         render_ms = (time.perf_counter() - start) * 1000.0
         found = _find_person(scene, window, motion, request.subject) if truth or model.needs_motion else None
+        mask = None
+        if truth and visibility and found is not None:
+            mask = renderer.window_mask(found[0])
+            found = (found[0], replace(found[1], visible=eyes_visible(mask, found[1].eyes)))
         start = time.perf_counter()
-        velocity, mask = (0.0, 0.0), None
+        velocity = (0.0, 0.0)
         if model.needs_motion and found is not None and np.hypot(*found[1].velocity) * model.exposure >= 0.5:
             velocity = found[1].velocity
-            mask = renderer.window_mask(found[0])  # only the moving person is smeared
+            if mask is None:
+                mask = renderer.window_mask(found[0])  # only the moving person is smeared
+        else:
+            mask = None
         image = model.apply(image, window.level, velocity, mask, model.window_seed(frame, request.tag,
                                                                                  window.sensor_rect))
         camera_ms = (time.perf_counter() - start) * 1000.0  # the camera model, with the mask it needs
@@ -345,7 +378,7 @@ class WindowService:
         priority: the scheduler's priority hook (see :class:`~.requests.Scheduler`).
         head: where heads are in person boxes (:class:`~.requests.HeadRegion`).
         multiple: window sides are grown to a multiple of it.
-        truth: find who the scene knows is in each window.
+        truth: find who the scene knows is in each window; ``visibility``: and whether their eyes are hidden.
         preset: the camera preset (a name of :data:`~.camera_model.PRESETS` or a
             :class:`~.camera_model.CameraModel`); a preset with its own sensor size uses it instead of ``sensor``.
 
@@ -354,13 +387,14 @@ class WindowService:
     """
 
     def __init__(self, sensor: Sensor | None = None, max_windows: int = DEFAULT_WINDOWS, priority=None,
-                 head: HeadRegion | None = None, multiple: int = MULTIPLE, truth: bool = True, preset="ideal"):
+                 head: HeadRegion | None = None, multiple: int = MULTIPLE, truth: bool = True, preset="ideal",
+                 visibility: bool = False):
         self.sensor = sensor
         self.preset = camera_preset(preset)
         self.scheduler = Scheduler(max_windows, priority)
         self.head = head or HeadRegion()
         self.multiple = multiple
-        self.truth = truth
+        self.truth, self.visibility = truth, visibility
         self.motion = Motion()
         self.last: list[WindowResult] = []
         self._lock = threading.Lock()
@@ -400,7 +434,7 @@ class WindowService:
         self.motion.observe(scene)
         chosen = self._choose(frame.index)
         self.last = render_windows(scene, renderer, chosen, self.sensor, frame.index, self.head, self.multiple,
-                                   self.truth, self.motion, self.preset) if chosen else []
+                                   self.truth, self.motion, self.preset, self.visibility) if chosen else []
         return self.last
 
     def for_image(self, image: np.ndarray, frame) -> list[WindowResult]:
