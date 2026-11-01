@@ -107,7 +107,7 @@ the eye distance (eye bones) in the 1280x720 view and in their window, and wheth
 - YuNet's eye distances agree with the eye bones within a few pixels: the windows' faces are where the scene says.
 
 In the fair itself (6 s, `bifold-scene windows --time 6 --people truth --faces`), 34 people were in the picture:
-10 hidden behind others where their eyes are (the truth's `visible`), most others turned away or in profile (the fair's
+9 hidden behind others where their eyes are (the truth's `visible`), most others turned away or in profile (the fair's
 people do not look at the camera, except the audience). YuNet found 5 faces in the view and 9 in the windows: the four
 people watching the camera at 50-81 px between the eyes instead of 11-17 (one window binned by 2: its head square
 was over the pixel limit), and five more at 6-22 px.

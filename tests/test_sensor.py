@@ -382,6 +382,58 @@ def test_bone_spheres_hold_the_skinned_mesh():
             assert (d.min(axis=1) <= 1e-6).all(), degrees  # every vertex in some bone's sphere
 
 
+def test_bone_spheres_reach_every_vertex_their_bone_moves_and_a_margin_beyond():
+    """A bone's sphere reaches the vertices it moves with any weight (a blended one too), plus BONE_MARGIN (3 cm)."""
+    from bifold_demo.scene.frustum import BONE_MARGIN, Bounds, bone_radii
+
+    rest = np.repeat(np.eye(4)[None], 2, axis=0)
+    rest[1, 1, 3] = 1.0  # the neck's joint 1 m above the hips'
+    skeleton = Skeleton(["Hips", "Neck"], [-1, 0], rest)
+    positions = np.float32([[0.0, 0.5, 0.0], [0.0, 1.4, 0.0], [0.6, 1.0, 0.0]])  # the hips', the neck's, a blended one
+    joints = np.int64([[0, 0, 0, 0], [1, 0, 0, 0], [0, 1, 0, 0]])
+    weights = np.float32([[1, 0, 0, 0], [1, 0, 0, 0], [0.8, 0.2, 0, 0]])
+    part = SkinnedPrimitive("part", positions, np.zeros_like(positions), np.zeros((3, 2), np.float32),
+                            np.uint32([[0, 1, 2]]), joints, weights, np.full((2, 2, 4), 200, np.uint8))
+    radii = bone_radii(part, rest[:, :3, 3])
+    assert radii == pytest.approx([math.hypot(0.6, 1.0), 0.6])  # the neck moves the blended vertex by a fifth
+    person = Character(CharacterModel("blend", skeleton, [part], np.linalg.inv(skeleton.rest_global)),
+                       _standing(0.0, 0.0, 0.0))
+    assert BONE_MARGIN == pytest.approx(0.03) and Bounds().bone_radii(person) == pytest.approx(radii + BONE_MARGIN)
+
+
+def test_a_window_shows_the_shadow_of_a_person_out_of_it(gl):
+    """Blob shadows are culled on their own: a body hovering high above the floor, out of a window on the floor below
+    it, still casts the shadow that lies in that window."""
+    from bifold_demo.scene.renderer import Renderer
+
+    rest = np.eye(4)[None].copy()
+    rest[0, 1, 3] = 3.3
+    body = box_mesh(0.6, 0.6, 0.6)
+    joints, weights = np.zeros((len(body.positions), 4), np.int64), np.zeros((len(body.positions), 4), np.float32)
+    weights[:, 0] = 1.0
+    part = SkinnedPrimitive("balloon", body.positions + np.float32([0, 3.3, 0]), body.normals, body.uvs, body.indices,
+                            joints, weights, np.full((2, 2, 4), 200, np.uint8))
+    skeleton = Skeleton(["Hips"], [-1], rest)
+    model = CharacterModel("balloon", skeleton, [part], np.linalg.inv(skeleton.rest_global))
+    scene = Scene(background=(40, 60, 90))
+    scene.camera = Camera(position=(0, 1.6, 6), target=(0, 0, 0), fov=55)
+    scene.add(Plane(size=(20, 20), color=(220, 220, 220)), name="floor")
+    balloon = scene.add(Character(model, _standing(0.0, 0.0, 0.0)), name="balloon")
+    scene.update(0.0, 0.0)
+    view = Renderer(*VIEW)
+    try:
+        view.render(scene)
+        below = _project(scene, view, balloon, [0.0, 0.0, 0.0])
+        w = Sensor.scaled(4, VIEW).window((below[0] - 5, below[1] - 5, below[0] + 5, below[1] + 5), 1)
+        culled = view.render_window(scene, w.ndc, w.size)
+        assert view.window_stats["people_drawn"] == 0 and view.window_stats["shadows_drawn"] == 1
+        assert np.array_equal(culled, view.render_window(scene, w.ndc, w.size, cull=False))
+        balloon.shadow = False
+        assert culled.astype(float).mean() < view.render_window(scene, w.ndc, w.size).astype(float).mean() - 5
+    finally:
+        view.release()
+
+
 def test_culled_windows_are_the_same_and_leave_out_what_is_not_in_them(gl):
     from bifold_demo.scene.renderer import Renderer
 

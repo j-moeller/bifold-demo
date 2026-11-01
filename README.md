@@ -987,7 +987,9 @@ renders of other avatars as the "photos".
 Faces in the 1280x720 view have only 10-22 pixels between the eyes, while
 face recognisers want 40 and more (112x112 crops with the eyes 35 pixels
 apart, more for landmarks and quality checks). Rendering the whole view at 4K
-or 8K would cost 3 to 12 times as much and still leave far people small. So
+would cost about 5 to 10 times as much and at 8K 13 to 30 times (on this
+machine the fair's view takes 0.2-0.5 s, its 4K frame 2-3 s and its 8K frame
+6-9 s), and still leave far people small. So
 the view stays at its size for the detector and the screen, and the faces get
 their pixels from **windows**: a rectangle around a person's head, rendered
 on its own at a much higher pixel scale, as a real high-resolution camera's
@@ -1110,7 +1112,7 @@ from bifold_demo.sensor.service import eye_points
 head = tuple(eye_points(person).mean(axis=0))   # or any point of the head
 requests = [WindowRequest((person.name, px), head=head, subject=person, eye_px=px, preset="good 4K")
             for px in (12, 24, 48, 96)]
-for result in render_windows(scene, renderer, requests):   # after renderer.render(scene)
+for result in render_windows(scene, renderer, requests, visibility=True):   # after renderer.render(scene)
     result.truth.frontal_eye_distance, result.truth.facing, result.truth.visible
 ```
 
@@ -1164,9 +1166,9 @@ blocks then work at the binned pixels.
 | `budget 1080p` | 1920x1080 | 1.0 px | 1/60 s | 1500 / 4.0 | bilinear | 70 |
 
 A preset with its own sensor size places its windows on that sensor, so
-`budget 1080p` shows what such a camera gives the recogniser: an audience face
-at 4 m has about 99 pixels between the eyes with the 8K sensor, 50 with 4K
-and 25 with 1080p. The numbers are plausible values for such cameras, not
+`budget 1080p` shows what such a camera gives the recogniser: a frontal face
+at 4 m has about 75 pixels between the eyes with the 8K sensor, 37 with 4K
+and 19 with 1080p (the fair's audience gets 66-81 with the 8K sensor). The numbers are plausible values for such cameras, not
 measurements of one; calibrate them against the intended camera's footage.
 `WindowService(preset="good 4K")` sets the preset (a request may bring its
 own); `CameraModel(...)` makes another, and `preset.with_exposure(1 / 1000)`

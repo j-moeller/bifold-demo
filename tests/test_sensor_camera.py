@@ -81,20 +81,34 @@ def test_lens_blur_softens_less_on_binned_pixels():
 
 def test_noise_follows_the_poisson_gaussian_model_and_binning():
     grey = _flat(128, (256, 256))
-    camera = CameraModel("noisy", electrons=2000, read_noise=3.0)
     level = srgb_to_linear(np.array([128 / 255]))[0]
+    slope = (linear_to_srgb(np.array([level + 1e-4]))[0] - linear_to_srgb(np.array([level - 1e-4]))[0]) / 2e-4
 
-    def predicted(k):  # the sRGB curve's slope turns the linear spread into 8-bit levels
-        spread = math.sqrt(level * 2000 * k * k + k * k * 9.0) / (2000 * k * k)
-        slope = (linear_to_srgb(np.array([level + 1e-4]))[0] - linear_to_srgb(np.array([level - 1e-4]))[0]) / 2e-4
-        return spread * slope * 255
+    def predicted(k, electrons, read_noise):  # the sRGB curve's slope turns the linear spread into 8-bit levels
+        full = electrons * k * k  # a binned pixel's light, and each of its k x k pixels read
+        return math.sqrt(level * full + k * k * read_noise ** 2) / full * slope * 255
 
-    for k in (1, 2):
-        out = camera.apply(grey, level=k, seed=3).astype(float)
-        assert out.std() == pytest.approx(predicted(k), rel=0.1)
-        assert out.mean() == pytest.approx(128, abs=0.5)
+    # mostly shot noise, then mostly read noise (which binning adds up too: half the spread at level 2, not a quarter)
+    for electrons, read_noise in ((2000, 3.0), (4000, 60.0)):
+        camera = CameraModel("noisy", electrons=electrons, read_noise=read_noise)
+        for k in (1, 2, 3):
+            out = camera.apply(grey, level=k, seed=3).astype(float)
+            assert out.std() == pytest.approx(predicted(k, electrons, read_noise), rel=0.1), (read_noise, k)
+            assert out.mean() == pytest.approx(128, abs=0.5)
+    camera = CameraModel("noisy", electrons=2000, read_noise=3.0)
     dark = camera.apply(_flat(10, (256, 256)), seed=3).astype(float).std()
     assert dark > camera.apply(grey, seed=3).astype(float).std()  # the sRGB curve lifts the dark noise
+
+
+def test_sharpening_is_an_unsharp_mask_of_its_strength():
+    """out = x + s (x - G(x)), G a Gaussian of one pixel, on the sRGB values (nothing else changes them here)."""
+    image = _bars()
+    x = image.astype(np.float32) / 255
+    detail = x - cv2.GaussianBlur(x, (0, 0), 1.0, borderType=cv2.BORDER_REFLECT)
+    for strength in (0.3, 0.8):
+        expected = np.clip(np.rint((x + strength * detail) * 255), 0, 255)
+        out = CameraModel("sharp", sharpen=strength).apply(image)
+        assert np.abs(out.astype(int) - expected).max() <= 1, strength
 
 
 def test_motion_blur_smears_along_the_motion_and_only_the_masked_person():

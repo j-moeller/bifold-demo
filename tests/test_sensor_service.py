@@ -387,6 +387,33 @@ def test_the_truth_finds_the_person_and_their_motion():
     assert find_truth(scene, sensor.window((0, 0, 50, 50)), motion) is None  # nobody's eyes there
 
 
+def test_eyes_are_as_visible_as_the_mask_around_them():
+    """Truth.visible: the mean of the person's coverage over the 3x3 pixels around each eye, 0 for an eye outside."""
+    from bifold_demo.sensor.service import eyes_visible
+
+    mask = np.zeros((20, 30), np.float32)
+    mask[4:7, 4:7] = 1.0  # all around the first eye
+    mask[10, 20] = 1.0  # only the second eye's own pixel: an edge of whatever hides the rest
+    assert eyes_visible(mask, [(5.5, 5.5), (20.5, 10.5)]) == pytest.approx((1 + 1 / 9) / 2)
+    assert eyes_visible(mask, [(5.5, 5.5), (40.0, 5.0)]) == pytest.approx(0.5)
+
+
+def test_windows_keep_within_what_the_renderer_can_draw(gl):
+    from bifold_demo.scene.renderer import Renderer
+
+    scene = sample_scene()
+    renderer = Renderer(*VIEW)
+    try:
+        renderer.render(scene)
+        renderer.max_window = 100  # a renderer that draws at most 100 pixels a side
+        request = WindowRequest("big", region=(50, 20, 250, 160), face_px=None)  # 800 x 560 at level 1
+        (big,) = render_windows(scene, renderer, [request], Sensor.scaled(4, VIEW))
+        assert big.window.level > 1 and max(big.window.size) <= 100
+        assert big.image.shape == (big.window.height, big.window.width, 3)
+    finally:
+        renderer.release()
+
+
 def test_exact_eye_distances_for_evaluation_renders(gl):
     """eye_px: the subject's face turned to the camera gets that many pixels between their eyes, at a scale of the
     request's own, whatever the sensor's levels, the preset's sensor size or max_pixels say."""
