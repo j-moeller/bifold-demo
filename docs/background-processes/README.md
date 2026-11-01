@@ -185,3 +185,7 @@ creator's face hook) are on the branch.
   - across the neck seam: 3.4-6.0 before, 1.2-2.1 after.
 
 All three tasks are done.
+
+**1 November, afternoon.** New focus: face recognition is the core of the project. The plan, the user's decisions
+(both licence profiles; the head shape fitted to the person) and the progress are in
+[docs/research/face_recognition_focus.md](../research/face_recognition_focus.md). Two literature reviews are running.
