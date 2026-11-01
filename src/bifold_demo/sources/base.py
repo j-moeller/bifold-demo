@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -17,12 +17,17 @@ class Frame:
         index: increasing frame number within its source.
         timestamp: ``time.perf_counter()`` when the frame was produced.
         source: name of the source that produced it.
+        time: the scene's time the frame shows (``None`` for a camera).
+        windows: high-resolution windows delivered with the frame, of the same moment
+            (:class:`bifold_demo.sensor.WindowResult`; empty when none were asked for).
     """
 
     image: np.ndarray
     index: int
     timestamp: float
     source: str
+    time: float | None = None
+    windows: list = field(default_factory=list)
 
     @property
     def size(self) -> tuple[int, int]:

@@ -10,16 +10,21 @@ from .clock import FixedStepClock, SimulationClock
 
 
 class SceneSource(FrameSource):
-    """Renders ``scene`` at ``width`` x ``height``, advancing it with ``clock``."""
+    """Renders ``scene`` at ``width`` x ``height``, advancing it with ``clock``.
+
+    ``windows``: a :class:`bifold_demo.sensor.WindowService`; its windows are rendered right after each frame, of the
+    same moment, and delivered on the frame (``frame.windows``). It can be set later too.
+    """
 
     name = "scene"
 
     def __init__(self, scene: Scene, width: int = 1280, height: int = 720, fps: float = 30.0,
-                 clock: SimulationClock | None = None, samples: int = 4):
+                 clock: SimulationClock | None = None, samples: int = 4, windows=None):
         self.scene = scene
         self.width, self.height, self.fps = width, height, fps
         self.clock = clock or SimulationClock()
         self.samples = samples
+        self.windows = windows
         self.renderer = None
         self._index = 0
         self._last_t = None
@@ -59,10 +64,13 @@ class SceneSource(FrameSource):
         self._last_t = t
         self.scene.update(t, dt)
         image = self.renderer.render(self.scene)
+        self._index += 1
+        frame = Frame(image=image, index=self._index, timestamp=time.perf_counter(), source=self.name, time=t)
+        if self.windows is not None:  # before anything moves on: the windows show the frame's moment
+            frame.windows = self.windows.for_scene(self.scene, self.renderer, frame)
         if isinstance(self.clock, FixedStepClock):
             self.clock.tick()
-        self._index += 1
-        return Frame(image=image, index=self._index, timestamp=time.perf_counter(), source=self.name)
+        return frame
 
     def stop(self) -> None:
         if self.renderer is not None:

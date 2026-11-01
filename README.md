@@ -1023,6 +1023,52 @@ faster, more for small windows); the whole 1280x720 view takes about 220 ms.
 The whole view is not culled (`renderer.cull_view`): most of the fair is in
 it, and culling gained nothing there.
 
+**Asking for windows.** A `WindowRequest` names a region of the main view in
+one of three ways: a person's **box** from the detector (the window then
+covers the head's square: centred 12 % of the box height below its top, 30 %
+of the height wide, plus 30 % margin for the face detector; these starting
+values are `HeadRegion`'s and can be tuned), a **region** as it is (a face
+found in an earlier window, with a margin), or a **head point** in the scene
+(for the evaluation). It says how many pixels the face should get between the
+eyes (`face_px`, 112 by default: the window is at the coarsest level that
+still gives them, or at the sensor's own scale when none does), the most
+pixels the window may have (1024x1024 by default), a priority and a tag (the
+person track). A `WindowService` on the frame source takes standing requests
+from any thread; with every frame its scheduler picks at most `max_windows`
+(4) of them, the highest priority first and otherwise in turn, and the
+source delivers their windows on the frame, rendered right after it from the
+same state of the scene:
+
+```python
+from bifold_demo.sensor import WindowRequest, WindowService
+from bifold_demo.sources import SceneSource
+
+service = WindowService(max_windows=4)               # sensor: 6x the view unless given
+source = SceneSource(scene, 1280, 720, windows=service)
+service.request([WindowRequest(track.id, box=track.box, priority=track.urgency) for track in tracks])
+frame = source.read()
+for window in frame.windows:                         # WindowResult
+    for face in engine.detect(window.image):         # recognition.FaceEngine, on the window's own pixels
+        x, y, w, h = face.box
+        in_frame = window.box_to_view((x, y, x + w, y + h))  # back in the main frame's pixels
+    window.tag, window.time, window.window.level, window.window.scale, window.eye_distance
+```
+
+`service.scheduler.priority = fn(request, waited)` is the hook for the person
+tracker's own order (`waited`: frames since the tag's last window).
+`render_windows(scene, renderer, requests, sensor)` renders windows directly,
+for the evaluation; there a request can name its `subject` and its own
+`sensor`. With a scene, each window also carries the `truth`: who the scene
+knows is in it, where their eye bones are in the window, the distance and
+their speed in window pixels a second. It is for evaluation only; recognition
+must not use it.
+
+**A real camera** has no virtual sensor, but the same requests work on it:
+`WebcamSource(capture=(3840, 2160), windows=service)` captures at the higher
+resolution, gives the detector and the screen a copy scaled to the frame
+size, and cuts the windows from the full picture (averaged over `k x k`
+pixels at level `k`).
+
 **Agreement.** Windows equal the same pixels cut from a render of the whole
 sensor: on a test scene with textured boxes, a sphere, skinned people with
 their blob shadows and fog, eleven windows of 16 to 420 pixels at levels 1 to
@@ -1838,7 +1884,8 @@ src/bifold_demo/
                detect.py (SCRFD, YuNet), align.py (the five-point template),
                models.py, cli.py (bifold-faces)                          ← face recognition
   sensor/      geometry.py (a declared high-resolution sensor, its windows and
-               pixel maps)                                             ← the virtual high-resolution sensor
+               pixel maps), requests.py (requests, head regions, the scheduler),
+               service.py (windows with the frames, the truth)          ← the virtual high-resolution sensor
   people/      prompts.py, generator.py (text-to-image), cutout.py,
                library.py, defaults.py, cli.py (bifold-people)          ← 2D people generator
   app.py       main loop and command line; loader.py loads and reloads scene files;
