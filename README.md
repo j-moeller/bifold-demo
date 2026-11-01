@@ -1009,6 +1009,20 @@ window.sensor_rect, window.view_rect, window.level, window.scale
 `window.camera(scene.camera)` is the same window as a camera
 (`scene.SubCamera`), for a renderer of the window's own size.
 
+**Culling.** A window draws only what may show in it
+([`scene/frustum.py`](src/bifold_demo/scene/frustum.py)): meshes by their
+bounding boxes, blob shadows by their rectangles, and people by one sphere per
+bone around its posed joint, as large as the farthest vertex that bone moves
+(no skinned vertex left these spheres in 84 poses of each of the 20 prepared
+avatars). The tests are conservative, so culling changes no pixel, and they
+take about 1 ms per window for the 36 people and 124 objects of the fair. A
+window also reuses the joint palettes its frame uploaded. On the fair
+(llvmpipe, a shared 4-core machine), head windows drew 1-8 of the 36 people
+and 1-16 of the 124 objects and took 8-80 ms instead of 42-100 ms (1.2-5x
+faster, more for small windows); the whole 1280x720 view takes about 220 ms.
+The whole view is not culled (`renderer.cull_view`): most of the fair is in
+it, and culling gained nothing there.
+
 **Agreement.** Windows equal the same pixels cut from a render of the whole
 sensor: on a test scene with textured boxes, a sphere, skinned people with
 their blob shadows and fog, eleven windows of 16 to 420 pixels at levels 1 to
@@ -1796,7 +1810,8 @@ every frame, so a recording plays back at the right speed.
 src/bifold_demo/
   sources/     webcam.py, scene_source.py, clock.py, SourceSwitcher   ← module 1: image stream
   scene/       scene.py (objects, camera), geometry.py, textures.py,
-               animation.py, physics.py, renderer.py (ModernGL)        ← the 3D scene
+               animation.py, physics.py, renderer.py (ModernGL),
+               frustum.py (culling for windows)                         ← the 3D scene
   detection/   yolo.py (YoloDetector), worker.py (AsyncDetector)      ← module 2: recognition
   display/     overlay.py (boxes, HUD), window.py                      ← module 3: on screen
   characters/  model.py (skeleton, clips, posing), fbx.py + fbx_convert.py (FBX reader),

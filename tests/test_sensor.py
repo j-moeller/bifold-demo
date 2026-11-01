@@ -261,6 +261,112 @@ def test_windows_draw_in_the_renderers_own_context(gl):
             other.release()
 
 
+# -- culling ----------------------------------------------------------------------------------------------------------
+
+
+def test_frustum_planes_tell_boxes_and_spheres_outside():
+    from bifold_demo.scene.frustum import boxes_outside, frustum_planes, spheres_outside, world_boxes
+
+    camera = Camera(position=(0, 0, 0), target=(0, 0, -1), fov=60, near=0.1, far=50)
+    planes = frustum_planes(camera.projection_matrix(1.0) @ camera.view_matrix())
+    centres = np.array([[0, 0, -5], [0, 0, 5], [10, 0, -5], [0, 0, -80], [3.2, 0, -5]], float)
+    halves = np.array([[0.1, 0.1, 0.1]] * 4 + [[0.5, 0.5, 0.5]])
+    # in front; behind the camera; far to the side; beyond the far plane; overlapping the right side (half inside)
+    assert boxes_outside(planes, centres, halves).tolist() == [False, True, True, True, False]
+    assert spheres_outside(planes, centres, np.array([0.1] * 4 + [0.5])).tolist() == [False, True, True, True, False]
+    assert spheres_outside(planes, centres[2:3], [8.0]).tolist() == [False]  # a big sphere reaches in
+    turned = np.eye(4)
+    turned[:3, :3] = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]]  # a quarter turn about y
+    turned[:3, 3] = (1, 2, 3)
+    centre, half = world_boxes([turned], [[1.0, 0, 0]], [[2.0, 0.5, 0.25]])
+    assert np.allclose(centre, [[1, 2, 2]]) and np.allclose(half, [[0.25, 0.5, 2.0]])
+
+
+def test_bone_spheres_hold_the_skinned_mesh():
+    from bifold_demo.characters.character import skin_vertices
+    from bifold_demo.characters.model import AnimationClip, Layer, quat_from_axis_angle
+    from bifold_demo.scene.frustum import Bounds
+
+    model = _boxy_model()
+    bounds = Bounds()
+    for degrees in (0.0, 35.0, 90.0, -120.0):
+        clip = AnimationClip(f"neck{degrees}", 30.0, ["Neck"], quat_from_axis_angle([1, 0, 0], [[degrees]]),
+                             np.zeros((1, 1, 3)))
+        person = Character(model, lambda t, c=clip: CharacterState((0.3, 0.0, -1.0), 40.0, [Layer(c, 0.0, 1.0)]),
+                           scale=1.3)
+        person.update(0.0)
+        centres, radii, owners = bounds.spheres([person], None)
+        assert (owners == 0).all() and len(radii) == 3
+        placed = person.matrices()[0]
+        for points in skin_vertices(model, person.skin_palette):
+            world = points @ placed[:3, :3].T + placed[:3, 3]
+            d = np.linalg.norm(world[:, None, :] - centres[None], axis=2) - radii[None]
+            assert (d.min(axis=1) <= 1e-6).all(), degrees  # every vertex in some bone's sphere
+
+
+def test_culled_windows_are_the_same_and_leave_out_what_is_not_in_them(gl):
+    from bifold_demo.scene.renderer import Renderer
+
+    scene = sample_scene()
+    sensor = Sensor.scaled(4, VIEW)
+    view = Renderer(*VIEW)
+    try:
+        view.render(scene)
+        for region in [(100, 40, 140, 80), (0, 0, 30, 30), (120, 60, 190, 130), (300, 150, 320, 180),
+                       (140, 75, 175, 110), (60, 20, 110, 160), (150, 0, 170, 20)]:
+            w = sensor.window(region, 1)
+            culled = view.render_window(scene, w.ndc, w.size)
+            stats = dict(view.window_stats)
+            assert np.array_equal(culled, view.render_window(scene, w.ndc, w.size, cull=False)), region
+            assert stats["objects_drawn"] <= stats["objects"] and stats["people_drawn"] <= stats["people"]
+        sky = sensor.window((150, 0, 170, 20), 1)  # above everything but the back of the hall
+        view.render_window(scene, sky.ndc, sky.size)
+        assert view.window_stats["people_drawn"] == 0 and view.window_stats["objects_drawn"] < 3
+        eyes = _project(scene, view, scene["near"], [0.0, 1.45, 0.4])  # the near person's nose
+        head = sensor.window((eyes[0] - 6, eyes[1] - 6, eyes[0] + 6, eyes[1] + 6), 1)
+        view.render_window(scene, head.ndc, head.size)
+        assert view.window_stats["people_drawn"] == 1 and view.window_stats["shadows_drawn"] == 0
+    finally:
+        view.release()
+
+
+def _project(scene, renderer, person, local):
+    """``local`` (character space of ``person``) in view pixels."""
+    world = person.matrices()[0] @ np.append(local, 1.0)
+    clip = scene.camera.projection_matrix(renderer.aspect) @ scene.camera.view_matrix() @ world
+    ndc = clip[:2] / clip[3]
+    return (ndc[0] + 1) / 2 * renderer.width, (1 - ndc[1]) / 2 * renderer.height
+
+
+def test_windows_follow_people_posed_again_after_the_frame(gl):
+    """Windows reuse the joint palettes the frame uploaded, but not once the people were posed again."""
+    from bifold_demo.characters.model import AnimationClip, Layer, quat_from_axis_angle
+    from bifold_demo.scene.renderer import Renderer
+
+    scene = sample_scene()
+    sensor = Sensor.scaled(4, VIEW)
+    nod = AnimationClip("nod", 30.0, ["Neck"], quat_from_axis_angle([1, 0, 0], [[50.0]]), np.zeros((1, 1, 3)))
+    view = Renderer(*VIEW)
+    try:
+        view.render(scene)
+        x, y = _project(scene, view, scene["near"], [0.0, 1.45, 0.2])
+        w = sensor.window((x - 25, y - 25, x + 25, y + 25), 1)
+        before = view.render_window(scene, w.ndc, w.size)
+        scene["near"].behaviour = lambda t: CharacterState((-0.6, 0.0, 2.5), 20.0, [Layer(nod, 0.0, 1.0)])
+        scene.update(0.0, 0.0)  # posed again, no frame drawn
+        after = view.render_window(scene, w.ndc, w.size)
+        assert not np.array_equal(after, before)
+        own = Renderer(*w.size)
+        camera, scene.camera = scene.camera, w.camera(scene.camera)
+        try:
+            assert np.array_equal(own.render(scene), after)
+        finally:
+            scene.camera = camera
+            own.release()
+    finally:
+        view.release()
+
+
 # -- real avatars -----------------------------------------------------------------------------------------------------
 
 
@@ -301,6 +407,36 @@ def _eyes_in_view(person, camera, view):
         ndc = clip[:2] / clip[3]
         points.append(((ndc[0] + 1) / 2 * view[0], (1 - ndc[1]) / 2 * view[1]))
     return np.array(points)
+
+
+def test_real_avatars_stay_in_their_bone_spheres_when_animated():
+    from bifold_demo.characters.character import skin_vertices
+    from bifold_demo.characters.library import CharacterLibrary
+    from bifold_demo.characters.model import Layer
+    from bifold_demo.scene.frustum import Bounds
+
+    if not (CHARACTERS / "avatars").is_dir():
+        pytest.skip(f"no prepared characters in {CHARACTERS} (set BIFOLD_CHARACTERS_TEST_DIR)")
+    library = CharacterLibrary(CHARACTERS)
+    clips, roles = library.clips(), library.roles()
+    chosen = [clips[name] for role in ("walk", "talk") for name in roles.get(role, [])[:1] if name in clips]
+    names = sorted(library.available())[:2]
+    if not chosen or not names:
+        pytest.skip("the prepared library lacks avatars or walk and talk clips")
+    bounds = Bounds()
+    for name in names:
+        model = library.load(name, textures="none")
+        for clip in chosen:
+            for t in np.linspace(0.0, clip.duration, 4):
+                person = Character(model, lambda _t, c=clip, at=t: CharacterState((1.0, 0.0, -2.0), 30.0,
+                                                                                   [Layer(c, at, 1.0)]))
+                person.update(0.0)
+                centres, radii, _owners = bounds.spheres([person], None)
+                placed = person.matrices()[0]
+                for points in skin_vertices(model, person.skin_palette):
+                    world = points @ placed[:3, :3].T + placed[:3, 3]
+                    gap = np.linalg.norm(world[:, None, :] - centres[None], axis=2) - radii[None]
+                    assert (gap.min(axis=1) <= 1e-6).all(), (name, clip.name, t)
 
 
 def test_real_avatar_head_windows_are_crops_of_the_whole_sensor(gl, avatar_scene):

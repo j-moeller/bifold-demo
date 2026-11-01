@@ -12,6 +12,7 @@ import weakref
 import cv2
 import numpy as np
 
+from .frustum import Bounds, boxes_outside, frustum_planes, spheres_outside, world_boxes
 from .scene import Scene, SceneObject
 from .textures import Texture, as_texture, parse_color
 from .transforms import crop_matrix, gl_bytes
@@ -219,6 +220,10 @@ class Renderer:
         self._drawn = None  # (view-projection, camera position) of the last frame
         self._samples = samples  # MSAA samples per pixel (0: none), for windows too
         self._window_targets: dict[tuple[int, int], tuple] = {}  # (w, h) -> (draw fbo, resolve fbo, renderbuffers)
+        self._bounds = Bounds()  # for culling (see frustum.py)
+        self._frame_id = 0  # counts the frames drawn by render(), for the joint palettes windows reuse
+        self.cull_view = False  # also cull the whole view (windows always do, unless asked not to)
+        self.window_stats: dict = {}  # what the last culled window drew and left out (objects, people, shadows)
         info = self.ctx.info
         self.max_window = int(info.get("GL_MAX_RENDERBUFFER_SIZE", 16384))  # the longest side a window may have
         self.info = info.get("GL_RENDERER", "OpenGL")
@@ -236,7 +241,7 @@ class Renderer:
         with self.ctx:
             return self._render(scene)
 
-    def render_window(self, scene: Scene, ndc, size, aspect: float | None = None) -> np.ndarray:
+    def render_window(self, scene: Scene, ndc, size, aspect: float | None = None, cull: bool = True) -> np.ndarray:
         """Draw the rectangle ``ndc`` = ``(left, bottom, right, top)`` of the camera's picture (in normalised device
         coordinates of the whole picture, whose width / height is ``aspect``, the view's by default) at ``size`` =
         ``(width, height)`` pixels, and return that HxWx3 BGR image.
@@ -245,34 +250,40 @@ class Renderer:
         :class:`~bifold_demo.scene.scene.SubCamera`): when ``size`` is the rectangle's share of a picture of the whole
         view at some resolution, the window is that part of such a picture, with the same perspective, depth, fog,
         MSAA (the view's sample count) and texture filtering. Call it after :meth:`render` of the same frame (from the
-        same thread), so that everything it needs is on the GPU and its windows show the frame's moment."""
+        same thread), so that everything it needs is on the GPU and its windows show the frame's moment.
+
+        With ``cull`` only what may show in the window is drawn (:mod:`.frustum`; no pixel changes), and the joint
+        palettes the frame uploaded are used again. :attr:`window_stats` then says what was drawn and left out."""
         with self.ctx:  # its own context (another renderer's may be current)
-            return self._render_window(scene, ndc, size, aspect)
+            return self._render_window(scene, ndc, size, aspect, cull)
 
     def _render(self, scene: Scene) -> np.ndarray:
+        self._frame_id += 1
         camera = scene.camera
         view_proj = camera.projection_matrix(self.aspect) @ camera.view_matrix()
-        image = self._draw_scene(scene, (self._draw_fbo, self._resolve_fbo), (self.width, self.height), view_proj)
+        image = self._draw_scene(scene, (self._draw_fbo, self._resolve_fbo), (self.width, self.height), view_proj,
+                                 cull=self.cull_view)
         self._drawn = (view_proj, camera.current_position)
         self._frames += 1
         if self._frames % 300 == 0:
             self._collect_garbage()
         return image
 
-    def _render_window(self, scene: Scene, ndc, size, aspect: float | None) -> np.ndarray:
+    def _render_window(self, scene: Scene, ndc, size, aspect: float | None, cull: bool) -> np.ndarray:
         width, height = (int(v) for v in size)
         crop = crop_matrix(*ndc)
         camera = scene.camera
         view_proj = crop @ camera.projection_matrix(self.aspect if aspect is None else float(aspect)) \
             @ camera.view_matrix()
         return self._draw_scene(scene, self._window_target(width, height), (width, height), view_proj,
-                                aspect=aspect, ndc=ndc)
+                                aspect=aspect, ndc=ndc, cull=cull, window=True)
 
     def _draw_scene(self, scene: Scene, target, size, view_proj: np.ndarray, aspect: float | None = None,
-                    ndc=None) -> np.ndarray:
+                    ndc=None, cull: bool = False, window: bool = False) -> np.ndarray:
         """Draw ``scene`` with ``view_proj`` into ``target`` = (draw framebuffer, resolve framebuffer) of ``size``
         and read it back. ``ndc``: the window's rectangle of the whole picture, whose width / height is ``aspect``
-        (``None``: the whole view)."""
+        (``None``: the whole view); ``cull``: leave out what lies outside the frustum; ``window``: a window of the
+        frame drawn last (its joint palettes are on the GPU already)."""
         ctx = self.ctx
         fbo, resolve = target
         width, height = size
@@ -304,22 +315,31 @@ class Renderer:
 
         ctx.enable(self._moderngl.DEPTH_TEST)
         ctx.disable(self._moderngl.CULL_FACE)
-        camera = scene.camera
+        eye = scene.camera.current_position
         uniforms = _scene_uniforms(scene)
         _set_uniforms(self._program, uniforms)
 
-        characters = []
+        objects, characters = [], []
         for obj in scene:
             if obj.current_visible:
                 if getattr(obj, "skinned_model", None) is not None:
                     characters.append(obj)
-                    for prop in getattr(obj, "props", ()):  # what they wear and carry (see characters.accessories)
-                        if prop.current_visible:
-                            self._draw(prop, view_proj, camera.current_position)
+                    # what they wear and carry (see characters.accessories)
+                    objects += [prop for prop in getattr(obj, "props", ()) if prop.current_visible]
                 else:
-                    self._draw(obj, view_proj, camera.current_position)
-        if characters:
-            self._draw_characters(characters, view_proj, camera.current_position, uniforms, scene.time)
+                    objects.append(obj)
+        shadows = [obj for obj in characters if getattr(obj, "shadow", False)]
+        if cull:
+            stats = {"objects": len(objects), "people": len(characters), "shadows": len(shadows)}
+            objects, characters, shadows = self._in_frustum(frustum_planes(view_proj), eye, objects, characters,
+                                                            shadows)
+            stats.update(objects_drawn=len(objects), people_drawn=len(characters), shadows_drawn=len(shadows))
+            if window:
+                self.window_stats = stats
+        for obj in objects:
+            self._draw(obj, view_proj, eye)
+        if characters or shadows:
+            self._draw_characters(characters, view_proj, eye, uniforms, scene.time, shadows, fbo, reuse=window)
 
         if fbo is not resolve:
             ctx.copy_framebuffer(resolve, fbo)
@@ -373,8 +393,30 @@ class Renderer:
         self._gl_texture(obj.current_texture or self._white).use(0)
         self._vao(obj.mesh).render(self._moderngl.TRIANGLES)
 
-    def _draw_characters(self, characters, view_proj, camera_position, uniforms: dict, t: float) -> None:
-        """GPU-skinned characters (opaque, alpha-tested), then their blob shadows blended over the scene."""
+    def _in_frustum(self, planes, eye, objects, characters, shadows) -> tuple[list, list, list]:
+        """The objects, characters and blob shadows that may show in the frustum of ``planes`` (see :mod:`.frustum`:
+        conservative, so leaving out the others changes no pixel)."""
+        bounds = self._bounds
+        if objects:
+            outside = boxes_outside(planes, *bounds.boxes(objects, eye))
+            objects = [obj for obj, out in zip(objects, outside) if not out]
+        if characters:
+            centres, radii, owners = bounds.spheres(characters, eye)
+            seen = np.bincount(owners[~spheres_outside(planes, centres, radii)], minlength=len(characters)) > 0
+            characters = [obj for obj, show in zip(characters, seen) if show]
+        if shadows:  # the rectangles _draw_shadows draws
+            cx, cz, rx, rz = np.array([obj.shadow_ellipse for obj in shadows], dtype=np.float64).T
+            lift, flat = np.full_like(cx, SHADOW_LIFT), np.zeros_like(cx)
+            boxes = world_boxes([obj.matrices(eye)[0] for obj in shadows], np.stack([cx, lift, cz], axis=1),
+                                np.stack([rx, flat, rz], axis=1))
+            shadows = [obj for obj, out in zip(shadows, boxes_outside(planes, *boxes)) if not out]
+        return objects, characters, shadows
+
+    def _draw_characters(self, characters, view_proj, camera_position, uniforms: dict, t: float, shadows=None,
+                         fbo=None, reuse: bool = False) -> None:
+        """GPU-skinned characters (opaque, alpha-tested), then blob shadows (those of ``characters`` that have one,
+        or of ``shadows``) blended over the scene in ``fbo`` (the view's by default). ``reuse``: use the joint
+        palettes this frame uploaded where the characters were not posed again since (windows of the frame)."""
         prog = self._skinned()
         _set_uniforms(prog, uniforms)
         u, triangles = self._skinned_uniforms, self._moderngl.TRIANGLES
@@ -385,7 +427,7 @@ class Renderer:
             r, g, b = obj.current_color
             u["u_color"].value = (r / 255.0, g / 255.0, b / 255.0)
             u["u_lit"].value = bool(obj.lit)
-            self._joint_texture(obj).use(1)
+            self._joint_texture(obj, reuse).use(1)
             overrides = getattr(obj, "texture_overrides", None)
             for primitive in (*obj.skinned_model.primitives, *getattr(obj, "worn", ())):
                 vao, texture = self._skinned_primitive(primitive)
@@ -393,13 +435,14 @@ class Renderer:
                     texture = overrides.get(primitive.name, texture)
                 self._gl_texture(texture.at_time(t)).use(0)
                 vao.render(triangles)
-        shadows = [obj for obj in characters if getattr(obj, "shadow", False)]
+        if shadows is None:
+            shadows = [obj for obj in characters if getattr(obj, "shadow", False)]
         if shadows:
-            self._draw_shadows(shadows, view_proj, camera_position, uniforms)
+            self._draw_shadows(shadows, view_proj, camera_position, uniforms, fbo)
 
-    def _draw_shadows(self, characters, view_proj, camera_position, uniforms: dict) -> None:
+    def _draw_shadows(self, characters, view_proj, camera_position, uniforms: dict, fbo=None) -> None:
         """Soft dark ellipses on the floor in one draw call: depth-tested, blended, without writing depth."""
-        mgl, ctx, fbo = self._moderngl, self.ctx, self._draw_fbo
+        mgl, ctx, fbo = self._moderngl, self.ctx, self._draw_fbo if fbo is None else fbo
         n = len(characters)
         models = np.array([obj.matrices(camera_position)[0][:3] for obj in characters])
         cx, cz, rx, rz = np.array([obj.shadow_ellipse for obj in characters], dtype=np.float64).T[:, :, None]
@@ -615,18 +658,22 @@ class Renderer:
             entry[4], entry[5] = primitive.texture, texture or self._white
         return entry[1], entry[5]
 
-    def _joint_texture(self, obj):
-        """The character's joint-palette texture (one per character, rewritten every frame)."""
-        palette = np.asarray(obj.skin_palette, dtype=np.float32)
+    def _joint_texture(self, obj, reuse: bool = False):
+        """The character's joint-palette texture (one per character, rewritten every frame). With ``reuse`` it is
+        not written again when it holds this very palette from this frame (a window of the frame)."""
+        palette = obj.skin_palette
         entry = self._joints.get(id(obj))
         if entry is None or entry[0]() is not obj or entry[1].height != len(palette):
             if entry is not None:
                 entry[1].release()
             gl_tex = self.ctx.texture((3, len(palette)), 4, dtype="f4")
             gl_tex.filter = (self._moderngl.NEAREST, self._moderngl.NEAREST)
-            entry = (weakref.ref(obj), gl_tex)
+            entry = [weakref.ref(obj), gl_tex, None, None]  # (..., palette written, frame it was written in)
             self._joints[id(obj)] = entry
-        entry[1].write(palette[:, :3, :].tobytes())
+        elif reuse and entry[2] is palette and entry[3] == self._frame_id:
+            return entry[1]
+        entry[1].write(np.asarray(palette, dtype=np.float32)[:, :3, :].tobytes())
+        entry[2], entry[3] = palette, self._frame_id
         return entry[1]
 
     def _vao(self, mesh):
@@ -707,7 +754,7 @@ class Renderer:
         for key, entry in list(self._primitives.items()):
             if entry[0]() is None:
                 self._release_primitive(key)
-        for key, (ref, gl_tex) in list(self._joints.items()):
+        for key, (ref, gl_tex, *_written) in list(self._joints.items()):
             if ref() is None:
                 gl_tex.release()
                 del self._joints[key]
@@ -715,6 +762,7 @@ class Renderer:
             if ref() is None:
                 vao.release()
                 del self._probe_vaos[key]
+        self._bounds.forget_unused()
 
     def _release_mesh(self, key: int) -> None:
         _ref, vao, vbo, ibo = self._meshes.pop(key)
@@ -737,7 +785,7 @@ class Renderer:
             self._release_mesh(key)
         for key in list(self._primitives):
             self._release_primitive(key)
-        for _ref, gl_tex in self._joints.values():
+        for _ref, gl_tex, *_written in self._joints.values():
             gl_tex.release()
         self._joints.clear()
         if self._probes is not None:
