@@ -309,6 +309,54 @@ def test_the_truth_is_the_person_the_window_is_on_not_a_small_face_behind():
         scene, window, subject=scene["far"]).eye_distance
 
 
+def test_requests_that_left_the_view_take_no_windows_from_the_others(gl):
+    scene = sample_scene()
+    service = WindowService(Sensor.scaled(4, VIEW), max_windows=4, truth=False)
+    source = SceneSource(scene, *VIEW, clock=FixedStepClock(10.0), windows=service)
+    try:
+        here = WindowRequest("here", region=(100, 40, 140, 80))
+        for priority in (0.0, 1.0):  # tracks that just left the view, as urgent as the one in it or more
+            gone = [WindowRequest(f"gone{k}", region=(400 + k, 10, 450 + k, 60), priority=priority) for k in range(4)]
+            service.request([*gone, here])
+            assert [[w.tag for w in source.read().windows] for _ in range(3)] == [["here"]] * 3
+    finally:
+        source.stop()
+
+
+def test_bad_requests_fail_where_they_are_made_and_never_fail_the_frames(gl, capsys):
+    with pytest.raises(ValueError, match="unknown camera preset"):
+        WindowRequest("a", region=(100, 40, 140, 80), preset="good4k")
+    with pytest.raises(TypeError, match="Sensor"):
+        WindowRequest("a", region=(100, 40, 140, 80), sensor=(1280, 720))
+    scene = sample_scene()
+    good, other = WindowRequest("b", region=(150, 40, 190, 80)), Sensor(3840, 2160, (1280, 720))
+    wrong = WindowRequest("a", region=(100, 40, 140, 80), sensor=other)
+    service = WindowService(Sensor.scaled(4, VIEW), truth=False)
+    source = SceneSource(scene, *VIEW, clock=FixedStepClock(10.0), windows=service)  # tells it the frames' size
+    try:
+        assert service.view == VIEW
+        service.request([good])
+        with pytest.raises(ValueError, match="1280x720 view"):
+            service.request([wrong, good])
+        with pytest.raises(ValueError, match="1280x720 view"):
+            service.request_once([wrong])
+        assert service.requests == [good] and [w.tag for w in source.read().windows] == ["b"]
+    finally:
+        source.stop()
+    with pytest.raises(ValueError, match="for a 1280x720 view"):  # a service whose sensor is for other frames
+        SceneSource(scene, *VIEW, windows=WindowService(other))
+    unchecked = WindowService(truth=False)  # nothing to check against yet: the request is taken ...
+    unchecked.request([wrong, good])
+    source = SceneSource(scene, *VIEW, clock=FixedStepClock(10.0), windows=unchecked)
+    try:
+        frames = [[w.tag for w in source.read().windows] for _ in range(2)]
+        assert frames == [["b"], ["b"]]  # ... and left out when it cannot be served, without failing the frame
+        assert unchecked.requests == [good] and "1280x720" in unchecked.problems["a"]
+        assert capsys.readouterr().out.count("left out the request for 'a'") == 1  # said once
+    finally:
+        source.stop()
+
+
 def test_the_truth_finds_the_person_and_their_motion():
     """With eye bones: who is in a window, where their eyes are and how fast they move (window pixels)."""
     from bifold_demo.characters.character import Character
@@ -478,6 +526,26 @@ def test_the_demo_shows_the_windows_of_the_people_it_finds(gl, tmp_path, monkeyp
         (True, 2, (5120, 2880), "budget 1080p", (1920, 1080))
     with pytest.raises(SystemExit):
         parse_args(["--camera-preset", "vhs"])
+    for wrong in (["--sensor", "4096x3072"], ["--sensor", "7680x4320", "--size", "640x480"], ["--max-windows", "0"]):
+        with pytest.raises(SystemExit):
+            parse_args(wrong)
+    assert parse_args(["--sensor", "3840x2880", "--size", "640x480"]).sensor == (3840, 2880)
+
+
+def test_the_demo_goes_on_without_windows_when_its_sensor_cannot_be(gl, tmp_path, monkeypatch):
+    """A sensor of another shape set in code (the command line refuses it): no windows, an error notice, no crash."""
+    from bifold_demo.app import DemoApp, DemoConfig
+
+    monkeypatch.chdir(tmp_path)
+    config = DemoConfig(headless=True, frames=2, width=VIEW[0], height=VIEW[1], detect=False, sensor=(4096, 3072),
+                        windows=True, created=None, uploads=None, items=None)
+    app = DemoApp(config, scene=sample_scene())
+    app.run()  # starts with --windows: they cannot be
+    assert not app.windows_on and app.window_service is None
+    window = type("W", (), {"toggle_fullscreen": lambda self: None})()
+    app._handle_key(ord("w"), window)
+    text, _until, error = app._message
+    assert not app.windows_on and error and text.startswith("windows unavailable")
 
 
 def test_the_windows_column_fits_any_number_of_windows():

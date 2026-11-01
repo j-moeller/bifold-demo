@@ -343,6 +343,16 @@ def eyes_visible(mask: np.ndarray, eyes) -> float:
 # -- windows ----------------------------------------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class Plan:
+    """A request's window, planned before anything is drawn: its camera ``model``, the ``window`` (on the sensor
+    that request, preset or service gives it) and the eye distance expected in it (``None``: no estimate)."""
+
+    model: CameraModel
+    window: Window
+    eyes: float | None
+
+
 def _sensor_for(request: WindowRequest, model: CameraModel, declared: Sensor, view) -> Sensor:
     """The sensor a request's window lies on: its own, else its camera's size, else the declared one."""
     if request.sensor is not None:
@@ -350,6 +360,46 @@ def _sensor_for(request: WindowRequest, model: CameraModel, declared: Sensor, vi
     if model.lines is not None:
         return Sensor.with_lines(model.lines, view)
     return declared
+
+
+def plan_window(request: WindowRequest, declared: Sensor, view, camera, head: HeadRegion | None = None,
+                multiple: int = MULTIPLE, max_side: int | None = None, preset="ideal") -> Plan | None:
+    """The :class:`Plan` of ``request`` for a scene seen by ``camera`` in a view of ``view`` pixels, or ``None`` when
+    nothing of its region is in the view. Raises ValueError for a request that cannot be served (its sensor is for
+    another view)."""
+    model = camera_preset(request.preset if request.preset is not None else preset)
+    chosen = _sensor_for(request, model, declared, view)
+    if chosen.view != tuple(view):
+        raise ValueError(f"a sensor for a {chosen.view[0]}x{chosen.view[1]} view cannot make windows of a "
+                         f"{view[0]}x{view[1]} view")
+    planned = plan_request(request, chosen, camera, head, multiple, max_side)
+    return None if planned is None else Plan(model, *planned)
+
+
+def render_planned(scene, renderer, request: WindowRequest, plan: Plan, frame: int = 0, truth: bool = True,
+                   motion: Motion | None = None, visibility: bool = False) -> WindowResult:
+    """Render one planned window (see :func:`render_windows`)."""
+    model, window = plan.model, plan.window
+    start = time.perf_counter()
+    image = renderer.render_window(scene, window.ndc, window.size, aspect=window.sensor.view_aspect)
+    render_ms = (time.perf_counter() - start) * 1000.0
+    found = _find_person(scene, window, motion, request.subject) if truth or model.needs_motion else None
+    mask = None
+    if truth and visibility and found is not None:
+        mask = renderer.window_mask(found[0])
+        found = (found[0], replace(found[1], visible=eyes_visible(mask, found[1].eyes)))
+    start = time.perf_counter()
+    velocity = (0.0, 0.0)
+    if model.needs_motion and found is not None and np.hypot(*found[1].velocity) * model.exposure >= 0.5:
+        velocity = found[1].velocity
+        if mask is None:
+            mask = renderer.window_mask(found[0])  # only the moving person is smeared
+    else:
+        mask = None
+    image = model.apply(image, window.level, velocity, mask, model.window_seed(frame, request.tag, window.sensor_rect))
+    camera_ms = (time.perf_counter() - start) * 1000.0  # the camera model, with the mask it needs
+    return WindowResult(request, window, image, float(scene.time), frame, model.name, plan.eyes,
+                        found[1] if truth and found is not None else None, render_ms, camera_ms)
 
 
 def render_windows(scene, renderer, requests: Iterable[WindowRequest], sensor: Sensor | None = None, frame: int = 0,
@@ -360,45 +410,51 @@ def render_windows(scene, renderer, requests: Iterable[WindowRequest], sensor: S
     ``preset`` (a name or a :class:`~.camera_model.CameraModel`; a request's own comes first).
 
     ``sensor``: the declared sensor (default: :data:`~.geometry.DEFAULT_SCALE` times the renderer's view); requests
-    whose region is not in the view are left out. ``truth``: find who is in each window (see :class:`Truth`);
-    ``visibility``: also measure whether their eyes are hidden (``Truth.visible``: one more draw of the person);
-    ``motion``: people's speeds, for the truth and the motion blur. ``frame``: the frame's index (results and the
-    noise's seed)."""
+    whose region is not in the view are left out, one that cannot be served raises ValueError. ``truth``: find who is
+    in each window (see :class:`Truth`); ``visibility``: also measure whether their eyes are hidden
+    (``Truth.visible``: one more draw of the person); ``motion``: people's speeds, for the truth and the motion blur.
+    ``frame``: the frame's index (results and the noise's seed)."""
     view = (renderer.width, renderer.height)
     declared = sensor or Sensor.scaled(DEFAULT_SCALE, view)
     results = []
     for request in requests:
-        model = camera_preset(request.preset if request.preset is not None else preset)
-        chosen = _sensor_for(request, model, declared, view)
-        if chosen.view != view:
-            raise ValueError(f"a sensor for a {chosen.view[0]}x{chosen.view[1]} view cannot make windows of a "
-                             f"{view[0]}x{view[1]} renderer's view")
-        planned = plan_request(request, chosen, scene.camera, head, multiple, renderer.max_window)
-        if planned is None:
-            continue
-        window, eyes = planned
-        start = time.perf_counter()
-        image = renderer.render_window(scene, window.ndc, window.size, aspect=chosen.view_aspect)
-        render_ms = (time.perf_counter() - start) * 1000.0
-        found = _find_person(scene, window, motion, request.subject) if truth or model.needs_motion else None
-        mask = None
-        if truth and visibility and found is not None:
-            mask = renderer.window_mask(found[0])
-            found = (found[0], replace(found[1], visible=eyes_visible(mask, found[1].eyes)))
-        start = time.perf_counter()
-        velocity = (0.0, 0.0)
-        if model.needs_motion and found is not None and np.hypot(*found[1].velocity) * model.exposure >= 0.5:
-            velocity = found[1].velocity
-            if mask is None:
-                mask = renderer.window_mask(found[0])  # only the moving person is smeared
-        else:
-            mask = None
-        image = model.apply(image, window.level, velocity, mask, model.window_seed(frame, request.tag,
-                                                                                 window.sensor_rect))
-        camera_ms = (time.perf_counter() - start) * 1000.0  # the camera model, with the mask it needs
-        results.append(WindowResult(request, window, image, float(scene.time), frame, model.name, eyes,
-                                    found[1] if truth and found is not None else None, render_ms, camera_ms))
+        plan = plan_window(request, declared, view, scene.camera, head, multiple, renderer.max_window, preset)
+        if plan is not None:
+            results.append(render_planned(scene, renderer, request, plan, frame, truth, motion, visibility))
     return results
+
+
+def _picture_sensor(image: np.ndarray, view, sensor: Sensor | None) -> Sensor:
+    h, w = image.shape[:2]
+    sensor = sensor or Sensor(w, h, view)
+    if sensor.size != (w, h):
+        raise ValueError(f"a {sensor} sensor cannot cut windows from a {w}x{h} picture")
+    return sensor
+
+
+def plan_crop(request: WindowRequest, sensor: Sensor, head: HeadRegion | None = None, multiple: int = MULTIPLE,
+              preset="ideal") -> Plan | None:
+    """The :class:`Plan` of ``request`` on a real camera's picture ``sensor``, or ``None`` when it has none there (a
+    head point, or a region outside the view)."""
+    if request.head is not None:
+        return None
+    model = camera_preset(request.preset if request.preset is not None else preset)
+    planned = plan_request(request, sensor, None, head, multiple)
+    return None if planned is None else Plan(model, *planned)
+
+
+def crop_planned(image: np.ndarray, request: WindowRequest, plan: Plan, frame: int = 0) -> WindowResult:
+    """Cut one planned window from a real camera's picture (see :func:`crop_windows`)."""
+    model, window = plan.model, plan.window
+    start = time.perf_counter()
+    x0, y0, x1, y1 = window.sensor_rect
+    crop = image[y0:y1, x0:x1]
+    crop = cv2.resize(crop, window.size, interpolation=cv2.INTER_AREA) if window.level > 1 else crop.copy()
+    cut_ms = (time.perf_counter() - start) * 1000.0
+    start = time.perf_counter()
+    crop = model.apply(crop, window.level, seed=model.window_seed(frame, request.tag, window.sensor_rect))
+    return WindowResult(request, window, crop, None, frame, model.name, plan.eyes, None, cut_ms,
+                        (time.perf_counter() - start) * 1000.0)
 
 
 def crop_windows(image: np.ndarray, view, requests: Iterable[WindowRequest], sensor: Sensor | None = None,
@@ -409,28 +465,12 @@ def crop_windows(image: np.ndarray, view, requests: Iterable[WindowRequest], sen
     not used), and a window at level ``k`` is its crop averaged over ``k x k`` pixels. Requests with head points are
     left out (a real camera knows no scene). ``preset`` adds a camera's faults on top of the real camera's own (its
     sensor size is not used)."""
-    h, w = image.shape[:2]
-    sensor = sensor or Sensor(w, h, view)
-    if sensor.size != (w, h):
-        raise ValueError(f"a {sensor} sensor cannot cut windows from a {w}x{h} picture")
+    sensor = _picture_sensor(image, view, sensor)
     results = []
     for request in requests:
-        if request.head is not None:
-            continue
-        model = camera_preset(request.preset if request.preset is not None else preset)
-        planned = plan_request(request, sensor, None, head, multiple)
-        if planned is None:
-            continue
-        window, eyes = planned
-        start = time.perf_counter()
-        x0, y0, x1, y1 = window.sensor_rect
-        crop = image[y0:y1, x0:x1]
-        crop = cv2.resize(crop, window.size, interpolation=cv2.INTER_AREA) if window.level > 1 else crop.copy()
-        cut_ms = (time.perf_counter() - start) * 1000.0
-        start = time.perf_counter()
-        crop = model.apply(crop, window.level, seed=model.window_seed(frame, request.tag, window.sensor_rect))
-        results.append(WindowResult(request, window, crop, None, frame, model.name, eyes, None, cut_ms,
-                                    (time.perf_counter() - start) * 1000.0))
+        plan = plan_crop(request, sensor, head, multiple, preset)
+        if plan is not None:
+            results.append(crop_planned(image, request, plan, frame))
     return results
 
 
@@ -449,7 +489,12 @@ class WindowService:
             :class:`~.camera_model.CameraModel`); a preset with its own sensor size uses it instead of ``sensor``.
 
     :meth:`request` and :meth:`request_once` may be called from any thread; the windows are made on the source's.
-    ``last``: the windows of the latest frame.
+    They check the requests and raise there, in the caller's thread, for one that cannot be served (a request checks
+    its own preset when it is made); the source's frames never fail for a request. One that turns out not to be
+    servable only then is left out of the standing requests, said once and kept in ``problems`` (tag -> why). Only
+    requests with a window in the view take part in the scheduling, so requests that left the view take no frame's
+    windows from others. ``last``: the windows of the latest frame; ``view``: the size of the frames of the source the
+    service delivers to (set by it, :meth:`bind`).
     """
 
     def __init__(self, sensor: Sensor | None = None, max_windows: int = DEFAULT_WINDOWS, priority=None,
@@ -463,19 +508,42 @@ class WindowService:
         self.truth, self.visibility = truth, visibility
         self.motion = Motion()
         self.last: list[WindowResult] = []
+        self.view: tuple[int, int] | None = None
+        self.problems: dict = {}
         self._lock = threading.Lock()
         self._standing: list[WindowRequest] = []
         self._once: list[WindowRequest] = []
 
-    def request(self, requests: Iterable[WindowRequest]) -> None:
-        """Replace the standing requests: they are served, a few a frame, until replaced."""
+    def bind(self, view) -> None:
+        """Set by the frame source the service delivers to: its frames' size. Raises ValueError when the declared
+        sensor is for another view."""
+        view = (int(view[0]), int(view[1]))
+        if self.sensor is not None and self.sensor.view != view:
+            raise ValueError(f"the windows' {self.sensor} sensor is for a {self.sensor.view[0]}x{self.sensor.view[1]} "
+                             f"view, the frames are {view[0]}x{view[1]}")
+        self.view = view
+
+    def _checked(self, requests: Iterable[WindowRequest]) -> list[WindowRequest]:
         requests = list(requests)
+        view = self.view or (self.sensor.view if self.sensor is not None else None)
+        for request in requests:
+            if not isinstance(request, WindowRequest):
+                raise TypeError(f"not a WindowRequest: {request!r}")
+            if request.sensor is not None and view is not None and request.sensor.view != view:
+                raise ValueError(f"the request of {request.tag!r} has a sensor for a {request.sensor.view[0]}x"
+                                 f"{request.sensor.view[1]} view, the frames are {view[0]}x{view[1]}")
+        return requests
+
+    def request(self, requests: Iterable[WindowRequest]) -> None:
+        """Replace the standing requests: they are served, a few a frame, until replaced. Raises (and changes
+        nothing) when one of them cannot be served."""
+        requests = self._checked(requests)
         with self._lock:
             self._standing = requests
 
     def request_once(self, requests: Iterable[WindowRequest]) -> None:
-        """Requests for the next frame only (beside the standing ones)."""
-        requests = list(requests)
+        """Requests for the next frame only (beside the standing ones); checked as :meth:`request` checks."""
+        requests = self._checked(requests)
         with self._lock:
             self._once += requests
 
@@ -489,26 +557,67 @@ class WindowService:
         with self._lock:
             return list(self._standing)
 
-    def _choose(self, frame: int) -> list[WindowRequest]:
+    def _pending(self) -> list[WindowRequest]:
         with self._lock:
             pending, self._once = self._standing + self._once, []
-        return self.scheduler.choose(pending, frame) if pending else []
+        return pending
+
+    def _drop(self, request: WindowRequest, problem: Exception) -> None:
+        """Leave out a request that cannot be served after all (never let it fail the source's frames)."""
+        with self._lock:
+            self._standing = [r for r in self._standing if r is not request]
+        message = f"{type(problem).__name__}: {problem}"
+        if self.problems.get(request.tag) != message:
+            print(f"[windows] left out the request for {request.tag!r}: {message}")
+        self.problems[request.tag] = message
+
+    def _schedule(self, plans: list, frame: int) -> list:
+        """The planned requests (``(request, plan)``) that get a window in ``frame``."""
+        chosen = self.scheduler.choose([request for request, _plan in plans], frame)
+        planned = {id(request): (request, plan) for request, plan in plans}
+        return [planned[id(request)] for request in chosen]
 
     def for_scene(self, scene, renderer, frame) -> list[WindowResult]:
         """The windows of ``frame`` (a :class:`~bifold_demo.sources.base.Frame` that ``renderer`` just drew of
         ``scene``)."""
         self.motion.observe(scene)
-        chosen = self._choose(frame.index)
-        self.last = render_windows(scene, renderer, chosen, self.sensor, frame.index, self.head, self.multiple,
-                                   self.truth, self.motion, self.preset, self.visibility) if chosen else []
-        return self.last
+        view = (renderer.width, renderer.height)
+        declared = self.sensor or Sensor.scaled(DEFAULT_SCALE, view)
+        plans = []
+        for request in self._pending():
+            try:
+                plan = plan_window(request, declared, view, scene.camera, self.head, self.multiple,
+                                   renderer.max_window, self.preset)
+            except (ValueError, TypeError) as exc:
+                self._drop(request, exc)
+                continue
+            if plan is not None:  # (none: its region left the view; it takes no window from the others)
+                plans.append((request, plan))
+        results = []
+        for request, plan in self._schedule(plans, frame.index):
+            try:
+                results.append(render_planned(scene, renderer, request, plan, frame.index, self.truth, self.motion,
+                                              self.visibility))
+            except ValueError as exc:
+                self._drop(request, exc)
+        self.last = results
+        return results
 
     def for_image(self, image: np.ndarray, frame) -> list[WindowResult]:
         """The windows of ``frame`` cut from the full-resolution picture ``image`` it was scaled from."""
-        chosen = self._choose(frame.index)
         sensor = self.sensor
         if sensor is not None and sensor.size != (image.shape[1], image.shape[0]):
             sensor = None  # the camera delivers another size than declared: use what it delivers
-        self.last = crop_windows(image, frame.size, chosen, sensor, frame.index, self.head, self.multiple,
-                                 self.preset) if chosen else []
+        sensor = _picture_sensor(image, frame.size, sensor)
+        plans = []
+        for request in self._pending():
+            try:
+                plan = plan_crop(request, sensor, self.head, self.multiple, self.preset)
+            except (ValueError, TypeError) as exc:
+                self._drop(request, exc)
+                continue
+            if plan is not None:
+                plans.append((request, plan))
+        self.last = [crop_planned(image, request, plan, frame.index)
+                     for request, plan in self._schedule(plans, frame.index)]
         return self.last

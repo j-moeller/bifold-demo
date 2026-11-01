@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .camera_model import camera_preset
 from .geometry import Sensor
 
 DEFAULT_FACE_PX = 112.0  # wanted pixels between the eyes: the low end of 112-160 (see docs/research/high_res_faces.md)
@@ -107,6 +108,10 @@ class WindowRequest:
         given = [name for name in ("box", "region", "head") if getattr(self, name) is not None]
         if len(given) != 1:
             raise ValueError(f"a window request needs exactly one of box, region and head (got {given or 'none'})")
+        if self.preset is not None:
+            camera_preset(self.preset)  # an unknown preset fails here, where the request is made
+        if self.sensor is not None and not isinstance(self.sensor, Sensor):
+            raise TypeError(f"a request's sensor must be a Sensor, got {type(self.sensor).__name__}")
         for name in ("box", "region"):
             rect = getattr(self, name)
             if rect is not None:

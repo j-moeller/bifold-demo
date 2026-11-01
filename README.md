@@ -1074,7 +1074,13 @@ for window in frame.windows:                         # WindowResult
 ```
 
 `service.scheduler.priority = fn(request, waited)` is the hook for the person
-tracker's own order (`waited`: frames since the tag's last window).
+tracker's own order (`waited`: frames since the tag's last window). Only
+requests whose window is in the view take part, so tracks that just left the
+picture take no window from the others. A request is checked where it is
+made: an unknown preset fails when the request is made, a sensor for another
+view in `service.request()` (which then changes nothing); the source's frames
+never fail for a request, and one that cannot be served after all is left
+out, said once and kept in `service.problems`.
 `render_windows(scene, renderer, requests, sensor)` renders windows directly,
 for the evaluation; there a request can name its `subject` and its own
 `sensor`. With a scene, each window also carries the `truth`: who the scene

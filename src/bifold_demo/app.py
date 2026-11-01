@@ -256,8 +256,11 @@ class DemoApp:
             from .sensor import Sensor, WindowService
 
             cfg = self.config
-            sensor = Sensor(*cfg.sensor, (cfg.width, cfg.height)) if cfg.sensor else None
-            self.window_service = WindowService(sensor, cfg.max_windows, preset=cfg.camera_preset)
+            try:  # (the command line checks these; a DemoConfig made in code may not)
+                sensor = Sensor(*cfg.sensor, (cfg.width, cfg.height)) if cfg.sensor else None
+                self.window_service = WindowService(sensor, cfg.max_windows, preset=cfg.camera_preset)
+            except ValueError as exc:
+                return f"windows unavailable: {exc}"
             self._window_tags = BoxTags()
         self.windows_on = on
         for source in {id(s): s for s in (self.scene_source, *self.switcher.started())}.values():
@@ -524,7 +527,8 @@ class DemoApp:
             self.recognize_enabled = not self.recognize_enabled
             self.notify(f"face recognition {'on' if self.recognize_enabled else 'off'}")
         elif key == ord("w"):
-            self.notify(self._show_windows(not self.windows_on), 3.0)
+            message = self._show_windows(not self.windows_on)
+            self.notify(message, 3.0, error=message.startswith("windows unavailable"))
         elif key == ord(" "):
             self.notify("paused" if clock.toggle_pause() else "running", 1.0)
         elif key == ord("r"):
@@ -690,6 +694,17 @@ def parse_args(argv=None) -> DemoConfig:
     g.add_argument("--headless", action="store_true", help="no window (use with --record/--frames)")
     g.add_argument("--frames", type=int, help="stop after this many frames")
     a = p.parse_args(argv)
+    if a.sensor:  # the sensor's whole frame is the picture's: it must have the frame's shape
+        from .sensor import Sensor
+
+        try:
+            Sensor(*a.sensor, a.size)
+        except ValueError:
+            fit = Sensor.with_lines(a.sensor[1], a.size)
+            p.error(f"--sensor {a.sensor[0]}x{a.sensor[1]} does not have the frame's shape ({a.size[0]}x{a.size[1]}); "
+                    f"for example --sensor {fit}")
+    if a.max_windows < 1:
+        p.error("--max-windows must be at least 1")
     return DemoConfig(
         source=a.source, scene=a.scene, camera=a.camera, width=a.size[0], height=a.size[1], fps=a.fps,
         mirror=a.mirror, model=a.model, device=a.device, conf=a.conf, iou=a.iou, imgsz=a.imgsz, classes=a.classes,

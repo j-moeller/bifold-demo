@@ -13,8 +13,19 @@ class SceneSource(FrameSource):
     """Renders ``scene`` at ``width`` x ``height``, advancing it with ``clock``.
 
     ``windows``: a :class:`bifold_demo.sensor.WindowService`; its windows are rendered right after each frame, of the
-    same moment, and delivered on the frame (``frame.windows``). It can be set later too.
+    same moment, and delivered on the frame (``frame.windows``). It can be set later too; setting it tells the
+    service the frames' size (and fails there when the service's sensor is for another view).
     """
+
+    @property
+    def windows(self):
+        return self._windows
+
+    @windows.setter
+    def windows(self, service) -> None:
+        if service is not None:
+            service.bind((self.width, self.height))
+        self._windows = service
 
     name = "scene"
 
