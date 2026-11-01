@@ -94,3 +94,11 @@ branch and pushed; its results go into the progress log.
   - S1: windows that are exact crops of a high-resolution sensor; culling; window requests and results with
     the frames.
   - The tests of the new and touched modules: 169 passed, 3 skipped.
+- **1 November, 15:57 UTC:** more pieces on the branch.
+  - F1: the embedders and the quality record per face.
+  - S1:
+    - the camera model (blur, noise, mosaic, tone, JPEG);
+    - the windows in the demo (`W`) and `bifold-scene windows`;
+    - the measured results and the preview;
+    - window limits per renderer.
+  - The tests of the new and touched modules: 158 passed, 3 skipped.
