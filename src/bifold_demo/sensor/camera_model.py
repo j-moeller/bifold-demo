@@ -1,4 +1,4 @@
-"""The camera model: what a real camera does to a window's pixels, applied at the window's own pixel scale (V4).
+"""The camera model: what a real camera does to a window's pixels, at the camera's own pixels (V4).
 
 A render is noiseless, perfectly focused and frozen in time; a camera's picture is not. :meth:`CameraModel.apply`
 runs a window through a camera's faults in the order light meets them (``docs/research/high_res_faces.md``, 2.1):
@@ -18,6 +18,16 @@ runs a window through a camera's faults in the order light meets them (``docs/re
 7. **Tone**: the sRGB curve back, then an S-curve of strength ``tone`` (contrast).
 8. **Sharpening**: an unsharp mask of strength ``sharpen``, as cameras do.
 9. **Compression**: JPEG at quality ``jpeg``, standing in for the video codec.
+
+**At the camera's own pixels.** :meth:`CameraModel.apply` takes a picture at a binning ``level``: the optics and the
+light are the sensor's (the lens blur's radius divided by the level, the noise of ``level x level`` pixels), the
+mosaic, the sharpening and the compression the read-out's: a camera that reads its sensor out binned. The windows
+(:mod:`.service`) are made, by default, as a camera that takes its whole picture at its own pixels and whose faces are
+cut out and scaled down where they are used: a window at level ``k`` (binned, for a face that would get more pixels
+than asked for) is drawn, or cut from a real camera's picture, at the level :meth:`CameraModel.native_level` gives,
+level 1 (the camera's own pixels) unless that would take more than ``native_pixels`` pixels, goes through the faults
+there and is area-averaged down to level ``k``: the resampling comes last, as in the research (2.1). ``native=False``
+gives the binned read-out instead.
 
 Everything random is drawn from a generator seeded by the model's ``seed`` and the window (frame, tag, place), so runs
 reproduce. The ``ideal`` preset changes nothing. A preset may bring its own sensor (``lines``: a 4K camera has 2160),
@@ -59,6 +69,9 @@ class CameraModel:
         sharpen: strength of the unsharp mask.
         jpeg: JPEG quality (1-100); ``None``: no compression.
         seed: the base of every random draw.
+        native: a binned window meets the faults at the camera's own pixels and is scaled down after them (see the
+            module docs and :meth:`native_level`); ``False``: at the window's (a binned read-out).
+        native_pixels: the most pixels a window may be drawn with for that.
     """
 
     name: str = "ideal"
@@ -73,6 +86,8 @@ class CameraModel:
     sharpen: float = 0.0
     jpeg: int | None = None
     seed: int = 0
+    native: bool = True
+    native_pixels: int = 1_000_000
 
     def __post_init__(self):
         if self.demosaic not in _DEMOSAIC:
@@ -100,11 +115,27 @@ class CameraModel:
         """The seed of a window's random draws: this model's seed, the frame, the tag and the window's place."""
         return zlib.crc32(repr((self.seed, int(frame), repr(tag), tuple(int(v) for v in rect))).encode())
 
+    def native_level(self, size, level: int, max_side: int | None = None) -> int:
+        """The level at which a window of ``size`` = (width, height) at ``level`` meets this camera's faults: of the
+        levels that divide ``level``, the finest at which the same rectangle of the sensor has at most
+        ``native_pixels`` pixels and no side longer than ``max_side`` (what a renderer can draw); 1, the camera's own
+        pixels, when that fits. ``level`` itself for an ideal camera, or with ``native`` off."""
+        level = int(level)
+        if self.ideal or not self.native or level <= 1:
+            return level
+        for finer in range(1, level):
+            if level % finer == 0:
+                width, height = size[0] * (level // finer), size[1] * (level // finer)
+                if width * height <= self.native_pixels and (max_side is None or max(width, height) <= max_side):
+                    return finer
+        return level
+
     def apply(self, image: np.ndarray, level: int = 1, velocity=(0.0, 0.0), mask: np.ndarray | None = None,
               seed: int = 0) -> np.ndarray:
-        """``image`` (HxWx3 BGR ``uint8``, a window at binning ``level``) as this camera delivers it. ``velocity``:
-        the person's motion in window pixels a second; ``mask``: their coverage (HxW, 0-1), so that only they are
-        smeared; ``seed``: for the noise (see :meth:`window_seed`)."""
+        """``image`` (HxWx3 BGR ``uint8``, a picture at binning ``level``: 1 is the camera's own pixels, above it a
+        binned read-out, see the module docs) as this camera delivers it. ``velocity``: the person's motion in the
+        image's pixels a second; ``mask``: their coverage (HxW, 0-1), so that only they are smeared; ``seed``: for the
+        noise (see :meth:`window_seed`)."""
         if self.ideal:
             return image
         level = max(1, int(level))

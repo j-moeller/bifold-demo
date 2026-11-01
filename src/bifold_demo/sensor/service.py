@@ -14,14 +14,16 @@ its scale, to map faces back to the frame), the camera preset, the frame's time 
 asked. For a scene it also holds :class:`Truth`: who the scene knows is in the window and where their eyes are, for
 the evaluation only (recognition must not use it).
 
-The camera preset (:mod:`.camera_model`) is applied to each window at its own pixel scale. A preset that brings its
-own sensor size (``lines``) places the window on that sensor instead of the declared one; a request's own ``sensor``
-comes before both. For its motion blur the preset gets the person's speed from :class:`Motion` and, when they move,
-their coverage of the window (:meth:`~bifold_demo.scene.renderer.Renderer.window_mask`).
+The camera preset (:mod:`.camera_model`) meets each window at the camera's own pixels: a binned window is drawn (or
+cut) finer for it and area-averaged down after it (:meth:`~.camera_model.CameraModel.native_level`). A preset that
+brings its own sensor size (``lines``) places the window on that sensor instead of the declared one; a request's own
+``sensor`` comes before both. For its motion blur the preset gets the person's speed from :class:`Motion` and, when
+they move, their coverage of the window (:meth:`~bifold_demo.scene.renderer.Renderer.window_mask`).
 """
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 import weakref
@@ -45,7 +47,9 @@ from .requests import (
 MULTIPLE = 16  # window sides are grown to a multiple of this, so that sizes repeat and their framebuffers are reused
 EYE_BONES = ("Bip01 REye", "Bip01 LEye")  # the eyes of the Rocketbox skeleton (the person's right, then left)
 HEAD_BONES = ("Bip01 Head", "Head")  # the head bone (Rocketbox, then others)
-MOTION_GAP = 0.5  # seconds: a person seen longer ago than this has no known speed
+SHORT_GAP = 0.1  # seconds: frames closer than this give a person's speed from their eyes' own move
+MOTION_GAP = 2.0  # seconds: further apart, frames give no speed (unless the person's behaviour knows their track)
+TRACK_STEP = 0.05  # seconds either side of a frame's moment: a behaviour's speed over the floor, from its track
 
 
 @dataclass(frozen=True)
@@ -225,15 +229,36 @@ def head_pose(person, camera, at=None) -> dict:
     }
 
 
+def track_velocity(person, t: float) -> np.ndarray | None:
+    """Metres a second ``person`` moves over the floor at scene time ``t`` by their behaviour's track
+    (``behaviour.positions``, which changes nothing: a central difference ``TRACK_STEP`` either side), ``None`` when
+    the behaviour has no track or hides them then."""
+    positions = getattr(getattr(person, "behaviour", None), "positions", None)
+    if positions is None:
+        return None
+    try:
+        track = np.asarray(positions(np.array([t - TRACK_STEP, t + TRACK_STEP])), dtype=np.float64)
+    except Exception:  # noqa: BLE001 - a track that cannot be had is no speed; the frame goes on
+        return None
+    if track.shape != (2, 2) or not np.isfinite(track).all():
+        return None
+    dx, dz = (track[1] - track[0]) / (2 * TRACK_STEP)
+    return np.array([dx, 0.0, dz])
+
+
 class Motion:
-    """Where people's eyes were in the frames seen so far: their speed in the scene (for motion blur)."""
+    """People's speed in the scene at each frame (for motion blur): from where their eyes were in the frame before
+    when that is less than ``SHORT_GAP`` ago (the head's own moves included), else from their behaviour's track over
+    the floor (:func:`track_velocity`: for frames far apart, as in a slow interactive demo, and the first one; it
+    leaves out the head's own moves, such as a look around, up to 0.8 m/s of the eyes in the fair), else from the
+    frame before when that is less than ``MOTION_GAP`` ago; zero when none of these is known."""
 
     def __init__(self):
         self._last: dict[int, tuple] = {}  # id(person) -> (weakref, time, point between the eyes)
         self._velocity: dict[int, np.ndarray] = {}
 
     def observe(self, scene) -> None:
-        """Note where everyone visible is at the scene's time (once a frame)."""
+        """Note where everyone visible is at the scene's time and how fast they move (once a frame)."""
         t = float(scene.time)
         seen = set()
         for obj in scene:
@@ -245,10 +270,14 @@ class Motion:
             key, point = id(obj), eyes.mean(axis=0)
             seen.add(key)
             last = self._last.get(key)
-            if last is not None and last[0]() is obj and 0.0 < t - last[1] <= MOTION_GAP:
-                self._velocity[key] = (point - last[2]) / (t - last[1])
-            elif last is None or last[0]() is not obj or t != last[1]:
-                self._velocity[key] = np.zeros(3)  # first seen, or seen too long ago
+            gap = t - last[1] if last is not None and last[0]() is obj else math.inf
+            if 0.0 < gap <= SHORT_GAP:
+                self._velocity[key] = (point - last[2]) / gap
+            elif gap != 0.0:  # (the same moment again keeps the speed)
+                speed = track_velocity(obj, t)
+                if speed is None:
+                    speed = (point - last[2]) / gap if 0.0 < gap <= MOTION_GAP else np.zeros(3)
+                self._velocity[key] = speed
             self._last[key] = (weakref.ref(obj), t, point)
         for key in list(self._last):
             if key not in seen:
@@ -256,7 +285,7 @@ class Motion:
                 self._velocity.pop(key, None)
 
     def velocity(self, person) -> np.ndarray:
-        """Metres per second of the point between ``person``'s eyes (zero when unknown)."""
+        """Metres per second ``person`` moves at the last frame they were seen in (zero when unknown)."""
         last = self._last.get(id(person))
         if last is None or last[0]() is not person:
             return np.zeros(3)
@@ -380,23 +409,29 @@ def render_planned(scene, renderer, request: WindowRequest, plan: Plan, frame: i
                    motion: Motion | None = None, visibility: bool = False) -> WindowResult:
     """Render one planned window (see :func:`render_windows`)."""
     model, window = plan.model, plan.window
+    # drawn at the camera's own pixels for its faults, scaled down after them (see the camera model's docs)
+    fine = window.at_level(model.native_level(window.size, window.level, renderer.max_window))
+    ratio = window.level // fine.level
     start = time.perf_counter()
-    image = renderer.render_window(scene, window.ndc, window.size, aspect=window.sensor.view_aspect)
+    image = renderer.render_window(scene, fine.ndc, fine.size, aspect=window.sensor.view_aspect)
     render_ms = (time.perf_counter() - start) * 1000.0
     found = _find_person(scene, window, motion, request.subject) if truth or model.needs_motion else None
     mask = None
     if truth and visibility and found is not None:
         mask = renderer.window_mask(found[0])
-        found = (found[0], replace(found[1], visible=eyes_visible(mask, found[1].eyes)))
+        seen = mask if ratio == 1 else cv2.resize(mask, window.size, interpolation=cv2.INTER_AREA)
+        found = (found[0], replace(found[1], visible=eyes_visible(seen, found[1].eyes)))
     start = time.perf_counter()
     velocity = (0.0, 0.0)
-    if model.needs_motion and found is not None and np.hypot(*found[1].velocity) * model.exposure >= 0.5:
-        velocity = found[1].velocity
+    if model.needs_motion and found is not None and np.hypot(*found[1].velocity) * ratio * model.exposure >= 0.5:
+        velocity = tuple(v * ratio for v in found[1].velocity)  # in the drawn pixels
         if mask is None:
             mask = renderer.window_mask(found[0])  # only the moving person is smeared
     else:
         mask = None
-    image = model.apply(image, window.level, velocity, mask, model.window_seed(frame, request.tag, window.sensor_rect))
+    image = model.apply(image, fine.level, velocity, mask, model.window_seed(frame, request.tag, window.sensor_rect))
+    if ratio > 1:
+        image = cv2.resize(image, window.size, interpolation=cv2.INTER_AREA)
     camera_ms = (time.perf_counter() - start) * 1000.0  # the camera model, with the mask it needs
     return WindowResult(request, window, image, float(scene.time), frame, model.name, plan.eyes,
                         found[1] if truth and found is not None else None, render_ms, camera_ms)
@@ -446,13 +481,16 @@ def plan_crop(request: WindowRequest, sensor: Sensor, head: HeadRegion | None = 
 def crop_planned(image: np.ndarray, request: WindowRequest, plan: Plan, frame: int = 0) -> WindowResult:
     """Cut one planned window from a real camera's picture (see :func:`crop_windows`)."""
     model, window = plan.model, plan.window
+    fine = window.at_level(model.native_level(window.size, window.level))  # the preset's faults at the picture's pixels
     start = time.perf_counter()
     x0, y0, x1, y1 = window.sensor_rect
     crop = image[y0:y1, x0:x1]
-    crop = cv2.resize(crop, window.size, interpolation=cv2.INTER_AREA) if window.level > 1 else crop.copy()
+    crop = cv2.resize(crop, fine.size, interpolation=cv2.INTER_AREA) if fine.level > 1 else crop.copy()
     cut_ms = (time.perf_counter() - start) * 1000.0
     start = time.perf_counter()
-    crop = model.apply(crop, window.level, seed=model.window_seed(frame, request.tag, window.sensor_rect))
+    crop = model.apply(crop, fine.level, seed=model.window_seed(frame, request.tag, window.sensor_rect))
+    if fine is not window:
+        crop = cv2.resize(crop, window.size, interpolation=cv2.INTER_AREA)
     return WindowResult(request, window, crop, None, frame, model.name, plan.eyes, None, cut_ms,
                         (time.perf_counter() - start) * 1000.0)
 

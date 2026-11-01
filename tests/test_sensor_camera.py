@@ -2,6 +2,7 @@
 how windows get them (the presets' own sensors, the person's coverage for motion blur)."""
 
 import math
+from dataclasses import replace
 
 import cv2
 import numpy as np
@@ -212,6 +213,57 @@ def test_windows_blur_the_moving_person_over_a_still_background(gl):
         mask = renderer.window_mask(walker)
         near = cv2.dilate((mask > 0).astype(np.uint8), np.ones((3, int(speed / 30) + 3), np.uint8)) > 0
         assert changed.sum() > 50 and not (changed & ~near).any()  # only on and around the person
+    finally:
+        renderer.release()
+
+
+def test_the_native_level_keeps_to_the_pixel_budget():
+    camera = PRESETS["good 4K"]
+    assert camera.native and camera.native_pixels == 1_000_000
+    assert camera.native_level((100, 80), 4) == 1  # 400 x 320 of the camera's own pixels
+    assert camera.native_level((300, 300), 4) == 2  # 1200 x 1200 is over the budget: 600 x 600
+    assert camera.native_level((400, 400), 3) == 3  # no level between
+    assert camera.native_level((100, 80), 4, max_side=256) == 2  # what the renderer can draw
+    assert camera.native_level((100, 80), 1) == 1
+    assert PRESETS["ideal"].native_level((100, 80), 4) == 4  # nothing to do: no pixels drawn for it
+    assert replace(camera, native=False).native_level((100, 80), 4) == 4  # a binned read-out
+
+
+def _psnr(a, b):
+    mse = float(np.mean((a.astype(np.float64) - b.astype(np.float64)) ** 2))
+    return 10 * math.log10(255.0 ** 2 / max(mse, 1e-12))
+
+
+def test_binned_windows_meet_the_camera_at_its_own_pixels(gl):
+    """A window binned by k is drawn at the camera's own pixels, goes through the faults there and is area-averaged
+    down (a camera's full picture, its faces scaled down where they are used); native=False: a binned read-out."""
+    from bifold_demo.scene.renderer import Renderer
+
+    scene = sample_scene()
+    renderer = Renderer(*VIEW)
+    try:
+        renderer.render(scene)
+        sensor = Sensor.scaled(4, VIEW)
+        camera = CameraModel("mine", lens_blur=0.7, electrons=2000, read_noise=2.0, bayer=True, sharpen=0.5, jpeg=85)
+        request = WindowRequest("p", region=(100, 40, 160, 100), eye_distance=20, face_px=20)
+        (native,) = render_windows(scene, renderer, [request], sensor, frame=2, preset=camera)
+        window = native.window
+        assert window.level == 4 and camera.native_level(window.size, 4) == 1
+        fine = window.at_level(1)
+        assert fine.sensor_rect == window.sensor_rect and fine.size == (window.width * 4, window.height * 4)
+        assert window.at_level(4) is window and window.at_level(2).size == (window.width * 2, window.height * 2)
+        with pytest.raises(ValueError, match="does not divide"):
+            window.at_level(3)
+        seed = camera.window_seed(2, "p", window.sensor_rect)
+        drawn = renderer.render_window(scene, fine.ndc, fine.size)
+        own = cv2.resize(camera.apply(drawn, 1, seed=seed), window.size, interpolation=cv2.INTER_AREA)
+        assert np.array_equal(native.image, own)
+        read_out = replace(camera, native=False)
+        (binned,) = render_windows(scene, renderer, [request], sensor, frame=2, preset=read_out)
+        clean = renderer.render_window(scene, window.ndc, window.size)
+        assert np.array_equal(binned.image, read_out.apply(clean, 4, seed=seed))
+        # the mosaic's, the sharpening's and the blocks' marks at the camera's pitch average away in the scaling down
+        assert _psnr(native.image, clean) > _psnr(binned.image, clean) + 3.0  # 38 dB against 30
     finally:
         renderer.release()
 

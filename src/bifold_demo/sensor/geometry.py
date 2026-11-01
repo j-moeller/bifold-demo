@@ -215,6 +215,17 @@ class Window:
         """``camera`` seen through this window (for a renderer of the window's size)."""
         return SubCamera(camera, self.ndc, self.sensor.view_aspect)
 
+    def at_level(self, level: int) -> Window:
+        """The same rectangle of the sensor at ``level``, a level that divides this window's (finer: ``self.level /
+        level`` times the pixels across)."""
+        level = int(level)
+        if level == self.level:
+            return self
+        if level <= 0 or self.level % level:
+            raise ValueError(f"level {level} does not divide the window's level {self.level}")
+        ratio = self.level // level
+        return Window(self.sensor, level, self.x * ratio, self.y * ratio, self.width * ratio, self.height * ratio)
+
     def to_sensor(self, points) -> np.ndarray:
         """Window pixels ``(..., 2)`` to sensor pixels."""
         return (np.asarray(points, dtype=np.float64) + (self.x, self.y)) * self.level

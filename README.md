@@ -1091,9 +1091,11 @@ them), where their eye bones are in the window, the face's frontal eye
 distance (its size if it were turned to the camera where it is, the same
 measure the planning uses), how the head is turned (`facing`: 0 looking into
 the camera, 90 in profile, 180 the back of the head; and `yaw`, `pitch`,
-`roll`), the distance, their speed in window pixels a second and, with
-`visibility=True`, whether their eyes are hidden behind someone. It is for
-evaluation only; recognition must not use it.
+`roll`), the distance, their speed in window pixels a second (from their
+eyes' move since the frame before when that is less than 0.1 s ago, else
+from their behaviour's track over the floor, so that a slow demo's frames
+still blur) and, with `visibility=True`, whether their eyes are hidden behind
+someone. It is for evaluation only; recognition must not use it.
 
 **A real camera** has no virtual sensor, but the same requests work on it:
 `WebcamSource(capture=(3840, 2160), windows=service)` captures at the higher
@@ -1104,15 +1106,22 @@ pixels at level `k`).
 **The camera model.** A render is noiseless, perfectly focused and frozen in
 time; a camera's picture is not. A camera preset
 ([`sensor/camera_model.py`](src/bifold_demo/sensor/camera_model.py)) is
-applied to every window at the window's own pixel scale, in the order light
-meets the faults: in linear light, lens blur (a Gaussian, in sensor pixels),
-motion blur (the person's projected speed times the exposure, a line kernel;
+applied to every window in the order light meets the faults: in linear
+light, lens blur (a Gaussian, in sensor pixels), motion blur (the person's
+projected speed times the exposure, a line kernel;
 only the person is smeared, over the still background, using their coverage
 of the window from `Renderer.window_mask`), optionally a Bayer mosaic,
 Poisson-Gaussian sensor noise in electrons (a binned pixel collects `k x k`
 times the light), OpenCV demosaicing, then the sRGB and a contrast tone
 curve, sharpening and JPEG. The noise is seeded by the preset's seed, the
-frame, the tag and the window's place, so runs reproduce.
+frame, the tag and the window's place, so runs reproduce. A window binned for
+a near face meets the faults at the camera's own pixels: it is drawn at the
+sensor's pixels (up to a million of them, `native_pixels`), goes through the
+camera there and is then averaged down, as a camera that sends its full
+picture delivers a face cut out and scaled down where it is used (the
+resampling comes last). `CameraModel(native=False)` models a binned read-out
+instead: cheaper, and harsher, since the mosaic, the sharpening and the JPEG
+blocks then work at the binned pixels.
 
 | Preset | Sensor | Lens blur | Exposure | Electrons at white / read noise | Mosaic | JPEG |
 |---|---|---|---|---|---|---|
@@ -1130,7 +1139,9 @@ measurements of one; calibrate them against the intended camera's footage.
 own); `CameraModel(...)` makes another, and `preset.with_exposure(1 / 1000)`
 trades motion blur for noise. On this machine's CPU a preset takes about
 8 ms for a 256x256 window, 30 ms for 512x512 (40 ms with motion blur) and
-60-85 ms for 768x768; `ideal` takes nothing.
+60-85 ms for 768x768 of the pixels it works at, so a window binned by `k`
+costs as one `k` times larger (a 128x128 window at level 4, drawn and through
+the camera, 84 ms instead of 15 read out binned); `ideal` takes nothing.
 
 **In the demo**, `W` (or `--windows`) shows the windows: up to four a frame
 on the heads of the people the detector finds (so detection must be on),

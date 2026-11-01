@@ -142,6 +142,21 @@ Per window, in numpy and OpenCV on this machine's CPU, best of three: 256x256 6-
 motion blur, which adds the person's coverage and the masked smear), 768x768 59-71 ms (71-86 ms with motion blur).
 `ideal` costs nothing. The noise, the sRGB tables, the masked motion blur and JPEG are the largest parts.
 
+A window binned for a near face meets the faults at the camera's own pixels (the default since the review; it found
+the binned read-out harsher than a camera of that sensor): it is drawn at level 1 (up to `native_pixels`, a million),
+goes through the camera and is area-averaged down. PSNR against the clean binned window (audience2's face in the fair
+at 6 s, three seeds):
+
+| Preset | Level | At the camera's pixels (default) | Binned read-out (`native=False`) |
+|---|---|---|---|
+| good 8K | 2 / 3 / 4 | 31.0 / 31.1 / 30.7 dB | 30.4 / 29.3 / 28.7 dB |
+| good 4K | 2 / 3 / 4 | 30.2 / 29.8 / 29.4 dB | 28.7 / 27.5 / 26.7 dB |
+| budget 1080p | 2 / 3 / 4 | 26.3 / 26.8 / 26.6 dB | 24.9 / 24.0 / 23.1 dB |
+
+These are the reviewer's numbers for "the camera at its sensor's pixels, then binned". It costs what a window `k` times
+larger costs, render and camera together: 128x128 at level 4 84 ms instead of 15, 210x210 at level 2 171 ms instead
+of 79, 512x512 at level 2 (over the budget: drawn at level 2) 142 ms instead of 113.
+
 ## 6. Open questions
 
 - The presets' numbers are plausible values for such cameras, not measurements of one; calibrate them against

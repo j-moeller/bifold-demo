@@ -12,6 +12,7 @@ from test_sensor import VIEW, sample_scene
 from bifold_demo.characters.model import CharacterState
 from bifold_demo.scene import Camera
 from bifold_demo.sensor import (
+    CameraModel,
     HeadRegion,
     Scheduler,
     Sensor,
@@ -386,6 +387,36 @@ def test_the_truth_finds_the_person_and_their_motion():
     assert find_truth(scene, sensor.window((0, 0, 50, 50)), motion) is None  # nobody's eyes there
 
 
+def test_speeds_hold_with_frames_far_apart():
+    """A slow demo's frames are far apart: the speed then comes from the person's behaviour's track (from the first
+    frame on), else from the frames up to MOTION_GAP apart."""
+    from bifold_demo.characters.behaviour import walk_by
+    from bifold_demo.characters.character import Character
+    from bifold_demo.scene import Scene
+    from bifold_demo.sensor.service import MOTION_GAP, SHORT_GAP, track_velocity
+
+    model = _eyes_model()
+    scene = Scene()
+    scene.camera = Camera(position=(0, 1.6, 6), target=(0, 1.6, -6), fov=55)
+    walker = scene.add(Character(model, walk_by([(-4, 0, 2), (4, 0, 2)], 0.6, library=None, offset=0.0)),
+                       name="walker")  # a behaviour that knows its track
+    plain = scene.add(Character(model, lambda t: CharacterState((0.5 * t - 2.0, 0.0, 1.0), 0.0, [])), name="plain")
+    for gap in (0.05, 0.6, 1.0, MOTION_GAP + 1.0):
+        motion = Motion()
+        for t in (4.0, 4.0 + gap):
+            scene.update(t, gap)
+            motion.observe(scene)
+        assert motion.velocity(walker) == pytest.approx([0.6, 0.0, 0.0], abs=0.01), gap
+        expected = 0.5 if gap <= MOTION_GAP else 0.0  # frames alone, as far apart as that
+        assert motion.velocity(plain) == pytest.approx([expected, 0.0, 0.0], abs=1e-6), gap
+    assert SHORT_GAP < 0.6
+    first = Motion()
+    first.observe(scene)  # the first frame: the track tells already
+    assert first.velocity(walker)[0] == pytest.approx(0.6, abs=0.01) and not first.velocity(plain).any()
+    assert track_velocity(plain, 4.0) is None and track_velocity(walker, 4.0) == pytest.approx([0.6, 0.0, 0.0],
+                                                                                                abs=0.01)
+
+
 # -- windows of a real camera -----------------------------------------------------------------------------------------
 
 
@@ -410,6 +441,11 @@ def test_windows_cut_from_a_full_resolution_picture():
     binned = full[y0:y1, x0:x1].reshape(b.window.height, 2, b.window.width, 2, 3).mean(axis=(1, 3))
     assert np.abs(b.image.astype(float) - binned).max() <= 1.0
     assert b.box_to_view((0, 0, b.window.width, b.window.height)) == pytest.approx(b.view_rect)
+    camera = CameraModel("mine", electrons=800, sharpen=0.5, jpeg=80)  # the preset's faults at the picture's pixels
+    (c,) = crop_windows(full, (1280, 720), requests[1:2], frame=3, multiple=1, preset=camera)
+    assert c.window == b.window and c.preset == "mine"
+    own = camera.apply(full[y0:y1, x0:x1], 1, seed=camera.window_seed(3, "b", c.window.sensor_rect))
+    assert np.array_equal(c.image, cv2.resize(own, c.window.size, interpolation=cv2.INTER_AREA))
 
 
 class _FakeCapture:
