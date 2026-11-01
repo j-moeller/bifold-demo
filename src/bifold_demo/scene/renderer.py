@@ -1,4 +1,9 @@
-"""Off-screen OpenGL renderer that turns a Scene into a BGR image (the 2D projection)."""
+"""Off-screen OpenGL renderer that turns a Scene into a BGR image (the 2D projection).
+
+Besides the whole view (:meth:`Renderer.render`) it draws *windows* (:meth:`Renderer.render_window`): a rectangle of
+the camera's picture through an off-axis part of the same frustum, at a higher pixel scale than the view, with the
+GPU resources the view already uploaded. That is the virtual high-resolution sensor of :mod:`bifold_demo.sensor`.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +14,7 @@ import numpy as np
 
 from .scene import Scene, SceneObject
 from .textures import Texture, as_texture, parse_color
-from .transforms import gl_bytes
+from .transforms import crop_matrix, gl_bytes
 
 # Shared by every program that draws lit, textured surfaces, so their output cannot drift apart.
 _VS_EMIT = """
@@ -127,13 +132,18 @@ SHADOW_LIFT = 0.015  # metres above the feet: above the floor and flat floor dec
 _SHADOW_CORNERS = np.array([(-1, -1), (1, -1), (1, 1), (-1, -1), (1, 1), (-1, 1)], dtype=np.float64)
 _UNSET = object()
 
+# A background image covers the whole picture; a window shows its part of it: u_ndc_scale and u_ndc_offset map the
+# window's corners to where they are in the whole picture (1 and 0 for the whole view).
 _BACKGROUND_VS = """
 #version 330 core
 uniform vec2 u_uv_scale;
+uniform vec2 u_ndc_scale;
+uniform vec2 u_ndc_offset;
 out vec2 v_uv;
 void main() {
     vec2 corner = vec2(float((gl_VertexID & 1) << 2), float((gl_VertexID & 2) << 1)) - 1.0;
-    v_uv = (corner * 0.5) * u_uv_scale + 0.5;
+    vec2 whole = corner * u_ndc_scale + u_ndc_offset;
+    v_uv = (whole * 0.5) * u_uv_scale + 0.5;
     gl_Position = vec4(corner, 0.0, 1.0);
 }
 """
@@ -155,6 +165,7 @@ void main() {
 }
 """
 _PROBE_SHADOW = 0.7  # the part of a blob shadow that counts (outside it, it darkens the floor by under 12 %)
+WINDOW_TARGETS = 6  # window sizes whose framebuffers are kept (least recently used dropped first)
 
 
 class Renderer:
@@ -163,8 +174,12 @@ class Renderer:
     Objects with a ``skinned_model`` (:class:`bifold_demo.characters.character.Character`) are skinned on the
     GPU with their ``skin_palette`` and get a soft blob shadow on the floor.
 
+    :meth:`render_window` draws a rectangle of the same picture at another pixel scale (a window of a virtual
+    high-resolution sensor, see :mod:`bifold_demo.sensor`), reusing what :meth:`render` uploaded.
+
     The OpenGL context belongs to the thread that created the renderer; call
-    :meth:`render` from that thread only.
+    :meth:`render` from that thread only. Every public method makes the renderer's own context current (with several
+    renderers in one thread, the one made last is current otherwise).
     """
 
     def __init__(self, width: int = 1280, height: int = 720, samples: int = 4):
@@ -202,8 +217,17 @@ class Renderer:
         self._joints: dict[int, tuple] = {}  # id(character) -> (weakref, joint-palette texture)
         self._probes = None  # (object program, skinned program, shadow program): see visible_pixels
         self._drawn = None  # (view-projection, camera position) of the last frame
-        self.info = self.ctx.info.get("GL_RENDERER", "OpenGL")
+        self._samples = samples  # MSAA samples per pixel (0: none), for windows too
+        self._window_targets: dict[tuple[int, int], tuple] = {}  # (w, h) -> (draw fbo, resolve fbo, renderbuffers)
+        info = self.ctx.info
+        self.max_window = int(info.get("GL_MAX_RENDERBUFFER_SIZE", 16384))  # the longest side a window may have
+        self.info = info.get("GL_RENDERER", "OpenGL")
         self._frames = 0
+
+    @property
+    def aspect(self) -> float:
+        """Width / height of the whole view."""
+        return self.width / self.height
 
     def render(self, scene: Scene) -> np.ndarray:
         """Draw ``scene`` as evaluated by its last ``update`` and return an HxWx3 BGR image. The renderer's own
@@ -212,10 +236,48 @@ class Renderer:
         with self.ctx:
             return self._render(scene)
 
+    def render_window(self, scene: Scene, ndc, size, aspect: float | None = None) -> np.ndarray:
+        """Draw the rectangle ``ndc`` = ``(left, bottom, right, top)`` of the camera's picture (in normalised device
+        coordinates of the whole picture, whose width / height is ``aspect``, the view's by default) at ``size`` =
+        ``(width, height)`` pixels, and return that HxWx3 BGR image.
+
+        The window is seen through an off-axis part of the camera's frustum (``crop_matrix(*ndc) @ P``,
+        :class:`~bifold_demo.scene.scene.SubCamera`): when ``size`` is the rectangle's share of a picture of the whole
+        view at some resolution, the window is that part of such a picture, with the same perspective, depth, fog,
+        MSAA (the view's sample count) and texture filtering. Call it after :meth:`render` of the same frame (from the
+        same thread), so that everything it needs is on the GPU and its windows show the frame's moment."""
+        with self.ctx:  # its own context (another renderer's may be current)
+            return self._render_window(scene, ndc, size, aspect)
+
     def _render(self, scene: Scene) -> np.ndarray:
-        ctx, fbo = self.ctx, self._draw_fbo
+        camera = scene.camera
+        view_proj = camera.projection_matrix(self.aspect) @ camera.view_matrix()
+        image = self._draw_scene(scene, (self._draw_fbo, self._resolve_fbo), (self.width, self.height), view_proj)
+        self._drawn = (view_proj, camera.current_position)
+        self._frames += 1
+        if self._frames % 300 == 0:
+            self._collect_garbage()
+        return image
+
+    def _render_window(self, scene: Scene, ndc, size, aspect: float | None) -> np.ndarray:
+        width, height = (int(v) for v in size)
+        crop = crop_matrix(*ndc)
+        camera = scene.camera
+        view_proj = crop @ camera.projection_matrix(self.aspect if aspect is None else float(aspect)) \
+            @ camera.view_matrix()
+        return self._draw_scene(scene, self._window_target(width, height), (width, height), view_proj,
+                                aspect=aspect, ndc=ndc)
+
+    def _draw_scene(self, scene: Scene, target, size, view_proj: np.ndarray, aspect: float | None = None,
+                    ndc=None) -> np.ndarray:
+        """Draw ``scene`` with ``view_proj`` into ``target`` = (draw framebuffer, resolve framebuffer) of ``size``
+        and read it back. ``ndc``: the window's rectangle of the whole picture, whose width / height is ``aspect``
+        (``None``: the whole view)."""
+        ctx = self.ctx
+        fbo, resolve = target
+        width, height = size
         fbo.use()
-        ctx.viewport = (0, 0, self.width, self.height)
+        ctx.viewport = (0, 0, width, height)
         background = scene.background
         if callable(background):
             background = background(scene.time)
@@ -229,16 +291,20 @@ class Renderer:
 
         if bg_texture is not None:
             ctx.disable(self._moderngl.DEPTH_TEST)
-            image_aspect, frame_aspect = bg_texture.aspect, self.width / self.height
-            scale = (frame_aspect / image_aspect, 1.0) if image_aspect > frame_aspect else (1.0, image_aspect / frame_aspect)
+            image_aspect = bg_texture.aspect
+            frame_aspect = self.aspect if aspect is None else float(aspect)
+            wide = image_aspect > frame_aspect
+            scale = (frame_aspect / image_aspect, 1.0) if wide else (1.0, image_aspect / frame_aspect)
             self._bg_program["u_uv_scale"].value = scale  # "cover": crop instead of stretching
+            left, bottom, right, top = (-1.0, -1.0, 1.0, 1.0) if ndc is None else ndc
+            self._bg_program["u_ndc_scale"].value = ((right - left) / 2, (top - bottom) / 2)
+            self._bg_program["u_ndc_offset"].value = ((right + left) / 2, (top + bottom) / 2)
             self._gl_texture(bg_texture.at_time(scene.time)).use(0)
             self._bg_vao.render(self._moderngl.TRIANGLES, vertices=3)
 
         ctx.enable(self._moderngl.DEPTH_TEST)
         ctx.disable(self._moderngl.CULL_FACE)
         camera = scene.camera
-        view_proj = camera.projection_matrix(self.width / self.height) @ camera.view_matrix()
         uniforms = _scene_uniforms(scene)
         _set_uniforms(self._program, uniforms)
 
@@ -254,16 +320,47 @@ class Renderer:
                     self._draw(obj, view_proj, camera.current_position)
         if characters:
             self._draw_characters(characters, view_proj, camera.current_position, uniforms, scene.time)
-        self._drawn = (view_proj, camera.current_position)
 
-        if fbo is not self._resolve_fbo:
-            ctx.copy_framebuffer(self._resolve_fbo, fbo)
-        data = self._resolve_fbo.read(components=3, alignment=1)
-        image = np.frombuffer(data, dtype=np.uint8).reshape(self.height, self.width, 3)
-        self._frames += 1
-        if self._frames % 300 == 0:
-            self._collect_garbage()
+        if fbo is not resolve:
+            ctx.copy_framebuffer(resolve, fbo)
+        data = resolve.read(components=3, alignment=1)
+        image = np.frombuffer(data, dtype=np.uint8).reshape(height, width, 3)
         return cv2.flip(image, 0)  # OpenGL rows start at the bottom
+
+    def _window_target(self, width: int, height: int) -> tuple:
+        """(draw framebuffer, resolve framebuffer) of a window size, with the view's MSAA; the last
+        ``WINDOW_TARGETS`` sizes used are kept."""
+        limit = self.max_window
+        if not (0 < width <= limit and 0 < height <= limit):
+            raise ValueError(f"a window of {width}x{height} pixels cannot be drawn (at most {limit} a side)")
+        key = (width, height)
+        entry = self._window_targets.pop(key, None)
+        if entry is None:
+            while len(self._window_targets) >= WINDOW_TARGETS:
+                self._release_target(self._window_targets.pop(next(iter(self._window_targets))))
+            ctx, samples = self.ctx, self._samples
+            colour = ctx.renderbuffer(key)
+            depth = None if samples else ctx.depth_renderbuffer(key)
+            resolve = ctx.framebuffer(color_attachments=[colour], depth_attachment=depth)
+            buffers = [colour] + ([depth] if depth is not None else [])
+            if samples:
+                ms_colour = ctx.renderbuffer(key, samples=samples)
+                ms_depth = ctx.depth_renderbuffer(key, samples=samples)
+                draw = ctx.framebuffer(color_attachments=[ms_colour], depth_attachment=ms_depth)
+                buffers += [ms_colour, ms_depth]
+            else:
+                draw = resolve
+            entry = (draw, resolve, buffers)
+        self._window_targets[key] = entry  # the most recently used last
+        return entry[0], entry[1]
+
+    @staticmethod
+    def _release_target(entry: tuple) -> None:
+        draw, resolve, buffers = entry
+        for resource in {id(draw): draw, id(resolve): resolve}.values():
+            resource.release()
+        for buffer in buffers:
+            buffer.release()
 
     def _draw(self, obj: SceneObject, view_proj: np.ndarray, camera_position) -> None:
         model, normal_matrix = obj.matrices(camera_position)
@@ -659,6 +756,9 @@ class Renderer:
         for _ref, gl_tex, *_rest in self._textures.values():
             gl_tex.release()
         self._textures.clear()
+        for entry in self._window_targets.values():
+            self._release_target(entry)
+        self._window_targets.clear()
 
 
 def _scene_uniforms(scene: Scene) -> dict:

@@ -13,7 +13,7 @@ from .animation import resolve
 from .geometry import Mesh, box_mesh, cylinder_mesh, plane_mesh, quad_mesh, sphere_mesh
 from .physics import Body
 from .textures import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, Texture, as_texture, parse_color
-from .transforms import euler_rotation, look_at, perspective, rotation_y, scaling, translation, vec3
+from .transforms import crop_matrix, euler_rotation, look_at, perspective, rotation_y, scaling, translation, vec3
 
 MAX_PHYSICS_STEP = 1.0 / 120.0
 
@@ -298,6 +298,40 @@ class Camera:
 
     def projection_matrix(self, aspect: float) -> np.ndarray:
         return perspective(self.current_fov, aspect, self.near, self.far)
+
+
+class SubCamera(Camera):
+    """A window camera: ``camera``'s picture cut down to the rectangle ``ndc`` = ``(left, bottom, right, top)`` of its
+    normalised device coordinates, through an off-axis part of the same frustum (``crop_matrix(*ndc) @ P``).
+
+    ``aspect`` is the width / height of the *whole* picture, whose projection ``P`` is used; the aspect passed to
+    :meth:`projection_matrix` (the window's) is ignored. Drawn at the matching size (the rectangle's share of a
+    picture of the whole view at some resolution), the result is exactly that part of the whole picture at that
+    resolution: the same perspective, depth, fog and texture filtering. The sub-camera follows ``camera`` (its
+    position, target and field of view as last updated). :mod:`bifold_demo.sensor` builds these rectangles from a
+    declared high-resolution sensor's pixel grid; :meth:`~bifold_demo.scene.renderer.Renderer.render_window` draws one
+    with the main view's renderer.
+    """
+
+    def __init__(self, camera: Camera, ndc, aspect: float):  # (not Camera.__init__: the rest is the base camera's)
+        self.base = camera
+        self.ndc = tuple(float(v) for v in ndc)
+        self.aspect = float(aspect)
+        crop_matrix(*self.ndc)  # fail early on an empty rectangle
+
+    def __getattr__(self, name):  # position, target, fov, up, near, far, current_* ...: those of the base camera
+        if name == "base":
+            raise AttributeError(name)
+        return getattr(self.base, name)
+
+    def update(self, t: float) -> None:
+        self.base.update(t)
+
+    def view_matrix(self) -> np.ndarray:
+        return self.base.view_matrix()
+
+    def projection_matrix(self, aspect: float | None = None) -> np.ndarray:
+        return crop_matrix(*self.ndc) @ self.base.projection_matrix(self.aspect)
 
 
 @dataclass

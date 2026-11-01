@@ -963,6 +963,61 @@ turned 40°; similarity 0.37-0.58) and, from the fair camera with the faces abou
 [docs/previews/face_photo.jpg](docs/previews/face_photo.jpg) shows it with
 renders of other avatars as the "photos".
 
+## The virtual high-resolution sensor
+
+Faces in the 1280x720 view have only 10-22 pixels between the eyes, while
+face recognisers want 40 and more (112x112 crops with the eyes 35 pixels
+apart, more for landmarks and quality checks). Rendering the whole view at 4K
+or 8K would cost 3 to 12 times as much and still leave far people small. So
+the view stays at its size for the detector and the screen, and the faces get
+their pixels from **windows**: a rectangle around a person's head, rendered
+on its own at a much higher pixel scale, as a real high-resolution camera's
+crop ("digital PTZ") would deliver it.
+
+[`sensor/`](src/bifold_demo/sensor) declares a **sensor** whose whole frame is
+exactly the scene camera's view, by default six times the view in each
+direction (7680x4320 for 1280x720). A window is a rectangle of that sensor,
+snapped to its pixel grid, and drawn through an off-axis part of the camera's
+frustum: the camera's projection `P` with a crop matrix `S` in front of it
+(`S @ P`, the matrix of `gluPickMatrix` and of tiled rendering). The geometry
+is exactly the camera's, so a window is exactly that crop of a render of the
+whole 7680x4320 frame, with the same perspective, depth, fog, MSAA and
+texture filtering, for the cost of the window's pixels. It is drawn by the
+view's own renderer, with the meshes and textures already on the GPU.
+
+When a face would get more pixels than asked for, the window is a crop of a
+*binned* read-out of the sensor instead: at level `k` one window pixel is
+`k x k` sensor pixels, and only the binnings that divide both sides of the
+sensor are levels, so the whole frame at that level is again a sensor
+(7680x4320 has 24 of them: 1, 2, 3, 4, 5, 6, 8, ... 480). `Sensor.plan`
+picks the coarsest level at which the face still has the wanted eye
+distance (level 1 when no level gets there), then a coarser one while the
+window has more pixels than allowed. Pixel coordinates map between the view,
+the sensor and a window by a scale and a shift, exactly, both ways, so what is
+found in a window maps back to the main frame:
+
+```python
+from bifold_demo.sensor import Sensor
+
+sensor = Sensor(7680, 4320, view=(1280, 720))      # or Sensor.scaled(6, (1280, 720))
+window = sensor.plan((600, 100, 720, 220), ied=11, face_px=112)  # region in view pixels
+image = renderer.render_window(scene, window.ndc, window.size)   # after renderer.render(scene)
+window.box_to_view((40, 60, 200, 240))   # a face found in the window, in view pixels
+window.sensor_rect, window.view_rect, window.level, window.scale
+```
+
+`window.camera(scene.camera)` is the same window as a camera
+(`scene.SubCamera`), for a renderer of the window's own size.
+
+**Agreement.** Windows equal the same pixels cut from a render of the whole
+sensor: on a test scene with textured boxes, a sphere, skinned people with
+their blob shadows and fog, eleven windows of 16 to 420 pixels at levels 1 to
+5 of 4x and 6x sensors had 99.9 % or more of their pixels identical to the
+crop (four windows all of them) and a PSNR of 64.7 dB or more; the pixels
+that differ lie on silhouettes, where the MSAA samples fall a little
+differently. `tests/test_sensor.py` checks this, also with a background image
+and on real avatars' heads.
+
 ## Head textures from photos
 
 [`characters/headtex/`](src/bifold_demo/characters/headtex) turns photos of a
@@ -1767,6 +1822,8 @@ src/bifold_demo/
                registry.py (face models and profiles), runtime.py (ONNX Runtime),
                detect.py (SCRFD, YuNet), align.py (the five-point template),
                models.py, cli.py (bifold-faces)                          ← face recognition
+  sensor/      geometry.py (a declared high-resolution sensor, its windows and
+               pixel maps)                                             ← the virtual high-resolution sensor
   people/      prompts.py, generator.py (text-to-image), cutout.py,
                library.py, defaults.py, cli.py (bifold-people)          ← 2D people generator
   app.py       main loop and command line; loader.py loads and reloads scene files;

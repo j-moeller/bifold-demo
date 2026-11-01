@@ -66,6 +66,22 @@ def perspective(fov_y: float, aspect: float, near: float, far: float) -> np.ndar
     return m
 
 
+def crop_matrix(left: float, bottom: float, right: float, top: float) -> np.ndarray:
+    """The matrix that maps the rectangle ``[left, right] x [bottom, top]`` of normalised device coordinates onto the
+    whole of ``[-1, 1] x [-1, 1]`` and leaves depth alone. In front of a projection ``P``, ``crop_matrix(...) @ P``
+    shows only that part of the picture, through an off-axis part of the same frustum: the crop matrix of
+    ``gluPickMatrix`` and of tiled rendering. Drawn at the matching pixel size, the result is exactly that part of a
+    picture of the whole view at that pixel scale."""
+    if not (right > left and top > bottom):
+        raise ValueError(f"empty crop rectangle {(left, bottom, right, top)}")
+    m = np.eye(4)
+    m[0, 0] = 2.0 / (right - left)
+    m[0, 3] = -(right + left) / (right - left)
+    m[1, 1] = 2.0 / (top - bottom)
+    m[1, 3] = -(top + bottom) / (top - bottom)
+    return m
+
+
 def look_at(eye, target, up=(0.0, 1.0, 0.0)) -> np.ndarray:
     """View matrix for a camera at ``eye`` looking at ``target``."""
     eye, target, up = vec3(eye), vec3(target), vec3(up)
