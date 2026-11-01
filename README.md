@@ -402,19 +402,24 @@ pictures; the pipeline's lock is held meanwhile.
 **Checking and repairing seams.** Every image gets a seam score: how much its
 wrap (right edge against left, bottom against top) stands out from the inside
 of the image, as a step, as a line along the edge, or as a broken rhythm of a
-regular pattern. About 1 means it tiles; above 1.25 a seam shows and the seed
-is left out. When no seed of any model tiles, the best image is repaired
-without a model: it is rolled by half so its seams cross in the middle, and
-the strips either side of each seam are overlaid and cut where they agree
-best (image quilting's minimum-error cut), the fine detail switching at the
-cut and the coarse colour cross-fading round it. On synthetic textures that do
-not tile, the repair brings 46 of 48 below 1.25; the two left are the
-smoothest, with three blobs across. `make_seamless(image)` repairs any image
-and `seam_score(image)` scores one. Kept swatches get even light: the light
-that varies once across the swatch is divided out and the colours stay, since
-the tailor adds the garment's own shading. On this project's 4-CPU sandbox the
-score takes 30-60 ms, the light 10-20 ms and the repair 0.1-0.15 s at 512 px
-(about 0.3 s at 768; twice that when it also tries the wide cross-fade).
+regular pattern, also of wide stripes and checks whose repeat does not fit
+the swatch. About 1 means it tiles; above 1.25 a seam shows and the seed is
+left out (the measurements are in `characters/outfit/seamless.py`; a faint jog
+of a fine twill can pass). When no seed of any model tiles, the best image is
+repaired without a model: it is rolled by half so its seams cross in the
+middle, and the strips either side of each seam are overlaid and cut where
+they agree best (image quilting's minimum-error cut). Each side keeps its own
+pixels up to the cut, so motifs are cut, not ghosted, and an offset evens a
+slow difference across it. On synthetic textures that do not tile, the repair
+brings 45 of 48 smooth ones and 23 of 24 prints below 1.25; an image that
+tiles already comes back as it is. `make_seamless(image)` repairs any image
+and `seam_score(image)` scores one. Kept swatches get even light, since the
+tailor adds the garment's own shading, but only light: a slow change of
+brightness that is clearly stronger than the fabric's own and leaves the
+colours alone. An evenly lit print stays exactly as it is; a pattern whose own
+repeat is as large as the swatch keeps whatever light it has. On this
+project's 4-CPU sandbox the score takes 30-60 ms, the light 15-30 ms and the
+repair 0.2-0.3 s at 512 px (about 0.5 s at 768).
 [docs/previews/fabric.jpg](docs/previews/fabric.jpg) shows the repair, the
 ladder's keyword rungs and three avatars in repaired synthetic swatches; no
 model could run where it was made.
@@ -429,11 +434,14 @@ animal prints) 35 cm. Size words (`tiny`, `large`, ...) scale them, and
 **The kiosk filter.** A public fair gets every kind of request. Brand names,
 characters and logos ("Gucci", "Hello Kitty", "with our logo") and offensive
 words are refused with a message to show, whatever their case, accents,
-spacing ("g u c c i") or digits standing in for letters ("gucc1"). Only whole
-words count, so "cocktail" and "Sussex" are fine. The lists are small and live
-in `characters/outfit/fabric_words.json`. A file of the same form named by
-`$BIFOLD_FABRIC_WORDS` adds words or lists, and its `"allow"` list lets words
-through.
+spacing ("g u c c i"), digits or signs standing in for letters ("gucc1",
+"sh!t") or stars for letters left out ("f*ck"). Only whole words count, so
+"cocktail" and "Sussex" are fine. Words with a fabric sense as well are let
+through only in it: "nude satin" and "naked wool" are colours and cloth, "blue
+tits" birds, but not next to words for people, bodies or photos. The lists are
+small and live in `characters/outfit/fabric_words.json`. A file of the same
+form named by `$BIFOLD_FABRIC_WORDS` adds words or lists, and its `"allow"`
+list lets words through.
 
 **For the creator screen.** `FabricGenerator.start()` returns a `FabricJob` at
 once. The model loads on the job's worker thread the first time, after the
@@ -450,14 +458,19 @@ With other processes keeping all four CPUs busy, those were 3.4-4.1 ms and
 called after every denoising step and between images, to slow the worker down
 further.
 
-**Cache and saved outfits.** Finished swatches, kept or left out, are cached in
-`fabrics/` (git-ignored; `$BIFOLD_FABRIC_CACHE` moves it) by prompt, model,
-seed, size and method, so the same description comes back at once without
-loading the model. A swatch becomes a `Fabric` fill (`swatch.fill()`). Its spec
-holds the description, the prompt, the model, the seed, the method and the
-image itself (lossless WebP), so an outfit recipe, also one saved with a
-created character, rebuilds it without the model. A spec without an image,
-`{"fabric": "red tartan"}`, is the keyword fabric of its words.
+**Cache and saved outfits.** The images the models made, kept or left out, are
+cached as they came in `fabrics/` (git-ignored; `$BIFOLD_FABRIC_CACHE` moves
+it) by prompt, model, seed, size and method, and scored and finished again
+when read, so the same description comes back at once without loading the
+model, judged by the generator that reads it. A cache that cannot be written
+costs a message, never a swatch. A swatch becomes a `Fabric` fill
+(`swatch.fill()`). Its spec holds the description, the prompt, the model, the
+seed, the method and the image itself (lossless WebP: in a saved character's
+JSON a 512 px swatch takes a few KB when flat, 100-400 KB when smooth or
+grainy, up to about 850 KB when photo-like), so an outfit
+recipe, also one saved with a created character, rebuilds it without the
+model. A spec without an image, `{"fabric": "red tartan"}`, is the keyword
+fabric of its words.
 
 **On the Mac.** Install the image packages and download the weights before
 the fair, so that the kiosk never starts a download:
@@ -472,8 +485,9 @@ bifold-characters fabric "blue paisley silk" --offline --sheet all.png   # only 
 If a model's page says it is gated, accept its terms there and run `hf auth
 login` first. `--device auto` picks Apple's GPU (MPS), and FLUX.2 [klein] runs
 in bfloat16. It needs about 16 GB, so a 24 GB+ Mac is recommended; SD-Turbo,
-loaded only if the ladder reaches it, needs about 4 GB more, and both stay
-loaded. On a 16 GB Mac start at `--model sd-turbo`. The review's estimates for
+loaded only if the ladder reaches it, needs about 4 GB more (a model that runs
+out of memory is let go of before it loads). Models stay loaded until
+`FabricGenerator.release()`. On a 16 GB Mac start at `--model sd-turbo`. The review's estimates for
 an M-series Pro, not measured (no model ran in this project's sandbox): 5-15 s
 for a 512-768 px swatch at 4 steps, 20-60 s for four variations shown as each
 finishes, and about three times as long per swatch on the 12-step rung. The

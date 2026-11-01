@@ -23,25 +23,33 @@ puts the garment's own folds and stitching on it.
      grey).
 
    Each step down says why (:attr:`FabricJob.messages`). A model that fails (out of memory, an error) is not tried
-   again at more steps. Packages that are missing (diffusers, torch), weights that are not downloaded or no network
-   go straight to the procedural fabric (by way of the repair if an image was made by then), with the command that
-   installs or fetches what is missing. Z-Image-Turbo takes klein's place with ``model="z-image-turbo"``.
+   again at more steps; one that runs out of memory is let go of before the next model loads, and this generator
+   does not load it again (until :meth:`FabricGenerator.release`). A model that fails once some of its seeds were
+   kept ends the job there, with those swatches. Packages that are missing (diffusers, torch), weights that are not
+   downloaded or no network go straight to the procedural fabric (by way of the repair if an image was made by
+   then), with the command that installs or fetches what is missing. Z-Image-Turbo takes klein's place with
+   ``model="z-image-turbo"``.
 5. Each image is scored (:func:`.seamless.seam_score`). Above ``threshold`` (:data:`.seamless.SEAM_THRESHOLD`) it is
-   left out, but stays a candidate for the repair. Those kept get even light (:func:`.seamless.equalise_light`) and
-   are shown as they come. Their size on the body (metres per repeat) depends on the kind of fabric the words name
-   (:func:`fabric_scale`).
+   left out, but stays a candidate for the repair. Those kept get even light (:func:`.seamless.equalise_light`: it
+   takes out a light gradient, and leaves an evenly lit image alone) and are shown as they come. Their size on the
+   body (metres per repeat) depends on the kind of fabric the words name (:func:`fabric_scale`).
 
 **For the creator screen.** :meth:`FabricGenerator.start` returns a :class:`FabricJob` at once and works on a daemon
 thread. :meth:`FabricJob.poll` (it never waits) or iterating over the job gives each swatch as it is ready, the
-preview first. :meth:`FabricJob.cancel` stops the job at the end of the next denoising step, and
-:attr:`FabricJob.progress` says how far the current image is. The model loads on the worker the first time it is
-needed, after the preview (that can take a minute; it cannot be cancelled half way). Torch releases the GIL in its
-operations and the Python between them is short; ``pace``, a callable, is called after every denoising step and
-between images, so a caller can slow the worker down further for the frame rate.
+preview first. :meth:`FabricJob.cancel` stops the job at the end of the next denoising step (a job waiting for the
+pipeline, which another job is using, stops before it starts its image), and :attr:`FabricJob.progress` says how far
+the current image is. The model loads on the worker the first time it is needed, after the preview (that can take a
+minute; it cannot be cancelled half way). Torch releases the GIL in its operations and the Python between them is
+short; ``pace``, a callable, is called after every denoising step and between images, so a caller can slow the worker
+down further for the frame rate. :meth:`FabricGenerator.release` lets go of the generator's models (their memory is
+given back once nothing else holds them).
 
-**The cache.** Finished swatches (kept or left out) are stored in ``fabrics/`` (git-ignored; ``$BIFOLD_FABRIC_CACHE``
-moves it), keyed by the prompt, the model, the seed, the size and the method. The same description gives its
-swatches back at once, and one whose swatches are all cached does not load the model at all.
+**The cache.** The images the models made (kept or left out) are stored in ``fabrics/`` (git-ignored;
+``$BIFOLD_FABRIC_CACHE`` moves it) as they came, keyed by the prompt, the model, the seed, the size and the method;
+they are scored and finished again when read, so the threshold and the even light are those of the generator that
+reads them. The same description gives its swatches back at once, and one whose swatches are all cached does not load
+the model at all; a job that waited for the pipeline looks again, so jobs for the same description do not make the
+same image twice. A cache that cannot be written costs a message, never a swatch.
 
 **The fill.** :class:`Fabric` is a :class:`~.fills.Swatch` that knows how it was made. Its spec holds the description,
 the prompt, the model, the seed, the method and the image (lossless WebP in a ``data:`` URI), so a saved outfit recipe
@@ -85,7 +93,7 @@ SEEDS = 4
 SIZE = 512
 MAX_WORDS = 24
 CACHE_LIMIT = 400  # swatches the cache keeps; the oldest go first
-VERSION = 1  # part of every cache key: raise it when what is cached changes
+VERSION = 2  # part of every cache key: raise it when what is cached changes (2: the images as the models made them)
 MARKS = "™®©"  # trademark, registered, copyright
 
 
@@ -133,10 +141,53 @@ _LEET = str.maketrans("013457@$!|", "oieastasii")
 
 
 def _tokens(text: str) -> list[str]:
-    """Words of ``text`` as plain letters: no accents, lower case, digits read as the letters they look like."""
+    """Words of ``text`` as plain letters: no accents, lower case, digits and signs read as the letters they look
+    like ("gucc1", "sh!t"; a "!" that ends a word is punctuation), ``*`` kept as a letter left out ("f*ck")."""
     text = unicodedata.normalize("NFKD", str(text))
-    text = "".join(ch for ch in text if not unicodedata.combining(ch)).lower().translate(_LEET)
-    return re.findall(r"[a-z]+", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch)).lower()
+    text = re.sub(r"[!|]+(?![a-z0-9@$*!|])", " ", text)
+    return [t for t in re.findall(r"[a-z*]+", text.translate(_LEET)) if t.strip("*")]
+
+
+def _like(joined: str, word: str) -> bool:
+    """Whether ``joined``, whose ``*`` stand for letters left out, is ``word`` (at least half its letters shown)."""
+    if len(joined) != len(word) or 2 * joined.count("*") > len(joined):
+        return False
+    return all(a == "*" or a == b for a, b in zip(joined, word, strict=True))
+
+
+def _word_class(name: str) -> set[str]:
+    """The words of a class a context rule names: ``@colours`` (the colour and shade words of :mod:`.fills`) or
+    ``@materials`` (the materials of :data:`FABRIC_SCALES`, and "fabric", "cloth")."""
+    from .fills import SHADES
+
+    if name == "@colours":
+        return {w for key in (*COLORS, *SHADES) for w in key.split()}
+    if name == "@materials":
+        return {*FABRIC_SCALES["material"][1], "fabric", "cloth"}
+    raise ValueError(f"no word class {name!r} (there are @colours and @materials)")
+
+
+@dataclass(frozen=True)
+class Sense:
+    """A word the kiosk takes only in its fabric sense: it is refused unless a word ``near`` it (at most ``reach``
+    words away) or right before it (``after``) gives it that sense, and always when the description also has a word
+    of ``never`` (people, bodies, photos). ``kind``: its list; ``message``: shown when it is refused."""
+
+    kind: str
+    message: str
+    near: frozenset = frozenset()
+    after: frozenset = frozenset()
+    never: frozenset = frozenset()
+    reach: int = 3
+
+    def fits(self, tokens: list[str], start: int, end: int) -> bool:
+        """Whether the word at ``tokens[start:end]`` has its fabric sense there."""
+        if self.never.intersection(tokens):
+            return False
+        if start > 0 and tokens[start - 1] in self.after:
+            return True
+        return any(t in self.near for t in (*tokens[max(0, start - self.reach):start], *tokens[end:end + self.reach]))
 
 
 class PromptFilter:
@@ -144,11 +195,18 @@ class PromptFilter:
 
     ``lists``: ``{kind: {"message": ..., "words": [...]}}`` (the form of ``fabric_words.json``; a kind ending in
     ``_rot13`` has ROT13-encoded words); ``allow``: words never refused. A word matches whole words of a description
-    whatever their case, accents, spacing ("louis vuitton", "louisvuitton", "g u c c i") or digits standing in for
-    letters ("gucc1"), and its plural; "cocktail" or "Sussex" do not match anything."""
+    whatever their case, accents, spacing ("louis vuitton", "louisvuitton", "g u c c i"), digits or signs standing
+    in for letters ("gucc1", "sh!t") or stars for letters left out ("f*ck"), and its plural; "cocktail" or "Sussex"
+    do not match anything.
+
+    Some words have a fabric sense as well: "nude" is a colour ("nude satin"), "blue tits" are birds. A list whose
+    ``"words"`` is a mapping holds them (``{word: {"near": [...], "after": [...], "message": ...}}``, and the list's
+    ``"never with"``): such a word is let through only where its neighbours give it that sense (see :class:`Sense`;
+    ``near`` may name the classes ``@colours`` and ``@materials``), never when it is written with stars."""
 
     def __init__(self, lists: dict | None = None, allow=()):
         self.lists: dict[str, tuple[str, set[str]]] = {}
+        self.senses: dict[str, Sense] = {}
         self.allowed: set[str] = set()
         self.update(lists or {})
         self.allow(allow)
@@ -173,18 +231,33 @@ class PromptFilter:
             if kind == "allow":
                 self.allow(entry)
             elif isinstance(entry, dict):
-                self.add(kind, entry.get("words", []), entry.get("message"))
+                self.add(kind, entry.get("words", []), entry.get("message"), entry.get("never with", ()))
 
-    def add(self, kind: str, words, message: str | None = None) -> None:
-        """Refuse ``words`` too, as ``kind`` (with ``message``, or the kind's message if it has one)."""
+    def add(self, kind: str, words, message: str | None = None, never=()) -> None:
+        """Refuse ``words`` too, as ``kind`` (with ``message``, or the kind's message if it has one). ``words`` as a
+        mapping, ``{word: {"near": [...], "after": [...], "message": ...}}``, are taken in their fabric sense where
+        their neighbours give it (see :class:`Sense`), but never with a word of ``never``."""
         old_message, known = self.lists.get(kind, (None, set()))
+        message = message or old_message or "That description cannot be made into a fabric here ({word})."
         decode = kind.endswith("_rot13")
+        if isinstance(words, dict):
+            never = frozenset(w for word in never for w in _tokens(word))
+            for word, rule in words.items():
+                word = "".join(_tokens(codecs.decode(str(word), "rot13") if decode else str(word)))
+                near: set[str] = set()
+                for entry in rule.get("near", ()):
+                    near |= _word_class(entry) if str(entry).startswith("@") else {"".join(_tokens(entry))}
+                after = frozenset("".join(_tokens(w)) for w in rule.get("after", ()))
+                if word:
+                    self.senses[word] = Sense(kind, rule.get("message") or message, frozenset(near), after, never,
+                                              int(rule.get("reach", 3)))
+            self.lists.setdefault(kind, (message, set()))
+            return
         for word in words:
             word = codecs.decode(str(word), "rot13") if decode else str(word)
             joined = "".join(_tokens(word))
             if joined:
                 known.add(joined)
-        message = message or old_message or "That description cannot be made into a fabric here ({word})."
         self.lists[kind] = (message, known)
 
     def allow(self, words) -> None:
@@ -197,25 +270,32 @@ class PromptFilter:
             message = self.lists.get("marks", ("Logos and trademarks can't be made into a fabric here ({word}).",))[0]
             return PromptRefused(message.format(word="™"), "™", "marks")
         tokens = _tokens(text)
-        candidates: dict[str, str] = {}  # joined form -> as written
+        spans: list[tuple[str, str, int, int]] = []  # (joined, as written, first token, the token after it)
         for i in range(len(tokens)):
             for j in range(i + 1, min(len(tokens), i + 4) + 1):
-                candidates.setdefault("".join(tokens[i:j]), " ".join(tokens[i:j]))
-        letters: list[str] = []
-        for token in [*tokens, ""]:  # "g u c c i"
+                spans.append(("".join(tokens[i:j]), " ".join(tokens[i:j]), i, j))
+        start = None
+        for k, token in enumerate([*tokens, ""]):  # "g u c c i"
             if len(token) == 1:
-                letters.append(token)
+                start = k if start is None else start
                 continue
-            if len(letters) >= 2:
-                candidates.setdefault("".join(letters), " ".join(letters))
-            letters = []
-        for joined, shown in list(candidates.items()):
-            if len(joined) > 3 and joined.endswith("s"):
-                candidates.setdefault(joined[:-1], shown)
+            if start is not None and k - start >= 2:
+                spans.append(("".join(tokens[start:k]), " ".join(tokens[start:k]), start, k))
+            start = None
+        spans += [(joined[:-1], shown, i, j) for joined, shown, i, j in spans if len(joined) > 3 and
+                  joined.endswith("s")]
+        spans = [span for span in spans if span[0] not in self.allowed]
         for kind, (message, words) in self.lists.items():
-            for joined, shown in candidates.items():
-                if joined in words and joined not in self.allowed:
+            for joined, shown, _, _ in spans:
+                if joined in words or "*" in joined and any(_like(joined, word) for word in words):
                     return PromptRefused(message.format(word=f'"{shown}"'), shown, kind)
+        for joined, shown, i, j in spans:  # words with a fabric sense: in context, never with stars
+            sense = self.senses.get(joined)
+            if sense is not None and not sense.fits(tokens, i, j):
+                return PromptRefused(sense.message.format(word=f'"{shown}"'), shown, sense.kind)
+            starred = "*" in joined and next((self.senses[w] for w in self.senses if _like(joined, w)), None)
+            if starred:
+                return PromptRefused(starred.message.format(word=f'"{shown}"'), shown, starred.kind)
         return None
 
     def check(self, text: str) -> None:
@@ -515,9 +595,11 @@ def _slug(text: str) -> str:
 
 
 class FabricCache:
-    """Finished swatches on disk, in ``folder`` (``$BIFOLD_FABRIC_CACHE``, else ``fabrics/``): a PNG and a JSON file
-    each, named by the description and a key of the prompt, model, seed, size and method. At most ``limit`` swatches
-    are kept (the oldest go first); a damaged entry counts as missing."""
+    """The images the models made, on disk, in ``folder`` (``$BIFOLD_FABRIC_CACHE``, else ``fabrics/``): a PNG and a
+    JSON file each, named by the description and a key of the prompt, model, seed, size and method. An image is
+    stored as the model made it, before anything that depends on the generator's settings (the seam threshold, even
+    light), so a generator scores and finishes what it reads like what it makes. At most ``limit`` swatches are kept
+    (the oldest go first); a damaged entry counts as missing."""
 
     def __init__(self, folder=None, limit: int = CACHE_LIMIT):
         self.folder = Path(folder if folder is not None else os.environ.get(CACHE_ENV) or DEFAULT_CACHE).expanduser()
@@ -545,8 +627,8 @@ class FabricCache:
                 raise OSError(f"cannot read {png}")
             return FabricSwatch(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), meta["text"], meta["method"], meta.get("model"),
                                 meta.get("seed"), meta.get("prompt"), float(meta["seam"]), float(meta["scale"]),
-                                float(meta.get("rotation", 0.0)), meta.get("note", ""), ok=bool(meta["ok"]),
-                                cached=True, seconds=float(meta.get("seconds", 0.0)), path=png)
+                                float(meta.get("rotation", 0.0)), meta.get("note", ""), cached=True,
+                                seconds=float(meta.get("seconds", 0.0)), path=png)
         except (OSError, ValueError, KeyError, TypeError):
             for path in (png, meta_path):  # damaged: made again
                 path.unlink(missing_ok=True)
@@ -561,9 +643,8 @@ class FabricCache:
         os.replace(tmp, png)
         meta = {"key": key, "version": VERSION, "text": swatch.text, "prompt": swatch.prompt, "model": swatch.model,
                 "seed": swatch.seed, "size": int(swatch.image.shape[0]), "method": swatch.method,
-                "seam": round(float(swatch.seam), 4), "ok": bool(swatch.ok), "scale": swatch.scale,
-                "rotation": swatch.rotation, "note": swatch.note, "seconds": round(swatch.seconds, 2),
-                "created": time.time()}
+                "seam": round(float(swatch.seam), 4), "scale": swatch.scale, "rotation": swatch.rotation,
+                "note": swatch.note, "seconds": round(swatch.seconds, 2), "created": time.time()}
         tmp = meta_path.with_name(f".{meta_path.stem}.{os.getpid()}.{threading.get_ident()}.json")
         tmp.write_text(json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, meta_path)
@@ -610,6 +691,7 @@ class FabricJob:
         self._queue: queue.Queue = queue.Queue()
         self._cancel = threading.Event()
         self._finished = threading.Event()
+        self._uncached = False  # the cache could not be written: the job goes on without it
 
     def cancel(self) -> None:
         """Stop at the end of the next denoising step (or before the next image); the swatches so far stay."""
@@ -694,6 +776,18 @@ def check_size(size: int) -> int:
     return size
 
 
+def check_seeds(seeds: int) -> int:
+    """``seeds`` as the number of swatches to make of a description: at least one."""
+    seeds = int(seeds)
+    if seeds < 1:
+        raise ValueError(f"ask for at least one seed, not {seeds}")
+    return seeds
+
+
+def _all_seeds(count: int) -> str:
+    return "its only seed" if count == 1 else ("both seeds" if count == 2 else f"all {count} seeds")
+
+
 def _takes(pipe, name: str) -> bool:
     """Whether calling ``pipe`` takes the keyword argument ``name``."""
     try:
@@ -712,7 +806,8 @@ class FabricGenerator:
     out. ``cache``: ``True`` (``fabrics/``), a folder, or ``False``. ``words``: the :class:`PromptFilter` (``True``:
     :meth:`PromptFilter.load`; ``None`` or ``False``: no filter). ``loader(model, device, download)`` loads a model
     (:func:`load_generator`; tests pass stand-ins); ``download=False`` never downloads weights. ``pace()``: called
-    after every denoising step and between images."""
+    after every denoising step and between images. The models load when a job first needs them and stay loaded
+    until :meth:`release`."""
 
     def __init__(self, model: str | None = DEFAULT_MODEL, device: str = "auto", seeds: int = SEEDS, size: int = SIZE,
                  threshold: float = SEAM_THRESHOLD, cache=True, words=True, loader=None, download: bool = True,
@@ -720,7 +815,7 @@ class FabricGenerator:
         self.model = None if model in (None, "", "none") else str(model)
         self.ladder = tuple(ladder) if ladder is not None else ladder_for(self.model)
         self.device, self.download, self.pace = device, bool(download), pace
-        self.seeds, self.size, self.threshold = int(seeds), check_size(size), float(threshold)
+        self.seeds, self.size, self.threshold = check_seeds(seeds), check_size(size), float(threshold)
         self.cache = FabricCache() if cache is True else (FabricCache(cache) if cache else None)
         self.words = PromptFilter.load() if words is True else (words or None)
         self.loader = loader or load_generator
@@ -746,9 +841,7 @@ class FabricGenerator:
         ``size`` pixels. Returns the :class:`FabricJob` at once; a refused or empty description raises at once
         (:class:`PromptRefused`, ``ValueError``)."""
         cleaned, prompt = self.prepare(text)
-        count = self.seeds if seeds is None else int(seeds)
-        if count < 1:
-            raise ValueError("ask for at least one seed")
+        count = self.seeds if seeds is None else check_seeds(seeds)
         job = FabricJob(cleaned, prompt, [int(first_seed) + k for k in range(count)],
                         check_size(size or self.size), on_result, on_message)
         job.thread = threading.Thread(target=self._work, args=(job,), name=f"fabric: {cleaned[:30]}", daemon=True)
@@ -760,6 +853,21 @@ class FabricGenerator:
         job = self.start(text, **kwargs)
         job.wait()
         return job
+
+    def release(self, model: str | None = None) -> None:
+        """Let go of the models this generator loaded (``model``: only that one) and forget the ones that failed, so
+        the next job loads them again. Their memory is given back once nothing else holds them: another generator,
+        or a job still running (then when it ends). A model that another generator still holds is given out again
+        rather than loaded a second time (:func:`~bifold_demo.people.generator.shared_generator`)."""
+        from ...people.generator import free_memory, release_shared
+
+        with self._load_lock:
+            gone = [self._loaded.pop(name) for name in list(self._loaded) if model is None or name == model]
+        for loaded in gone:
+            if not isinstance(loaded, Failure):
+                release_shared(loaded.pipe)
+        gone = loaded = None  # (no reference left here either)
+        free_memory()
 
     # the worker
 
@@ -773,8 +881,11 @@ class FabricGenerator:
             job._say("cancelled")
         except Exception as exc:  # noqa: BLE001 - kept on the job; the caller still gets a fabric
             status, job.error = "failed", exc
-            job._say(f"failed: {type(exc).__name__}: {exc}; the procedural fabric instead")
-            job._emit(self._fallback(job))
+            if any(s.generated for s in job.variations):
+                job._say(f"failed: {type(exc).__name__}: {exc}; the swatches made so far stay")
+            else:
+                job._say(f"failed: {type(exc).__name__}: {exc}; the procedural fabric instead")
+                job._emit(self._fallback(job))
         finally:
             job._finish(status)
 
@@ -784,11 +895,13 @@ class FabricGenerator:
             job._emit(self._fallback(job))
             return
         rejected: list[FabricSwatch] = []
-        failed: set[str] = set()  # models that failed (out of memory, an error): their other rungs are not tried
+        failed: dict[str, Failure] = {}  # models that failed (out of memory, an error): their other rungs are skipped
         for index, rung in enumerate(self.ladder):
             if rung.model in failed:
                 continue
             outcome = self._rung(job, index, rejected, failed)
+            if outcome == "failed" and failed[rung.model].kind == "memory":
+                self._let_go(rung.model, failed[rung.model])  # (before the next model loads)
             if outcome == "kept":
                 return
             if outcome == "stop":
@@ -798,44 +911,50 @@ class FabricGenerator:
             best = min(rejected, key=lambda s: s.seam)
             repaired = self._repair(best)
             if repaired.ok:
-                job._say(f"no seed came out seamless: the best one ({best.describe()}, seam {best.seam:.2f}) "
-                         f"repaired without a model (seam {repaired.seam:.2f})")
+                job._say(f"no seed came out seamless: the best one ({best.describe()}) repaired without a model "
+                         f"(seam {repaired.seam:.2f})")
                 job._emit(repaired)
                 return
-            job._say(f"the repair left a seam (score {repaired.seam:.2f}); the procedural fabric instead")
+            job._say(f"the repair of the best one ({best.describe()}) left a seam (score {repaired.seam:.2f}); "
+                     f"the procedural fabric instead")
         job._emit(self._fallback(job))
 
-    def _next(self, index: int, failed: set, rejected: list) -> str:
+    def _next(self, index: int, failed: dict, rejected: list) -> str:
         """What the ladder tries after rung ``index`` (for the messages)."""
         for rung in self.ladder[index + 1:]:
             if rung.model not in failed:
                 return rung.label
         return "the seam repair" if rejected else "the procedural fabric"
 
-    def _rung(self, job: FabricJob, index: int, rejected: list, failed: set) -> str:
+    def _rung(self, job: FabricJob, index: int, rejected: list, failed: dict) -> str:
         """Every seed on rung ``index``: ``"kept"`` (some swatches kept), ``"seams"`` (all left out, for
-        ``rejected``), ``"failed"`` (its model failed, out of memory or with an error: added to ``failed``) or
-        ``"stop"`` (packages, weights or the network missing: no other model is tried)."""
+        ``rejected``), ``"failed"`` (its model failed, out of memory or with an error, before a seed was kept: in
+        ``failed``) or ``"stop"`` (packages, weights or the network missing: no other model is tried). A model that
+        fails once some seeds were kept stops there: those are the job's swatches, and no other model is loaded."""
         rung = self.ladder[index]
         generator, kept = None, 0
         for seed in job.seeds:
             job._check()
             key = FabricCache.key(job.prompt, rung.preset.repo, seed, job.size, rung.method)
-            swatch = self.cache.get(key, job.text) if self.cache is not None else None
-            if swatch is None:
+            made = self._cached(job, key)
+            if made is None:
                 if generator is None:
                     generator = self._load(job, rung)
                     if isinstance(generator, Failure):
                         return self._failed(job, generator, index, rejected, failed)
                     job._check()
                 try:
-                    swatch = self._make(job, generator, rung, seed)
+                    made = self._make(job, generator, rung, seed, key)
                 except Cancelled:
                     raise
                 except Exception as exc:  # noqa: BLE001 - a step down of the ladder
-                    return self._failed(job, explain_failure(exc, rung.preset), index, rejected, failed, seed)
-                if self.cache is not None:
-                    swatch.path = self.cache.put(key, swatch)
+                    failure = explain_failure(exc, rung.preset)
+                    if kept:
+                        job._say(f"{rung.label}, seed {seed}: {failure.message}; the {kept} swatch"
+                                 f"{'es' if kept > 1 else ''} made so far stay")
+                        return "kept"
+                    return self._failed(job, failure, index, rejected, failed, seed)
+            swatch = self._finish(made)
             if swatch.ok:
                 kept += 1
                 job._emit(swatch)
@@ -847,11 +966,11 @@ class FabricGenerator:
                 self.pace()
         if kept:
             return "kept"
-        job._say(f"{rung.label}: a seam shows on all {len(job.seeds)} seeds; trying "
+        job._say(f"{rung.label}: a seam shows on {_all_seeds(len(job.seeds))}; trying "
                  f"{self._next(index, failed, rejected)}")
         return "seams"
 
-    def _failed(self, job: FabricJob, failure: Failure, index: int, rejected: list, failed: set,
+    def _failed(self, job: FabricJob, failure: Failure, index: int, rejected: list, failed: dict,
                 seed: int | None = None) -> str:
         """Say why rung ``index`` failed and what comes next (see :meth:`_rung`)."""
         rung = self.ladder[index]
@@ -860,9 +979,17 @@ class FabricGenerator:
             then = "the seam repair of the best image so far" if rejected else "the procedural fabric instead"
             job._say(f"{where}{failure.message}; {then}")
             return "stop"
-        failed.add(rung.model)
-        job._say(f"{where}{failure.message}; trying {self._next(index, failed, rejected)}")
+        failed[rung.model] = failure
+        how = "letting it go and trying" if failure.kind == "memory" and seed is not None else "trying"
+        job._say(f"{where}{failure.message}; {how} {self._next(index, failed, rejected)}")
         return "failed"
+
+    def _let_go(self, model: str, failure: Failure) -> None:
+        """A model that ran out of memory: let go of it, so that the next rung's model fits, and remember why, so that
+        this generator does not load it again (until :meth:`release`)."""
+        self.release(model)
+        with self._load_lock:
+            self._loaded[model] = failure
 
     def _load(self, job: FabricJob, rung: Rung):
         """The loaded model of ``rung`` (an ImageGenerator), or the :class:`Failure` of loading it (kept, so a model
@@ -879,36 +1006,67 @@ class FabricGenerator:
                 self._loaded[rung.model] = loaded
             return loaded
 
-    def _make(self, job: FabricJob, generator, rung: Rung, seed: int) -> FabricSwatch:
-        """One image of the model, tiled (see :mod:`.tiling`), scored and finished."""
-        start = time.perf_counter()
+    def _make(self, job: FabricJob, generator, rung: Rung, seed: int, key: str) -> FabricSwatch:
+        """One image of the model, tiled (see :mod:`.tiling`) and scored, as it came. Once the pipeline is free it
+        looks in the cache again (another job may have made the image meanwhile), and it caches what it makes."""
         steps = rung.step_count
         plan = plan_for(generator.pipe)
         roller = LatentRoller(steps, seed, plan.roll) if plan.roll else None
-        job.progress = {"model": rung.label, "seed": seed, "step": 0, "steps": steps}
         callback = StepCallback(roller, job._cancel.is_set, lambda step, total: job.progress.update(step=step,
                                                                                                     steps=total),
                                 self.pace)
         kwargs = {}
         if _takes(generator.pipe, "callback_on_step_end"):
             kwargs = {"callback_on_step_end": callback, "callback_on_step_end_tensor_inputs": ["latents"]}
-        with generator.lock, circular_padding(*plan.circular):
-            rgb = generator.rgb(job.prompt, seed, job.size, job.size, steps=steps, **kwargs)
+        with generator.lock:
+            job._check()  # (cancelled while it waited for the pipeline)
+            made = self._cached(job, key)
+            if made is not None:
+                return made
+            start = time.perf_counter()
+            job.progress = {"model": rung.label, "seed": seed, "step": 0, "steps": steps}
+            with circular_padding(*plan.circular):
+                rgb = generator.rgb(job.prompt, seed, job.size, job.size, steps=steps, **kwargs)
+            rgb = _uint8(np.asarray(rgb)[..., :3])
+            made = FabricSwatch(rgb, job.text, rung.method, generator.preset.repo, seed, job.prompt, seam_score(rgb),
+                                fabric_scale(job.text), seconds=time.perf_counter() - start)
+            self._store(job, key, made)
         job._check()  # (a stand-in without the callback cannot be stopped half way)
-        rgb = _uint8(np.asarray(rgb)[..., :3])
-        seam = seam_score(rgb)
-        ok = seam <= self.threshold
-        if ok:  # kept: even light; left out: as it came, for the repair
-            rgb = _uint8(equalise_light(rgb))
-            seam = seam_score(rgb)
-            ok = seam <= self.threshold
-        return FabricSwatch(rgb, job.text, rung.method, generator.preset.repo, seed, job.prompt, seam,
-                            fabric_scale(job.text), ok=ok, seconds=time.perf_counter() - start)
+        return made
+
+    def _finish(self, made: FabricSwatch) -> FabricSwatch:
+        """``made`` judged by this generator's threshold; one that is kept gets even light (unless that brings a seam
+        out), one that is left out stays as it came, for the repair."""
+        if made.seam > self.threshold:
+            return replace(made, ok=False)
+        image = _uint8(equalise_light(made.image))
+        if not np.array_equal(image, made.image):
+            seam = seam_score(image)
+            if seam <= self.threshold:
+                return replace(made, image=image, seam=seam, ok=True)
+        return replace(made, ok=True)
+
+    def _cached(self, job: FabricJob, key: str) -> FabricSwatch | None:
+        """The image of ``key`` from the cache, scored again (by this version's score), or ``None``."""
+        made = self.cache.get(key, job.text) if self.cache is not None else None
+        if made is not None:
+            made.seam = seam_score(made.image)
+        return made
+
+    def _store(self, job: FabricJob, key: str, made: FabricSwatch) -> None:
+        """Cache ``made``. A cache that cannot be written costs a message, never the swatch."""
+        if self.cache is None or job._uncached:
+            return
+        try:
+            made.path = self.cache.put(key, made)
+        except Exception as exc:  # noqa: BLE001 - (a full disk, a folder that cannot be written, a file in the way)
+            job._uncached = True
+            job._say(f"the swatches are not cached ({type(exc).__name__}: {exc})")
 
     def _repair(self, swatch: FabricSwatch) -> FabricSwatch:
         """``swatch`` made seamless without a model, with even light."""
         start = time.perf_counter()
-        image = _uint8(equalise_light(make_seamless(swatch.image)))
+        image = _uint8(make_seamless(swatch.image))
         seam = seam_score(image)
         return replace(swatch, image=image, method=f"{swatch.method}, repaired", seam=seam,
                        ok=seam <= self.threshold, cached=False, path=None,
@@ -954,6 +1112,6 @@ def fabric_fill(text: str, generator: FabricGenerator | None = None, scale: floa
 
 
 __all__ = ["DEFAULT_MODEL", "FABRIC_SCALES", "LADDERS", "TEMPLATE", "Fabric", "FabricCache", "FabricGenerator",
-           "FabricJob", "FabricSwatch", "Failure", "PromptFilter", "PromptRefused", "Rung", "check_size",
-           "clean_text", "default_generator", "explain_failure", "fabric_fill", "fabric_prompt", "fabric_scale",
-           "ladder_for", "load_generator", "nearest_colour", "procedural"]
+           "FabricJob", "FabricSwatch", "Failure", "PromptFilter", "PromptRefused", "Rung", "check_seeds",
+           "check_size", "clean_text", "default_generator", "explain_failure", "fabric_fill", "fabric_prompt",
+           "fabric_scale", "ladder_for", "load_generator", "nearest_colour", "procedural"]

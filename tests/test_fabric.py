@@ -13,6 +13,7 @@ import os
 import threading
 import time
 import types
+import weakref
 from pathlib import Path
 
 import cv2
@@ -41,6 +42,7 @@ from bifold_demo.characters.outfit.fills import from_spec
 from bifold_demo.characters.outfit.seamless import (
     SEAM_THRESHOLD,
     equalise_light,
+    light_of,
     make_seamless,
     resize_periodic,
     seam_score,
@@ -100,6 +102,56 @@ def repeat_of(tile, size, offset=(0, 0)):
     return big[offset[0]:offset[0] + size, offset[1]:offset[1] + size].copy()
 
 
+def bands(kind, period, phase, size=512):
+    """Wide two-colour stripes, checks or gingham of ``period`` pixels: they tile only if the period divides
+    ``size``; otherwise one band at the wrap is the wrong width."""
+    x = np.arange(size)
+    on = (((x + phase) // (period / 2)) % 2).astype(bool)
+    navy, white, red = np.float32([30, 40, 90]), np.float32([240, 238, 230]), np.float32([170, 30, 40])
+    if kind == "stripes":
+        return np.where(on[None, :, None], navy, white) * np.ones((size, 1, 1), np.float32)
+    if kind == "check":
+        return np.where((on[None, :] ^ on[:, None])[..., None], red, white)
+    both = on[None, :].astype(np.float32) + on[:, None]
+    return white * (1 - both[..., None] / 2) + red * (both[..., None] / 2)
+
+
+def motifs(size, count, radius, ground, colour, seed, tiling=True):
+    """Ellipses of ``colour`` on a plain ``ground``, placed at random: a print, evenly lit. ``tiling``: drawn so that
+    they wrap round the edges (it tiles); else cut out of a larger piece (it does not)."""
+    rng = np.random.default_rng(seed)
+    side = size if tiling else 3 * size
+    image = np.full((side, side, 3), ground, np.float32)
+    shifts = (-size, 0, size) if tiling else (0,)
+    for _ in range(count if tiling else 9 * count):
+        cx, cy, angle = rng.uniform(0, side), rng.uniform(0, side), rng.uniform(0, 180)
+        for dx in shifts:
+            for dy in shifts:
+                cv2.ellipse(image, (int(cx + dx), int(cy + dy)), (radius, int(radius * 0.6)), angle, 0, 360, colour,
+                            -1, cv2.LINE_AA)
+    return image if tiling else image[size:2 * size, size:2 * size].copy()
+
+
+def lit(image, amount=0.4, seed=0):
+    """``image`` under light that varies once across it (tiling), ``exp(amount)`` from its darkest to its lightest."""
+    h, w = image.shape[:2]
+    y, x = (np.mgrid[0:h, 0:w] + 0.5) / np.float32([h, w])[:, None, None]
+    a = np.random.default_rng(seed).uniform(0, 2 * np.pi, 3)
+    field = np.cos(2 * np.pi * x + a[0]) + 0.6 * np.cos(2 * np.pi * y + a[1]) + 0.4 * np.cos(2 * np.pi * (x + y) + a[2])
+    return np.clip(image * np.exp(amount * field / np.ptp(field))[..., None], 0, 255).astype(np.float32)
+
+
+def spread(image, where):
+    """How unevenly the pixels ``where`` (the plain ground of a print) are lit: their 99th over 1st percentile."""
+    values = image[where].mean(axis=1)
+    return float(np.percentile(values, 99) / max(np.percentile(values, 1), 1e-3))
+
+
+def ground_of(image, colour):
+    """Where ``image`` is its plain ground of ``colour``."""
+    return np.all(np.abs(image - np.float32(colour)) < 1, axis=2)
+
+
 # -- the description and the kiosk filter ------------------------------------------------------------------------
 
 
@@ -122,9 +174,14 @@ def test_the_kiosk_refuses_brands_characters_logos_and_offensive_words(tmp_path,
     words = PromptFilter.load()
     refused = {"a Gucci print": ("brands", "gucci"), "LouisVuitton monogram": ("brands", "louisvuitton"),
                "g u c c i": ("brands", "g u c c i"), "gucc1 stripes": ("brands", "gucci"),
-               "levi's denim": ("brands", "levi s"), "Hello Kitty pink": ("characters", "hello kitty"),
-               "pokémon pattern": ("characters", "pokemon"), "with our logo": ("marks", "logo"),
-               "brand™ stripes": ("marks", "™"), "nazi uniform": ("offensive", "nazi")}
+               "gucci!": ("brands", "gucci"),
+               "levi's denim": ("brands", "levi"), "Dolce and Gabbana print": ("brands", "dolce and gabbana"),
+               "Saint Laurent monogram": ("brands", "saint laurent"), "Vuitton canvas": ("brands", "vuitton"),
+               "Hello Kitty pink": ("characters", "hello kitty"), "pokémon pattern": ("characters", "pokemon"),
+               "pikachus print": ("characters", "pikachus"), "Mickey print": ("characters", "mickey"),
+               "sex pistols tartan": ("characters", "sex pistols"), "with our logo": ("marks", "logo"),
+               "brand™ stripes": ("marks", "™"), "nazi uniform": ("offensive", "nazi"),
+               "f*ck you": ("offensive", "f*ck"), "fuk": ("offensive", "fuk"), "sh!t": ("offensive", "shit")}
     for text, (kind, word) in refused.items():
         problem = words.problem(text)
         assert problem is not None and (problem.kind, problem.word) == (kind, word), text
@@ -134,7 +191,8 @@ def test_the_kiosk_refuses_brands_characters_logos_and_offensive_words(tmp_path,
     slur = codecs.decode("avttre", "rot13")  # (kept ROT13-encoded in the word list)
     assert words.problem(f"{slur} print").kind == "offensive_rot13"
     for fine in ("cocktail party print", "Sussex check", "off white linen", "peacock feathers", "gore tex shell",
-                 "Ferrari red", "unisex jersey", "Scunthorpe tweed", "blue paisley silk", "#1f2a44 pinstripe"):
+                 "Ferrari red", "unisex jersey", "Scunthorpe tweed", "blue paisley silk", "#1f2a44 pinstripe",
+                 "titmouse birds", "polka dots!!", "100% cotton", "5* hotel stripes"):
         assert words.problem(fine) is None, fine
     with pytest.raises(PromptRefused, match="Brand names"):
         FabricGenerator(None, cache=False).start("a nike swoosh")
@@ -154,6 +212,27 @@ def test_the_kiosk_refuses_brands_characters_logos_and_offensive_words(tmp_path,
     with pytest.warns(UserWarning, match="not used"):
         assert PromptFilter.load().problem("gucci") is not None
     assert FabricGenerator(None, cache=False, words=None).prepare("gucci")[0] == "gucci"  # no filter at all
+
+
+def test_the_kiosk_takes_some_words_only_in_their_fabric_sense(tmp_path, monkeypatch):
+    words = PromptFilter.load()
+    for fine in ("nude satin", "nude pink chiffon", "nude and black stripes", "naked wool", "cock pheasant feathers",
+                 "hen and cock print", "bird print with blue tits", "great tits and robins", "long-tailed tits",
+                 "Dick Whittington", "nud3 satin"):
+        assert words.problem(fine) is None, fine
+    for text, word in (("nude", "nude"), ("nude woman satin", "nude"), ("nude photo silk", "nude"),
+                       ("nude landscape", "nude"), ("naked girl", "naked"), ("big tits", "tits"), ("cock", "cock"),
+                       ("dicks", "dicks"), ("n*de satin", "n*de"), ("c**k pheasant", "c**k")):
+        problem = words.problem(text)
+        assert problem is not None and (problem.kind, problem.word) == ("in context", word), text
+    assert words.problem("nudes").kind == "offensive"
+    nude = words.problem("nude").message
+    assert "does not accept" not in nude and "beige or blush" in nude and '"nude satin"' in nude
+    extra = tmp_path / "words.json"  # a user file can add words with a fabric sense too
+    extra.write_text(json.dumps({"in context": {"words": {"bolt": {"near": ["@materials"]}}}}))
+    monkeypatch.setenv(fabric.WORDS_ENV, str(extra))
+    mine = PromptFilter.load()
+    assert mine.problem("lightning bolt") is not None and mine.problem("a bolt of silk") is None
 
 
 def test_fabric_scale_follows_the_kind_of_fabric():
@@ -184,6 +263,15 @@ def test_the_seam_score_tells_swatches_that_tile_from_seams():
     seams.append(repeat_of(P.polka_dots((240, 230, 210), (180, 40, 60), size=90), 512, (13, 31)))
     for image in seams:
         assert seam_score(image) > SEAM_THRESHOLD
+    # wide bands: one at the wrap is the wrong width (a narrow window has twins everywhere in a band)
+    for kind, period, phase in (("stripes", 136, 20), ("gingham", 100, 31), ("check", 190, 30), ("stripes", 250, 33)):
+        assert seam_score(bands(kind, period, phase)) > SEAM_THRESHOLD, (kind, period)
+    for kind, period in (("stripes", 128), ("gingham", 64), ("check", 256)):  # (they fit: they tile)
+        assert seam_score(bands(kind, period, 17)) <= SEAM_THRESHOLD, (kind, period)
+    base, other = periodic(512, 20, 2), periodic(512, 20, 52)  # a seam along a fifth of the edge only
+    part, fade = base.copy(), np.clip(np.arange(40)[None, :, None] / 12.0, 0, 1)
+    part[:100, -40:] = part[:100, -40:] * (1 - fade) + other[:100, -40:] * fade  # (feathered on the inside)
+    assert seam_score(part) > SEAM_THRESHOLD >= seam_score(base)
     parts = seam_scores(seams[-1])
     assert set(parts) == {"step x", "band x", "rhythm x", "step y", "band y", "rhythm y"}
     assert max(parts.values()) == pytest.approx(seam_score(seams[-1]))
@@ -210,29 +298,59 @@ def test_the_repair_makes_any_image_tile_the_same_way_every_time():
     profile = stripes[256, :, 0] > 128
     widths = np.diff(np.flatnonzero(np.diff(profile.astype(int))))
     assert widths.max() - widths.min() <= 4
+    for image in (periodic(512, 6, 1), motifs(512, 7, 40, (25, 45, 90), (220, 120, 150), 3)):
+        assert seam_score(image) <= SEAM_THRESHOLD  # it tiles already: it comes back as it is
+        assert np.array_equal(make_seamless(image, even_light=False), image)
+        assert np.array_equal(make_seamless(image), image)  # (and its light is even)
 
 
-def test_even_light_keeps_the_colours_and_the_tiling():
-    tile = P.tile("tartan", (160, 30, 40), (20, 60, 40))  # 512 px, tiles
-    y, x = np.mgrid[0:512, 0:512] / 512.0
-    light = (1.0 + 0.35 * np.cos(2 * np.pi * (x - 0.3)) * np.cos(2 * np.pi * (y - 0.6)))[..., None]
-    lit = np.clip(tile * light, 0, 255).astype(np.float32)
+def test_the_repair_cuts_motifs_and_never_ghosts_them():
+    for seed in range(2):
+        for ground, colour, count, radius in (((235, 225, 205), (190, 40, 60), 20, 30),
+                                              ((14, 14, 14), (245, 245, 240), 12, 34)):
+            image = motifs(512, count, radius, ground, colour, seed, tiling=False)
+            fixed = make_seamless(image)
+            assert seam_score(fixed) <= SEAM_THRESHOLD < seam_score(image)
+            lab, palette = (cv2.cvtColor(np.float32(a) / 255, cv2.COLOR_RGB2Lab) for a in (fixed, [[ground, colour]]))
+            apart = np.linalg.norm(lab.reshape(-1, 1, 3) - palette.reshape(1, -1, 3), axis=2)
+            assert (apart.min(axis=1) > 12).mean() < 0.02  # each pixel the ground or a motif (edges aside): no ghosts
+            assert spread(fixed, apart[:, 0].reshape(512, 512) < 3) < 1.05  # and the ground as even as it was
+
+
+def test_even_light_takes_out_light_and_leaves_prints_alone():
+    ground = (235, 225, 205)
+    for seed in range(3):  # a print's motifs spread unevenly are not light
+        image = motifs(512, 20, 30, ground, (190, 40, 60), seed)
+        assert np.array_equal(equalise_light(image), image) and not light_of(image)["light"]
+        uneven = lit(image, 0.4, seed)  # but real light is: the ground comes out even, the motifs keep their colour
+        where = ground_of(image, ground)
+        assert spread(uneven, where) > 1.3 and spread(equalise_light(uneven), where) < 1.08
+    tile = np.tile(P.tartan((160, 30, 40), (20, 60, 40), size=128), (4, 4, 1)).astype(np.float32)  # 4 setts, tiles
+    light = lit(tile, 0.6, 5)
 
     def unevenness(image):
         return float(cv2.GaussianBlur(image @ np.float32([0.2126, 0.7152, 0.0722]), (0, 0), 40).std())
 
-    even = equalise_light(lit)
-    assert unevenness(even) < 0.45 * unevenness(lit) and unevenness(even) < 1.2 * unevenness(tile)
+    even = equalise_light(light)
+    assert unevenness(even) < 0.45 * unevenness(light) and unevenness(even) < 1.5 * unevenness(tile) + 1
     hue = [cv2.cvtColor(np.clip(i, 0, 255).astype(np.uint8), cv2.COLOR_RGB2HSV)[..., 0] for i in (tile, even)]
     assert np.median(np.abs(hue[0].astype(int) - hue[1].astype(int))) == 0  # the colours stay
-    lum = [float((i @ np.float32([0.2126, 0.7152, 0.0722])).mean()) for i in (lit, even)]
+    lum = [float((i @ np.float32([0.2126, 0.7152, 0.0722])).mean()) for i in (light, even)]
     assert lum[1] == pytest.approx(lum[0], rel=0.02)  # and the brightness
     assert seam_score(even) <= SEAM_THRESHOLD
+    verdict = light_of(light)
+    assert verdict["light"] and verdict["change"] > 1.5 and verdict["prominence"] > 2.5 and verdict["colour"] < 0.5
+    for blotchy in (periodic(512, 3, 1), periodic(512, 6, 2)):  # slow blotches are the fabric's own: left alone
+        assert np.array_equal(equalise_light(blotchy), blotchy)
+    sett = P.tartan((40, 90, 170), (240, 240, 236), size=512)  # one sett across: blue to white is colour, not light
+    assert light_of(sett)["colour"] > 0.5 and np.array_equal(equalise_light(sett), sett.astype(np.float32))
     gradient = periodic(256, 12, 3) * (0.6 + 0.8 * np.arange(256) / 255)[None, :, None]
     flat = equalise_light(gradient, periodic=False)  # an image that does not tile yet: a gradient goes too
     columns = flat.mean(axis=(0, 2))
     assert abs(columns[-32:].mean() - columns[:32].mean()) < 0.25 * abs(gradient.mean(axis=(0, 2))[-32:].mean()
                                                                        - gradient.mean(axis=(0, 2))[:32].mean())
+    cut = motifs(512, 20, 30, ground, (190, 40, 60), 4, tiling=False)
+    assert np.array_equal(equalise_light(cut, periodic=False), cut)  # (nor is a cut-out print's layout)
 
 
 def test_resizing_a_repeat_wraps_round_its_edges():
@@ -622,11 +740,11 @@ def test_the_ladder_steps_down_rung_by_rung_saying_why(tmp_path):
     assert [c["steps"] for c in pipes["flux2-klein"].calls] == [4, 4, 12, 12]
     assert [c["steps"] for c in pipes["sd-turbo"].calls] == [2, 2]
     said = "\n".join(job.messages)
-    assert "FLUX.2-klein-4B (rolled, 4 steps): a seam shows on all 2 seeds; trying FLUX.2-klein-4B (rolled, 12 " \
+    assert "FLUX.2-klein-4B (rolled, 4 steps): a seam shows on both seeds; trying FLUX.2-klein-4B (rolled, 12 " \
            "steps)" in said
-    assert "FLUX.2-klein-4B (rolled, 12 steps): a seam shows on all 2 seeds; trying sd-turbo (circular, 2 " \
+    assert "FLUX.2-klein-4B (rolled, 12 steps): a seam shows on both seeds; trying sd-turbo (circular, 2 " \
            "steps)" in said
-    assert "sd-turbo (circular, 2 steps): a seam shows on all 2 seeds; trying the seam repair" in said
+    assert "sd-turbo (circular, 2 steps): a seam shows on both seeds; trying the seam repair" in said
     assert "repaired without a model" in said
     (swatch,) = job.variations
     assert swatch.method.endswith(", repaired") and swatch.ok and swatch.generated
@@ -673,6 +791,38 @@ def test_a_model_that_runs_out_of_memory_steps_down_to_sd_turbo(tmp_path):
     oom = FabricGenerator("flux2-klein", seeds=1, size=256, cache=False,
                           loader=_loader({"flux2-klein": MemoryError(), "sd-turbo": good}, record))
     assert oom.generate("red").variations[0].model == "stabilityai/sd-turbo"  # (out of memory while loading, too)
+
+
+def test_the_cache_and_a_failing_model_never_cost_a_swatch(tmp_path):
+    record = []
+    cache = tmp_path / "c"
+
+    def generator(threshold, cache=cache, paint=bad, seeds=1):
+        return FabricGenerator("flux2-klein", seeds=seeds, size=256, cache=cache, threshold=threshold,
+                               ladder=(Rung("flux2-klein"),), loader=_loader({"flux2-klein": paint}, record))
+
+    lenient = generator(100.0).generate("blue paisley silk")  # a seam, but this generator keeps it
+    assert lenient.variations[0].ok and lenient.variations[0].method == "rolled, 4 steps"
+    strict = generator(SEAM_THRESHOLD).generate("blue paisley silk")  # the cached image, judged by its own threshold
+    assert record == ["flux2-klein"] and strict.variations[0].method == "rolled, 4 steps, repaired"
+    said = "\n".join(strict.messages)
+    assert f"> {SEAM_THRESHOLD:g}); left out" in said and "on its only seed" in said and said.count(", seam ") == 1
+    blocked = tmp_path / "a file"  # a cache that cannot be written costs a message, not the swatches
+    blocked.write_text("x")
+    job = generator(SEAM_THRESHOLD, cache=blocked, paint=good, seeds=2).generate("navy silk")
+    assert job.status == "done" and [s.generated for s in job.variations] == [True, True]
+    assert any("not cached" in m for m in job.messages)
+
+    def tired(seed, size):  # a model that runs out of memory after two seeds: those two are the job's
+        if seed >= 2:
+            raise RuntimeError("MPS backend out of memory")
+        return good(seed, size)
+
+    record.clear()
+    job = FabricGenerator("flux2-klein", seeds=4, size=256, cache=False,
+                          loader=_loader({"flux2-klein": tired, "sd-turbo": good}, record)).generate("red silk")
+    assert record == ["flux2-klein"] and [(s.seed, s.generated) for s in job.variations] == [(0, True), (1, True)]
+    assert "the 2 swatches made so far stay" in job.messages[-1]
 
 
 def test_without_a_model_the_keyword_fabric_then_a_plain_colour(tmp_path):
@@ -852,12 +1002,25 @@ def test_the_image_generator_takes_steps_and_pipeline_arguments_and_shares_model
 
     monkeypatch.setattr(G.ImageGenerator, "_load", load)
     monkeypatch.setattr(G, "_shared", {})
+    monkeypatch.setattr(G, "_alive", {})
     a = G.shared_generator("flux2-klein", device="cpu")
     b = G.shared_generator(G.preset_with(PRESETS["flux2-klein"], steps=8), device="cpu")
     assert loads == ["flux2-klein"] and a.pipe is b.pipe and b.preset.steps == 8
+    G.release_shared()  # a and b still hold it: given out again, never loaded a second time beside it
+    assert G.shared_generator("flux2-klein", device="cpu").pipe is a.pipe and loads == ["flux2-klein"]
+    pipe = weakref.ref(a.pipe)
+    del a, b
     G.release_shared()
+    G.free_memory()
+    assert pipe() is None  # nothing holds it: freed, and loaded again when asked for
     G.shared_generator("flux2-klein", device="cpu")
     assert loads == ["flux2-klein", "flux2-klein"]
+    generator = FabricGenerator("flux2-klein", seeds=1, size=64, cache=False, threshold=100.0,
+                                ladder=(Rung("flux2-klein"),), loader=lambda m, d, w: G.shared_generator(m, "cpu"))
+    generator.generate("blue paisley silk")
+    pipe = weakref.ref(generator._loaded["flux2-klein"].pipe)
+    generator.release()  # the fabric generator lets go of its models: their memory is freed
+    assert pipe() is None and not G._shared and not generator._loaded
 
 
 # -- the CLI ------------------------------------------------------------------------------------------------------
@@ -877,6 +1040,12 @@ def test_the_fabric_cli_writes_swatches_and_dresses_an_avatar(tmp_path, capsys, 
     assert "Brand names" in capsys.readouterr().err
     assert cli.main(["fabric", "red", "--model", "nonsense"]) == 2
     assert cli.main(["fabric", "red", "--model", "none", "--views", "v.png"]) == 2  # (needs --avatar)
+    assert cli.main(["fabric", "red", "--model", "none", "--texture", "t.png"]) == 2  # (so does --texture)
+    assert cli.main(["fabric", "red", "--model", "none", "--seeds", "0"]) == 2
+    assert "at least one seed" in capsys.readouterr().err
+    assert cli.main(["fabric", "navy silk", "--model", "none", "--size", "128", "-o", str(out)]) == 0
+    assert cv2.imread(str(out)).shape == (128, 128, 3)  # a plain colour, written at --size
+    assert cli.main(["fabric", "red", "--model", "none", "--sheet", str(tmp_path / "no" / "sheet.png")]) == 1
 
     monkeypatch.setattr(fabric, "load_generator", _loader({"flux2-klein": good}, []))
     monkeypatch.setattr(cli, "CharacterLibrary", lambda dest: _Library(_person()))

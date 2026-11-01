@@ -6,6 +6,8 @@ The image model runs through Hugging Face ``diffusers``; install it with
 :class:`ImageGenerator` is also what the fabric generator (``characters/outfit/fabric.py``) runs its models with.
 :func:`shared_generator` loads each model once per process, so the components that use the same model share its
 memory (FLUX.2 [klein] takes about 16 GB); a pipeline runs one call at a time, under :func:`pipeline_lock`.
+:func:`release_shared` lets go of the process's hold on them, and :func:`free_memory` gives the memory back once
+nothing else holds them (the fabric generator's ``release()`` does both for its models).
 """
 
 from __future__ import annotations
@@ -159,13 +161,16 @@ class ImageGenerator:
         return cv2.cvtColor(self.rgb(prompt, seed, width, height), cv2.COLOR_RGB2BGR)
 
 
-_shared: dict = {}
+_shared: dict = {}  # (repo, pipeline, device) -> the pipeline, kept for the process (until release_shared)
+_alive: dict = {}  # the same keys -> a weak reference to every pipeline loaded, while anything still holds it
 _shared_guard = threading.Lock()
 
 
 def shared_generator(preset: ModelPreset | str, device: str = "auto", local_files_only: bool = False) -> ImageGenerator:
     """An :class:`ImageGenerator` of ``preset`` whose pipeline is loaded once per process and device and shared by all
-    who ask for it (each gets its own preset settings). A load that fails is not kept: the next call tries again."""
+    who ask for it (each gets its own preset settings). A load that fails is not kept: the next call tries again. A
+    pipeline that :func:`release_shared` let go of but something still holds is given out again, never loaded a
+    second time beside it."""
     from ..detection.yolo import pick_device
 
     preset = get_preset(preset) if isinstance(preset, str) else preset
@@ -173,15 +178,44 @@ def shared_generator(preset: ModelPreset | str, device: str = "auto", local_file
     key = (preset.repo, preset.pipeline, device)
     with _shared_guard:
         pipe = _shared.get(key)
+        if pipe is None and key in _alive:
+            pipe = _alive[key]()
         if pipe is None:
-            pipe = _shared[key] = ImageGenerator(preset, device=device, local_files_only=local_files_only).pipe
+            pipe = ImageGenerator(preset, device=device, local_files_only=local_files_only).pipe
+            try:
+                _alive[key] = weakref.ref(pipe)
+            except TypeError:  # (a pipeline that cannot be weakly referenced is only shared until released)
+                _alive.pop(key, None)
+        _shared[key] = pipe
     return ImageGenerator(preset, device=device, pipeline=pipe)
 
 
-def release_shared() -> None:
-    """Let go of the shared pipelines (their memory is freed once nothing else holds them)."""
+def release_shared(pipe=None) -> None:
+    """Let go of the shared pipelines (``pipe``: only that one). Their memory is freed once nothing else holds them
+    (a generator made from them, a call still running): :func:`free_memory` then hands it back."""
     with _shared_guard:
-        _shared.clear()
+        for key in [k for k, p in _shared.items() if pipe is None or p is pipe]:
+            del _shared[key]
+        for key in [k for k, ref in _alive.items() if ref() is None]:
+            del _alive[key]
+
+
+def free_memory() -> None:
+    """Collect garbage and give the memory torch keeps for later back to the system (Apple's GPU, CUDA)."""
+    import gc
+    import sys
+
+    gc.collect()
+    torch = sys.modules.get("torch")  # (nothing to give back if torch was never imported)
+    if torch is None:
+        return
+    try:
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except (AttributeError, RuntimeError):  # (an old torch, or no device to empty)
+        pass
 
 
 def check_cutout(cutouts: list[Cutout], image_height: int) -> tuple[Cutout | None, str]:

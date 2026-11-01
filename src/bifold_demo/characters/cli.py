@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 import time
 import warnings
 from pathlib import Path
@@ -217,8 +218,9 @@ def cmd_fabric(args) -> int:
     from .outfit.fabric import FabricGenerator, PromptRefused
     from .outfit.tailor import Outfit, tailor_for
 
-    if args.views and not args.avatar:
-        return _error("--views needs --avatar NAME")
+    for flag, value in (("--views", args.views), ("--texture", args.texture)):
+        if value and not args.avatar:
+            return _error(f"{flag} needs --avatar NAME")
     try:
         generator = FabricGenerator(args.model, device=args.device, seeds=args.seeds, size=args.size,
                                     cache=not args.no_cache, download=not args.offline)
@@ -233,29 +235,33 @@ def cmd_fabric(args) -> int:
         if args.avatar not in library.available():
             return _error(library.explain(args.avatar), 1)
         model = library.load(args.avatar)
-    print(f"[fabric] {text!r}: {prompt}", flush=True)
-    job = generator.start(text, first_seed=args.seed, on_message=lambda m: print(f"[fabric] {m}", flush=True))
+    printing = threading.Lock()  # (the job's messages come from its worker thread)
+
+    def say(line: str) -> None:
+        with printing:
+            print(f"[fabric] {line}", flush=True)
+
+    say(f"{text!r}: {prompt}")
+    job = generator.start(text, first_seed=args.seed, on_message=say)
     try:
         for swatch in job:
             if swatch.preview:
-                print(f"[fabric] preview: {swatch.describe()}", flush=True)
+                say(f"preview: {swatch.describe()}")
             elif swatch.generated:
-                when = "from the cache" if swatch.cached else f"{swatch.seconds:.1f} s"
-                print(f"[fabric] swatch: {swatch.describe()} ({when})", flush=True)
+                say(f"swatch: {swatch.describe()} ({'from the cache' if swatch.cached else f'{swatch.seconds:.1f} s'})")
     except KeyboardInterrupt:
         job.cancel()
         job.wait(60)
         print("\n[fabric] cancelled", file=sys.stderr)
         return 130
     best = job.best
-    print(f"[fabric] chosen: {best.describe()}; {best.scale:g} m per repeat")
-    if args.output:
-        if not cv2.imwrite(args.output, cv2.cvtColor(best.image, cv2.COLOR_RGB2BGR)):
-            return _error(f"cannot write {args.output}", 1)
-        print(f"[fabric] swatch -> {args.output}")
+    say(f"chosen: {best.describe()}; {best.scale:g} m per repeat")
+    written = []
+    if args.output:  # the swatch at --size (a plain colour or a keyword pattern has a size of its own)
+        written.append((args.output, cv2.cvtColor(_at_size(best.image, args.size), cv2.COLOR_RGB2BGR), "swatch"))
     if args.sheet:  # the swatches a model made (or the fallback when none did)
-        cv2.imwrite(args.sheet, _fabric_sheet([s for s in job.variations if s.generated] or [best]))
-        print(f"[fabric] the swatches, each tiled 2 x 2 -> {args.sheet}")
+        sheet = _fabric_sheet([s for s in job.variations if s.generated] or [best])
+        written.append((args.sheet, sheet, "the swatches, each tiled 2 x 2"))
     if model is not None:
         regions = outfit_regions.body_regions(model)
         if not regions.counts().get(args.region):
@@ -263,14 +269,27 @@ def cmd_fabric(args) -> int:
         tailor = tailor_for(model)
         fill = best.fill(args.scale)
         rgba = tailor.texture(Outfit({args.region: fill}, name=text))
-        print(f"[fabric] {args.avatar}: {args.region} in {fill!r}")
+        say(f"{args.avatar}: {args.region} in {fill!r}")
         if args.texture:
-            cv2.imwrite(args.texture, cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA))
-            print(f"[fabric] body texture -> {args.texture}")
+            written.append((args.texture, cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA), "body texture"))
         if args.views:
-            cv2.imwrite(args.views, _outfit_views(model, tailor.primitive.name, rgba))
-            print(f"[fabric] front and back -> {args.views}")
+            written.append((args.views, _outfit_views(model, tailor.primitive.name, rgba), "front and back"))
+    for path, image, what in written:
+        if not cv2.imwrite(path, image):
+            return _error(f"cannot write {path}", 1)
+        say(f"{what} -> {path}")
     return 0
+
+
+def _at_size(rgb, size: int):
+    """A swatch resampled to ``size`` x ``size`` as one repeat (it still tiles)."""
+    import numpy as np
+
+    from .outfit.seamless import resize_periodic
+
+    if rgb.shape[:2] == (size, size):
+        return rgb
+    return np.clip(resize_periodic(rgb.astype(np.float32), size) + 0.5, 0, 255).astype(np.uint8)
 
 
 def _fabric_sheet(swatches, side: int = 256):
@@ -456,7 +475,7 @@ def build_parser() -> argparse.ArgumentParser:
                                    "(a fallback ladder down to the keyword fabric when there is none), and dress an "
                                    "avatar in it")
     fb.add_argument("description", help='what the fabric looks like, e.g. "blue paisley silk"')
-    fb.add_argument("-o", "--output", help="write the chosen swatch here (PNG)")
+    fb.add_argument("-o", "--output", help="write the chosen swatch here (PNG, --size pixels)")
     fb.add_argument("--model", default="flux2-klein",
                     help="flux2-klein (default), z-image-turbo, sd-turbo, a Hugging Face id, or none (no model)")
     fb.add_argument("--seeds", type=int, default=4, help="swatches to make (default 4)")
@@ -470,8 +489,8 @@ def build_parser() -> argparse.ArgumentParser:
     fb.add_argument("--region", default="top", choices=("top", "shirt", "bottoms", "shoes", "other"),
                     help="the garment to dress (default top)")
     fb.add_argument("--scale", type=float, help="metres per repeat (default: by the kind of fabric)")
-    fb.add_argument("--texture", help="write the avatar's new body texture here (PNG)")
-    fb.add_argument("--views", help="write the avatar from the front and the back here (needs OpenGL)")
+    fb.add_argument("--texture", help="write the avatar's new body texture here (PNG; needs --avatar)")
+    fb.add_argument("--views", help="write the avatar from the front and the back here (needs --avatar and OpenGL)")
 
     i = add("info", cmd_info, "show the details of an avatar or animation clip")
     i.add_argument("name", help="avatar or clip name, e.g. Business_Female_01 or m_walk_neutral_01")

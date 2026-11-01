@@ -1,17 +1,19 @@
 {
-  "about": "Words a fabric description may not use at a public kiosk (see fabric.py, PromptFilter). Each list has a message shown when a description is refused. Matching ignores case, accents, spaces and digits standing in for letters. A file of the same form named by $BIFOLD_FABRIC_WORDS adds words, lists or 'allow' entries. The words of 'offensive_rot13' are ROT13-encoded, so the repository does not show them in plain text.",
+  "about": "Words a fabric description may not use at a public kiosk (see fabric.py, PromptFilter). Each list has a message shown when a description is refused. Matching ignores case, accents, spaces, digits and signs standing in for letters, and stars for letters left out. The words of 'in context' have a fabric sense too ('nude satin' is a colour, 'blue tits' are birds): they are let through only where the words next to them give them that sense, and never with a word of its 'never with'. A file of the same form named by $BIFOLD_FABRIC_WORDS adds words, lists or 'allow' entries. The words of 'offensive_rot13' are ROT13-encoded, so the repository does not show them in plain text.",
   "brands": {
     "message": "Brand names can't be made into a fabric here ({word}). Describe the colours, the pattern and the material instead, for example \"beige and black check wool\".",
-    "words": ["adidas", "armani", "balenciaga", "burberry", "calvin klein", "chanel", "dior", "dolce gabbana", "fendi",
-              "gucci", "givenchy", "hermes", "lacoste", "louis vuitton", "lv", "marimekko", "missoni", "moschino", "nike",
-              "prada", "ralph lauren", "reebok", "tommy hilfiger", "valentino", "versace", "yves saint laurent", "ysl",
-              "north face", "levis", "stussy", "bape"]
+    "words": ["adidas", "armani", "balenciaga", "burberry", "calvin klein", "chanel", "dior", "dolce gabbana",
+              "dolce and gabbana", "gabbana", "fendi", "gucci", "givenchy", "hermes", "lacoste", "louis vuitton",
+              "vuitton", "lv", "lvmh", "marimekko", "missoni", "moschino", "nike", "prada", "ralph lauren", "reebok",
+              "tommy hilfiger", "hilfiger", "valentino", "versace", "yves saint laurent", "saint laurent", "ysl",
+              "north face", "levis", "levi", "stussy", "bape"]
   },
   "characters": {
     "message": "Characters and other trademarks can't be made into a fabric here ({word}). Describe the colours, the pattern and the material instead, for example \"white stars on navy cotton\".",
-    "words": ["disney", "mickey mouse", "minnie mouse", "marvel", "spiderman", "spider man", "batman", "superman",
-              "star wars", "pokemon", "pikachu", "hello kitty", "barbie", "harry potter", "minecraft", "fortnite", "lego",
-              "coca cola", "pepsi", "mcdonalds"]
+    "words": ["disney", "mickey mouse", "mickey", "minnie mouse", "minnie", "marvel", "spiderman", "spider man",
+              "spider men", "batman", "superman", "star wars", "darth vader", "pokemon", "pikachu", "hello kitty",
+              "barbie", "harry potter", "hogwarts", "super mario", "minecraft", "fortnite", "lego", "coca cola",
+              "pepsi", "mcdonalds", "sex pistols"]
   },
   "marks": {
     "message": "Logos and trademarks can't be made into a fabric here ({word}). Describe the colours, the pattern and the material instead.",
@@ -19,13 +21,32 @@
   },
   "offensive": {
     "message": "That description uses a word this kiosk does not accept. Please describe the colours, the pattern and the material of the fabric.",
-    "words": ["nazi", "nazis", "swastika", "hitler", "kkk", "porn", "porno", "pornographic", "nude", "nudes", "naked",
-              "nsfw", "sex", "sexual", "penis", "vagina", "boobs", "tits", "nipples", "genitals", "fuck", "fucking",
-              "shit", "bitch", "cunt", "dick", "cock", "asshole", "bastard", "whore", "slut", "rape"]
+    "words": ["nazi", "nazis", "swastika", "hitler", "kkk", "porn", "porno", "pornographic", "nudes", "nudity",
+              "nsfw", "sex", "sexual", "penis", "vagina", "boobs", "nipples", "genitals", "fuck", "fucking", "fuk",
+              "fuking", "fck", "fcking", "phuck", "shit", "shyt", "bitch", "biatch", "cunt", "asshole", "bastard",
+              "whore", "slut", "rape"]
   },
   "offensive_rot13": {
     "message": "That description uses a word this kiosk does not accept. Please describe the colours, the pattern and the material of the fabric.",
     "words": ["avttre", "avttn", "snttbg", "snt", "ergneq", "puvax", "fcvp", "xvxr", "genaal", "jrgonpx"]
+  },
+  "in context": {
+    "message": "That description uses a word this kiosk takes only in its fabric sense. Please describe the colours, the pattern and the material of the fabric.",
+    "never with": ["woman", "women", "girl", "girls", "man", "men", "boy", "boys", "lady", "ladies", "guy", "guys",
+                   "person", "people", "body", "bodies", "figure", "figures", "photo", "photos", "photograph",
+                   "picture", "pictures", "pic", "pics", "selfie", "model", "models", "pose", "posing", "sexy",
+                   "erotic", "breast", "breasts", "butt", "bum", "painting", "portrait", "statue"],
+    "words": {
+      "nude": {"near": ["@colours", "@materials"],
+               "message": "\"Nude\" is taken here only as a colour, next to the material or another colour (\"nude satin\", \"nude pink chiffon\"); or describe it as beige or blush."},
+      "naked": {"near": ["@materials"],
+                "message": "\"Naked\" is taken here only for undyed cloth, next to its material (\"naked wool\"). Please describe the colours, the pattern and the material."},
+      "cock": {"near": ["pheasant", "pheasants", "feather", "feathers", "hen", "hens", "chicken", "chickens",
+                        "rooster", "roosters", "farmyard", "bird", "birds"]},
+      "tit": {"after": ["blue", "great", "coal", "marsh", "willow", "crested", "bearded", "tailed", "penduline"]},
+      "tits": {"after": ["blue", "great", "coal", "marsh", "willow", "crested", "bearded", "tailed", "penduline"]},
+      "dick": {"near": ["whittington", "spotted", "moby"]}
+    }
   },
   "allow": []
 }
