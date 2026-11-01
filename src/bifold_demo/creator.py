@@ -31,9 +31,12 @@ tailor made, the head texture of the face). :class:`~.scenes.created_cast.Create
 the fair, and the demo says so. Loading one restores all of it for editing; its saved textures are used until
 something changes.
 
-:func:`face_texture` is the one place that makes a face, so that it can be switched: the head-texture pipeline
-(:mod:`.characters.headtex`) when MediaPipe is installed, else the simple painting of the person's best photo
-(:func:`~.characters.face_photo.paint_face`).
+:func:`face_texture` is the one place that makes a face, so that it can be switched: the head textures from photos
+(:mod:`.characters.headtex`, all stages: the head, and the body's skin and the hair matched to the face) when
+MediaPipe is installed, else the simple painting of the person's best photo
+(:func:`~.characters.face_photo.paint_face`). A body texture the face comes with is what the outfit goes on; it is
+saved with the character (:attr:`~.characters.created.CreatedCharacter.bases`), so a loaded character's outfit can
+change and keep the skin.
 """
 
 from __future__ import annotations
@@ -106,22 +109,25 @@ def _headtex_missing() -> str | None:
 
 def face_texture(photos, model) -> FaceTextures:
     """The textures that put the face of the person in ``photos`` (paths, the best first; at most
-    :data:`MAX_PHOTOS` are used) on ``model``. With MediaPipe, the head-texture pipeline (:mod:`.characters.headtex`:
-    every usable photo fused into the head texture); else, or when that fails, the simple painting
-    (:func:`~.characters.face_photo.paint_face`) of the photo with the biggest face. Raises ``ValueError`` when no
-    photo can be used. Slow (seconds): call it off the main thread."""
+    :data:`MAX_PHOTOS` are used) on ``model``. With MediaPipe, the head textures from photos, all their stages
+    (:func:`~.characters.headtex.person_textures`: every usable photo fused into the head texture, what no photo
+    shows completed, the body texture's skin matched to the face, the hair cards recoloured): the head's, the body's
+    and the hair's textures; else, or when that fails, the simple painting (:func:`~.characters.face_photo.paint_face`)
+    of the photo with the biggest face. Raises ``ValueError`` when no photo can be used. Slow (seconds; the first time
+    for an avatar some more): call it off the main thread."""
     photos = [Path(p) for p in photos][:MAX_PHOTOS]
     if not photos:
         raise ValueError("there are no photos of that person")
     why = _headtex_missing()
     if why is None:
         try:
-            from .characters.headtex import head_texture
+            from .characters.headtex import person_textures
 
-            result = head_texture(photos, model)
-            used = len(result.projections)
-            return FaceTextures({result.primitive: result.rgba}, f"head texture from {used} of {len(photos)} photos",
-                                list(result.warnings))
+            person = person_textures(photos, model)
+            used = len(person.result.projections) if person.result is not None else len(photos)
+            parts = "head and body textures" if person.body is not None else "head texture"
+            return FaceTextures(dict(person.textures), f"{parts} from {used} of {len(photos)} photos",
+                                list(person.warnings))
         except Exception as exc:  # noqa: BLE001 - the simple painting instead, saying why
             why = f"the head texture failed: {type(exc).__name__}: {exc}"
     return _painted(photos, model, why)
@@ -252,15 +258,17 @@ def _dress(tailor, outfit: Outfit, base):
     return tailor.texture(outfit, base=base)
 
 
-def _read_textures(created, library) -> tuple[str | None, dict]:
-    """The name of the body primitive of a saved character's avatar, and the character's images (read from their
-    files)."""
+def _read_textures(created, library) -> tuple[str | None, dict, dict]:
+    """The name of the body primitive of a saved character's avatar, and the character's images and the bases of its
+    looks (read from their files)."""
     from .characters.outfit import regions as R
 
     model = library.load(created.avatar)
     index = R.body_primitive(model)
     body = model.primitives[index].name if index is not None else None
-    return body, {name: np.asarray(created.textures[name]) for name in list(created.textures)}
+    bases = getattr(created, "bases", {})
+    return (body, {name: np.asarray(created.textures[name]) for name in list(created.textures)},
+            {name: np.asarray(bases[name]) for name in list(bases)})
 
 
 def _save(character, folder) -> tuple[Path, float]:
@@ -930,8 +938,10 @@ class Creator:
 
         items = {**self._other_items, **{k: v for k, v in self.items.items() if v is not None}}
         outfit = self.outfit().spec() if self.fills else {}
+        base, p = self._base(), self.prepared
+        bases = {p.body: base} if base is not None else {}  # the face's skin on the body: the outfit goes on it
         return CreatedCharacter(self.name.strip(), self.avatar or "", self.face, outfit, items,
-                                self._current_textures(), created=self._created_at)
+                                self._current_textures(), created=self._created_at, bases=bases)
 
     def save(self) -> str:
         """Save the character as soon as its textures are made (on the worker); :meth:`update` says when it is."""
@@ -1069,16 +1079,18 @@ class Creator:
         name, avatar, face, version = key
         if (avatar, version) != (self.avatar, self._outfit_version) or name != self._loaded:
             return []  # something changed meanwhile: made again
-        body_name, textures = result
+        body_name, textures, bases = result
         body = textures.pop(body_name, None)
+        base = bases.get(body_name) if face and face == self.face else None  # the face's body: the outfit's base
         if face and face == self.face and textures:
-            self._face_result = ((avatar, face), FaceTextures(textures, "as saved"))
+            self._face_result = ((avatar, face), FaceTextures({**textures, **bases}, "as saved"))
         elif textures:
             self._kept = (avatar, textures)
         if body is not None:
             p = self.prepared
             dressed = p is None or p.name != avatar or p.tailor is not None
-            self._body_result = ((avatar, version if dressed and self.fills else None, None), body)
+            self._body_result = ((avatar, version if dressed and self.fills else None,
+                                  id(base) if base is not None else None), body)
         self._refresh_person()
         return []
 

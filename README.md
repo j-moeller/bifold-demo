@@ -1218,6 +1218,8 @@ person.wear(character)                 # head, body and hair textures on a scene
 book.save(person.created("Ada at the fair", face="Ada Lovelace"))   # a CreatedCharacter
 ```
 
+The [character creator](#character-creator)'s faces come from it too.
+
 How well it works (`tests/test_headtex_finish.py`, synthetic;
 `tests/test_headtex_finish_avatars.py`: Male_Adult_05's four fake photos
 finished onto Female_Adult_04, whose open neckline shows the seam): across
@@ -1272,13 +1274,17 @@ the status line says what is going on. The fabric generator runs as in
 without a downloaded model you get the keyword fabric, and the fabric row says
 why. The face comes from one function, `face_texture(photos, model)` in
 [`creator.py`](src/bifold_demo/creator.py): the
-[head-texture pipeline](#head-textures-from-photos) when MediaPipe is
-installed, else the person's best photo painted on (`face_photo.paint_face`).
+[head textures from photos](#stages-5-to-7-the-whole-person), all stages,
+when MediaPipe is installed (the head, a body texture with the person's skin,
+which the outfit then goes on, and the hair cards in the person's hair
+colour), else the person's best photo painted on (`face_photo.paint_face`).
 
 **Saving** writes the character through the demo's character book into
 `created/<name>/`: its name, avatar, whose face it wears, the outfit recipe
 (fabrics with their images), its items and the textures (the body texture of
-the outfit, and the head texture when it has a face). The demo picks it up
+the outfit, and the head texture when it has a face; a body with the face's
+skin is kept beside them as `<body>.base.png`, so that a loaded character's
+outfit can be changed and keep that skin). The demo picks it up
 within a second and it joins the fair ("Ada joined the fair", see below).
 Saving under a name that is saved already asks you to press save again.
 Opening a saved character restores all of it; its saved textures are used

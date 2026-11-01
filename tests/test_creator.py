@@ -289,6 +289,40 @@ def test_save_load_and_delete(tmp_path):
     assert Creator(None, library=Library(), threads=False).save().startswith("characters cannot be saved")
 
 
+def test_a_loaded_characters_outfit_goes_on_its_faces_skin(tmp_path):
+    """A face that comes with a body texture (its skin matched to the face) is what the outfit goes on; it is saved
+    with the character, so when the character is loaded and its outfit changed, the skin stays the face's."""
+    skin = (90, 60, 40)
+
+    def with_body(photos, model):
+        head = np.zeros((8, 8, 4), np.uint8)
+        head[..., :3], head[..., 3] = (200, 30, 160), 255
+        body = np.array(model.primitives[0].texture, np.uint8, copy=True)  # (the tube woman's body)
+        body[..., :3][body[..., 3] > 0] = skin
+        return FaceTextures({_head(model): head, "p000_body": body}, "a stand-in with a body")
+
+    creator = _creator(tmp_path, painter=with_body)
+    creator.set_avatar("Tube_Woman")
+    creator.set_face("Ada")
+    creator.apply_preset("highland")
+    creator.set_name("Ada")
+    assert creator.wait()
+    creator.save()
+    assert creator.wait()
+    creator.update()
+    assert (tmp_path / "created" / "Ada" / "p000_body.base.png").is_file()
+    from bifold_demo.characters.outfit import regions as R
+
+    hands = R.body_regions(MODELS["Tube_Woman"]).skin
+    other = _creator(tmp_path, painter=painter())  # (its painter would give no body: the saved one must do)
+    other.load("Ada")
+    assert other.wait() and other.state() == "Ada: saved"
+    other.set_colour("navy")  # a new outfit, over the face's skin
+    assert other.wait()
+    body = other.character().textures["p000_body"]
+    assert np.all(body[..., :3][hands] == skin)
+
+
 def test_edit_a_person_of_the_scene_as_a_new_character(tmp_path):
     from bifold_demo.characters.character import Character
     from bifold_demo.characters.outfit import dress
@@ -475,10 +509,12 @@ def test_the_face_comes_from_the_head_texture_pipeline_or_the_simple_painting(mo
         photos.append(tmp_path / f"p{k}.png")
         cv2.imwrite(str(photos[-1]), np.full((40, 40, 3), 90 + k, np.uint8))
     monkeypatch.setattr(C, "_headtex_missing", lambda: None)
-    made = SimpleNamespace(primitive=HEAD, rgba=np.zeros((4, 4, 4), np.uint8), projections=[1], warnings=["dim"])
-    monkeypatch.setattr(headtex, "head_texture", lambda photos, model: made)
+    textures = {HEAD: np.zeros((4, 4, 4), np.uint8), "p000_body": np.ones((4, 4, 4), np.uint8)}
+    made = SimpleNamespace(textures=textures, body=textures["p000_body"], result=SimpleNamespace(projections=[1]),
+                           warnings=["dim"])
+    monkeypatch.setattr(headtex, "person_textures", lambda photos, model: made)  # (all the stages)
     result = C.face_texture(photos, model)
-    assert result.textures == {HEAD: made.rgba} and result.method == "head texture from 1 of 2 photos"
+    assert result.textures == textures and result.method == "head and body textures from 1 of 2 photos"
     assert result.notes == ["dim"]
 
     def fails(photos, model):
@@ -491,7 +527,7 @@ def test_the_face_comes_from_the_head_texture_pipeline_or_the_simple_painting(mo
 
     from bifold_demo.recognition import engine
 
-    monkeypatch.setattr(headtex, "head_texture", fails)
+    monkeypatch.setattr(headtex, "person_textures", fails)
     monkeypatch.setattr(engine, "FaceEngine", Engine)
     monkeypatch.setattr(face_photo, "head_layout", lambda model: SimpleNamespace(primitive=1))
     painted = []

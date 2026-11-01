@@ -9,6 +9,8 @@ how those were made (the outfit recipe, whose face it is). Everything is kept in
         character.json     name, avatar, face, outfit recipe, items, which texture is whose
         f001_head.png      the textures painted for it, by primitive name (only those that differ from the avatar's)
         f001_body.png
+        f001_body.base.png what its outfit was made on, when not the avatar's own texture (a body whose skin was
+                           matched to the face), so that the outfit can be changed later and keep that skin
 
 The textures are stored ready to draw, so loading a character needs no generator or face model. The folder is looked
 at again at most once a second (:meth:`CharacterBook.refresh`), so a character saved by the creator, copied in by
@@ -60,6 +62,7 @@ class CreatedCharacter:
     created: float = 0.0
     updated: float = 0.0
     folder: Path | None = None  # where it is saved, once it is
+    bases: dict = field(default_factory=dict)  # primitive name -> what its look was made on, if not the avatar's own
 
     def describe(self) -> str:
         parts = [self.avatar]
@@ -101,19 +104,15 @@ def save(character: CreatedCharacter, folder) -> Path:
         shutil.rmtree(tmp)
     tmp.mkdir(parents=True)
     now = time.time()
-    files = {}
-    for primitive, image in character.textures.items():
-        name = re.sub(r"[^\w.-]+", "_", primitive) + ".png"
-        array = np.asarray(image)
-        bgr = cv2.cvtColor(array, cv2.COLOR_RGBA2BGRA if array.shape[-1] == 4 else cv2.COLOR_RGB2BGR)
-        if not cv2.imwrite(str(tmp / name), bgr):
-            raise OSError(f"cannot write {tmp / name}")
-        files[primitive] = name
-    for kept in _own_files(target, set(files.values())):  # an item's picture, notes: the user's files stay
+    files = _write_images(character.textures, tmp, ".png")
+    bases = _write_images(character.bases, tmp, ".base.png")
+    for kept in _own_files(target, {*files.values(), *bases.values()}):  # an item's picture: the user's files stay
         shutil.copy2(kept, tmp / kept.name)
     data = {f.name: copy.deepcopy(getattr(character, f.name)) for f in fields(character)
-            if f.name not in ("textures", "folder")}
+            if f.name not in ("textures", "folder", "bases")}
     data.update(format=FORMAT, textures=files, created=character.created or now, updated=now)
+    if bases:
+        data["bases"] = bases
     (tmp / FILE).write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     old = target.with_name(f".{target.name}.{os.getpid()}.old")
     if target.exists():
@@ -123,6 +122,20 @@ def save(character: CreatedCharacter, folder) -> Path:
         shutil.rmtree(old, ignore_errors=True)
     character.folder, character.created, character.updated = target, data["created"], now
     return target
+
+
+def _write_images(images: dict, folder: Path, ending: str) -> dict:
+    """Write ``images`` (primitive name -> RGB(A) image) into ``folder`` as PNG files named after the primitives with
+    ``ending``; returns their file names by primitive name."""
+    files = {}
+    for primitive, image in images.items():
+        name = re.sub(r"[^\w.-]+", "_", primitive) + ending
+        array = np.asarray(image)
+        bgr = cv2.cvtColor(array, cv2.COLOR_RGBA2BGRA if array.shape[-1] == 4 else cv2.COLOR_RGB2BGR)
+        if not cv2.imwrite(str(folder / name), bgr):
+            raise OSError(f"cannot write {folder / name}")
+        files[primitive] = name
+    return files
 
 
 def _saved_name(folder: Path) -> str | None:
@@ -140,8 +153,10 @@ def _own_files(folder: Path, replaced: set[str]) -> list[Path]:
     ``character.json``, not the textures it listed, not those it writes now (``replaced``)."""
     try:
         data = json.loads((folder / FILE).read_text(encoding="utf-8"))
-        textures = data.get("textures") if isinstance(data, dict) else None
-        ours = {str(v) for v in textures.values()} if isinstance(textures, dict) else set()
+        ours = set()
+        for key in ("textures", "bases"):
+            listed = data.get(key) if isinstance(data, dict) else None
+            ours |= {str(v) for v in listed.values()} if isinstance(listed, dict) else set()
         return [p for p in folder.iterdir() if p.is_file() and not p.name.startswith(".")
                 and p.name != FILE and p.name not in ours | replaced]
     except (OSError, ValueError, RecursionError):
@@ -239,18 +254,30 @@ def _load(path: Path, raw: bytes, lazy: bool) -> CreatedCharacter:
     name, avatar, face = _text(data, "name"), _text(data, "avatar"), data.get("face")
     if face is not None and not isinstance(face, str):
         raise ValueError(f"the face is not a name: {face!r}")
+    files, bases = _files(path, data, "textures"), _files(path, data, "bases")
+    items = _check_items(data.get("items"))
+
+    def images(found):
+        return Textures(found) if lazy else {primitive: _read(file) for primitive, file in found.items()}
+
+    return CreatedCharacter(name, avatar, face, _mapping(data, "outfit"), items, images(files),
+                            _seconds(data, "created"), _seconds(data, "updated"), path, images(bases))
+
+
+def _files(path: Path, data: dict, key: str) -> dict:
+    """The image files listed under ``key`` (``"textures"`` or ``"bases"``) of a ``character.json``, by primitive
+    name; raises ``ValueError`` for a name that leads out of the folder and ``OSError`` for a file that is not
+    there."""
     files = {}
-    for primitive, file_name in _mapping(data, "textures").items():
+    for primitive, file_name in _mapping(data, key).items():
         if not isinstance(file_name, str) or not _in_folder(file_name):
-            raise ValueError(f"the texture of {primitive} is not a file of the folder: {file_name!r}")
+            what = "texture" if key == "textures" else "base texture"
+            raise ValueError(f"the {what} of {primitive} is not a file of the folder: {file_name!r}")
         files[primitive] = path / file_name
     for file in files.values():
         if not file.is_file():
             raise OSError(f"cannot read {file}")
-    items = _check_items(data.get("items"))
-    textures = Textures(files) if lazy else {primitive: _read(file) for primitive, file in files.items()}
-    return CreatedCharacter(name, avatar, face, _mapping(data, "outfit"), items, textures, _seconds(data, "created"),
-                            _seconds(data, "updated"), path)
+    return files
 
 
 def _a_number(value) -> bool:

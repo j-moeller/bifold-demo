@@ -283,6 +283,21 @@ def test_saving_again_keeps_the_other_files_of_the_folder(tmp_path):
     assert tuple(load(folder).textures["f001_body"][0, 0, :3]) == (7, 8, 9)
 
 
+def test_what_a_look_was_made_on_is_kept_beside_it(tmp_path):
+    """A body whose skin was matched to the face, under the outfit: saved with the character (for editing it
+    again), never one of its textures in the fair; saved again without it, its file goes."""
+    ada = CreatedCharacter("Ada", "Female_Adult_01", textures={"f001_body": _image((1, 2, 3))},
+                           bases={"f001_body": _image((90, 60, 40))})
+    folder = save(ada, tmp_path)
+    assert json.loads((folder / "character.json").read_text())["bases"] == {"f001_body": "f001_body.base.png"}
+    for lazy in (False, True):
+        again = load(folder, lazy=lazy)
+        assert tuple(again.bases["f001_body"][0, 0, :3]) == (90, 60, 40) and list(again.textures) == ["f001_body"]
+    ada.bases = {}
+    save(ada, tmp_path)
+    assert sorted(p.name for p in folder.iterdir()) == ["character.json", "f001_body.png"] and not load(folder).bases
+
+
 def test_a_name_that_goes_to_another_characters_folder_is_refused(tmp_path):
     save(CreatedCharacter("Ada", "Female_Adult_01", textures={"f001_body": _image((1, 2, 3))}), tmp_path)
     for other in ("Ada?", "Ada/"):  # both go to the folder Ada/
