@@ -146,3 +146,10 @@ branch and pushed; its results go into the progress log.
   - F1 part 4: the engine built from a profile, the new gallery, model checks;
   - one conflict in `renderer.py` (S1's framebuffer budget against S2's sRGB colour buffers), combined;
   - the builders are resumed and the full suite is running.
+- **1 November, 21:20 UTC:** **S1 done.** All 14 review findings are fixed, none rejected. The builder's full
+  suite: 799 passed, 9 skipped. The builder confirmed the `renderer.py` merge with S2. Key results:
+  - one frontal eye-distance definition everywhere, and the head pose in the truth;
+  - requests checked at the caller, and off-view requests take no slots;
+  - the camera model at the camera's own pixels: good 4K at level 4 gives 29.4 dB, was 26.7;
+  - framebuffers kept within 192 MB (42 MB in the reviewer's case, was 205);
+  - `WindowRequest(eye_px=...)` for E1: 8-160 px within 0.1 %.
