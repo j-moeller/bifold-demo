@@ -125,3 +125,9 @@ branch and pushed; its results go into the progress log.
   - **Lows:** camera faults applied at binned scale, motion blur off at long frame gaps, windows at odd pixel
     offsets, framebuffer memory, doc numbers, test gaps, E1's control of the eye distance.
   - The S1 builder is fixing them.
+- **1 November, 17:25 UTC:** on the branch:
+  - S1 review fixes 1-5: the evaluation truth's face size uses the turned-to-the-camera definition and carries
+    the head pose; requests are checked where they are made; requests off the view take no windows;
+  - S2, part 1: head normal and specular maps, 2048 detail textures, tangents, cache format 2;
+  - S2, part 2: linear light.
+  - The full suite is running on the branch.
