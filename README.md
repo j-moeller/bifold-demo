@@ -59,6 +59,7 @@ for your terminal app. Allow it, then run the command again.
 | `R`       | restart the scene (time 0, physics reset)                 |
 | `[` / `]` | lower / raise the confidence threshold                    |
 | `Y`/`Tab` | select a person in the 3D scene: yoga poses, accessories (see below) |
+| `C`       | the character creator: a character of your own for the fair (see [Character creator](#character-creator)) |
 | click     | select the person you click on in the 3D scene (the nearest one where people overlap) |
 | `F`       | toggle fullscreen                                         |
 | `P`       | save a screenshot to `screenshots/`                       |
@@ -76,6 +77,7 @@ selection mode the keys are:
 | click a person          | select them                                             |
 | `Tab` / `Shift`+`Tab`   | the next person to the right / left of the selected one, by where they are now; after the rightmost the leftmost (also `→` / `←`) |
 | `↑` / `↓` (or `I`)      | the next menu: the yoga poses (eight to a menu), then the items; `I` goes to the items and back |
+| `C`                     | the character creator for the selected person: a new character of their avatar, clothes, items and known face |
 | `Esc` / `Y`             | end selection mode (poses already started go on)        |
 
 In a yoga menu:
@@ -185,7 +187,7 @@ avatar's own clothes stay. This is the first step of the character creator
 (component 2 in
 [docs/research/outfit_textures.md](docs/research/outfit_textures.md)).
 Fabrics made from a description by a text-to-image model are in the next
-section; the creator screen comes later.
+section; the creator screen is in [Character creator](#character-creator).
 
 ```python
 from bifold_demo.characters.outfit import dress, undress
@@ -1148,6 +1150,59 @@ texture, tone-matched, until stage 5 completes it.
 
 Photos of people and textures made from them are personal data: keep them in
 git-ignored folders (like `faces/`) and never commit them.
+## Character creator
+
+`C` opens the character creator (in selection mode: for the selected person,
+as a new character of their avatar, clothes, items and known face; a created
+character is opened to edit it). The avatar turns on a turntable on the left,
+and on the right is a row per choice:
+
+| Row                   | Choices                                                        |
+|-----------------------|----------------------------------------------------------------|
+| Avatar                | the prepared avatars                                           |
+| Name                  | typed: `Enter`, the name, `Enter`                              |
+| Face                  | none, or a known person of `faces/` (see [Face recognition](#face-recognition)) |
+| Outfit                | the presets of [Outfits](#outfits)                             |
+| Garment               | top, shirt, bottoms or shoes (those the avatar has): the next rows change it |
+| Pattern               | the avatar's own, a plain colour, one of the twelve patterns, or the fabric |
+| Colour, 2nd colour    | the garment's colour, and the second colour of a pattern       |
+| Fabric                | a description such as "blue paisley silk": `Enter`, the text, `Enter` (or *make*) |
+| Variations            | the fabric's swatches as they come; one goes on at once, the best when all are made, unless you pick one |
+| Scale                 | the pattern's or fabric's repeat, smaller or larger            |
+| Hat, Glasses, Sign    | none, or a look (see [Accessories](#accessories))              |
+| Character             | save; delete (press it twice); new                             |
+| Saved                 | the saved characters: `Enter` opens one to edit it             |
+
+| Key                     | Action                                                  |
+|-------------------------|---------------------------------------------------------|
+| `↑` / `↓` (`Tab`)       | the row above / below                                   |
+| `←` / `→`               | the choice before / after, at once (in the last two rows `Enter` does it) |
+| `Enter`                 | type in the name or fabric row (`Enter` again ends it, `Esc` undoes it); do the action marked |
+| `,` / `.`               | turn the avatar by 45°; `F` / `B` its front / back; `Space` turning on or off |
+| `Esc` / `C`             | close the creator (it keeps what you made)              |
+
+A click on a chip, a box or a button under the avatar does the same. Nothing
+holds up the window: preparing an avatar (labelling its garments: a few
+seconds the first time), dressing it (0.1-0.5 s), making a face (seconds) and
+saving run on threads of their own, the fabric on the generator's thread, and
+the status line says what is going on. The fabric generator runs as in
+[Fabrics from a description](#fabrics-from-a-description), never downloading:
+without a downloaded model you get the keyword fabric, and the fabric row says
+why. The face comes from one function, `face_texture(photos, model)` in
+[`creator.py`](src/bifold_demo/creator.py): the
+[head-texture pipeline](#head-textures-from-photos) when MediaPipe is
+installed, else the person's best photo painted on (`face_photo.paint_face`).
+
+**Saving** writes the character through the demo's character book into
+`created/<name>/`: its name, avatar, whose face it wears, the outfit recipe
+(fabrics with their images), its items and the textures (the body texture of
+the outfit, and the head texture when it has a face). The demo picks it up
+within a second and it joins the fair ("Ada joined the fair", see below).
+Saving under a name that is saved already asks you to press save again.
+Opening a saved character restores all of it; its saved textures are used
+until you change something. [docs/previews/creator.jpg](docs/previews/creator.jpg)
+shows the screen.
+
 ## Created characters
 
 Characters made in the character creator are saved in [`created/`](created/README.md)
@@ -1559,6 +1614,7 @@ src/bifold_demo/
                library.py, defaults.py, cli.py (bifold-people)          ← 2D people generator
   app.py       main loop and command line; loader.py loads and reloads scene files;
                selection.py (selection mode: people, their yoga poses and accessories);
+               creator.py (the character creator; display/creator_view.py draws it);
                pacing.py (background work that leaves the main thread its frames)
   scenes/      fair.py (default trade-fair hall), created_cast.py (created characters in it),
                fair3d.py (static 3D poses), basic.py

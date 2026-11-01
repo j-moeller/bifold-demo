@@ -38,6 +38,18 @@ def key_code(raw: int) -> int | None:
     return ord(chr(key).lower()) if chr(key).isalpha() else key
 
 
+def typed_char(raw: int) -> str | None:
+    """The character a ``cv2.waitKeyEx`` code types, with its case (``"A"`` for Shift+A: :func:`key_code` lower-cases
+    letters), or ``None`` for a key that types none (arrows, Tab, Return, Escape, Backspace, ...)."""
+    if raw < 0 or raw in _SPECIAL:
+        return None
+    key = raw & 0xFFFF
+    if key < 32 or key == 127 or key > 0xFF:
+        return None
+    char = chr(key)
+    return char if char.isprintable() else None
+
+
 class Window:
     """Shows frames at their native resolution; can switch to fullscreen. Left clicks are collected for
     :meth:`poll_clicks`, in the pixels of the shown image (HighGUI maps them, also when the window is scaled)."""
@@ -74,8 +86,13 @@ class Window:
         self._shown = True
 
     def poll_key(self, delay_ms: int = 1) -> int | None:
-        """Process window events; return the pressed key (see :func:`key_code`) or ``None``."""
-        return key_code(cv2.waitKeyEx(delay_ms))
+        """Process window events; return the pressed key (see :func:`key_code`) or ``None``. :attr:`typed` is then
+        the character it typed, with its case (:func:`typed_char`), for text being typed."""
+        raw = cv2.waitKeyEx(delay_ms)
+        self.typed = typed_char(raw)
+        return key_code(raw)
+
+    typed: str | None = None
 
     def is_open(self) -> bool:
         if not self._shown:

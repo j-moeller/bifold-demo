@@ -171,3 +171,9 @@ work goes on. The people are avatars from the
   knows, or a plain colour); the model rungs are grey because they did not
   run. Bottom: three avatars wearing repaired synthetic swatches (not
   generated) on a jacket, a blouse and a blazer, front and back.
+- `creator.jpg`: the character creator's screen (`C`, `creator.py`) in a
+  headless run of the demo, the fair dimmed behind it: an avatar on the
+  turntable in the "highland" preset with houndstooth trousers, a straw hat and
+  a welcome sign, and the rows of choices beside it. The shirt's fabric "blue
+  paisley silk" is the keyword fabric: no model could run where it was made,
+  and the fabric row says why. No face.

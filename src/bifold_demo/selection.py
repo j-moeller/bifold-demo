@@ -5,7 +5,8 @@ to the next person to the right or left; Esc or ``Y`` ends it. The up and down a
 :func:`menus`, whose entries are on the number keys: in a yoga menu a number makes the selected person do that pose,
 the same number again keeps them holding it and 0 (or Backspace) stops; in the items menu a number puts that item on
 (:mod:`.characters.accessories`), the same number again goes to its next look and, after the last, takes it off, and
-0 takes everything off. When the selected person leaves the picture, is hidden or is removed from the scene, the
+0 takes everything off. ``C`` opens the character creator for the selected person (:mod:`.creator`: a new character
+of their avatar and looks). When the selected person leaves the picture, is hidden or is removed from the scene, the
 person nearest to where they were is selected instead.
 
 A person asked for a pose stops (someone walking slows to a stop over half a second, someone standing stops at once)
@@ -811,7 +812,7 @@ class Selection:
         title, kind, entries = all_menus[min(self.menu, len(all_menus) - 1)]
         keys = [f"{k + 1} {short_title(e) if kind == 'yoga' else _TITLES[e]}"
                 for k, e in enumerate(entries)]
-        people = "Click a person, or Tab / Shift+Tab: next to the right / left | Up / Down: menu | Esc: done"
+        people = "Click a person, or Tab / Shift+Tab: next to the right / left | Up / Down: menu | C: creator | Esc: done"
         if kind == "yoga":  # eight pose names do not fit one line: four to a line
             return [people + " | 0 stop",
                     f"[{title}] " + "  ".join(keys[:4]),

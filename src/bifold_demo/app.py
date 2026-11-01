@@ -19,8 +19,8 @@ from .scene import Scene
 from .selection import Selection, person_name
 from .sources import FixedStepClock, Frame, SceneSource, SimulationClock, SourceSwitcher, WebcamSource
 
-HELP = ("S source | D detect | N names | Space pause | R reset | [ ] confidence | Y / click people | F fullscreen | "
-        "P screenshot | H hide | Q quit")
+HELP = ("S source | D detect | N names | Space pause | R reset | [ ] confidence | Y / click people | C creator | "
+        "F fullscreen | P screenshot | H hide | Q quit")
 STALE_AFTER = 1.0  # seconds after which old detections are no longer drawn
 
 
@@ -120,6 +120,8 @@ class DemoApp:
             from .scenes.created_cast import CreatedCast
 
             self.created = CreatedCast(CharacterBook(config.created), wardrobe=self.selection.wardrobe)
+        self.creator = None  # the character creator (C), made when first opened
+        self.creator_view = None
 
     def _prepare_scene(self, scene: Scene) -> None:
         if self.config.uploads:
@@ -213,6 +215,26 @@ class DemoApp:
                             error=any(note.startswith("cannot") for note in notes), echo=False)
                 self._created_notes = (text, notes)
 
+    def _open_creator(self) -> None:
+        """Show the character creator (``C``); in selection mode for the selected person ("edit as a new
+        character")."""
+        if self.creator is None:
+            from .creator import Creator, KnownFaces
+            from .display.creator_view import CreatorView
+
+            book = self.created.book if self.created is not None else None
+            library = self.created.library if self.created is not None else None
+            self.creator = Creator(book, library=library, wardrobe=self.selection.wardrobe,
+                                   faces=KnownFaces(self.config.faces, lambda: self.gallery))
+            self.creator_view = CreatorView(self.creator)
+        person = self.selection.selected if self.selection.active else None
+        face = self.cast.wears(person) if person is not None and self.cast is not None else None
+        self.selection.leave()
+        self.notify(self.creator.open(person, face), 4.0)
+
+    def _creating(self) -> bool:
+        return self.creator is not None and self.creator.active
+
     def _faces_for(self, frame: Frame):
         """The recognised faces of ``frame`` (or of a frame just before it), or ``None``; kept for the status panel."""
         self._last_faces = self._recognized(frame)
@@ -269,6 +291,9 @@ class DemoApp:
                                 self.notify(note, 3.0)
                         if message:
                             self.notify(message)
+                    if self.creator is not None:  # (also closed: a save asked for just before goes on)
+                        for note in self.creator.update():
+                            self.notify(note, 4.0, error=note.startswith("cannot"))
                     result = self._detections_for(frame)
                     self._last_canvas = self._compose(frame, result, self._faces_for(frame))
                     self.display_rate.tick(time.perf_counter())
@@ -298,6 +323,9 @@ class DemoApp:
                 self.cast.close()
             if self.created is not None:
                 self.created.close()
+            if self.creator is not None:
+                self.creator.close()
+                self.creator_view.release()
             self.selection.close()
             self.switcher.stop()
             if self._writer is not None:
@@ -321,6 +349,10 @@ class DemoApp:
         return result
 
     def _compose(self, frame: Frame, result: DetectionResult | None, faces=None):
+        if self._creating():
+            canvas = self.creator_view.draw(frame.image)
+            self._draw_message(canvas)
+            return canvas
         canvas = frame.image.copy()  # the detector may still be reading the original
         if result is not None:
             draw_detections(canvas, result.detections, None if result.frame_size == frame.size else result.frame_size)
@@ -335,6 +367,11 @@ class DemoApp:
             draw_panel(canvas, self._status_lines(frame, result))
             if not self.config.headless:
                 draw_panel(canvas, self.selection.help_lines() if selecting else [HELP], corner="bottom-left")
+        self._draw_message(canvas)
+        return canvas
+
+    def _draw_message(self, canvas) -> None:
+        """The message of the moment as a banner (else the error of a part that does not work, if any)."""
         if self._message and time.perf_counter() < self._message[1]:
             text, _expiry, is_error = self._message
             draw_banner(canvas, text, color=(40, 40, 200) if is_error else (60, 140, 40))
@@ -344,7 +381,6 @@ class DemoApp:
                      or (self.face_worker.error if self.face_worker else None))
             if error:
                 draw_banner(canvas, error)
-        return canvas
 
     def _status_lines(self, frame: Frame, result: DetectionResult | None) -> list[str]:
         w, h = frame.size
@@ -382,6 +418,12 @@ class DemoApp:
 
     def _handle_key(self, key: int, window: Window) -> None:
         clock = self.scene_source.clock
+        if self._creating():  # it takes the keys while it is shown (Esc closes it)
+            handled, message = self.creator.handle_key(key, getattr(window, "typed", None))
+            if message:
+                self.notify(message, 3.0, error=message.startswith("cannot"))
+            if handled:
+                return
         if self.switcher.active_name == "scene":
             handled, message = self.selection.handle_key(key, self.scene_source.scene.time)
             if handled:
@@ -422,6 +464,8 @@ class DemoApp:
             else:
                 source = self.scene_source
                 self.notify(self.selection.enter(source.scene, (source.width, source.height)), 4.0)
+        elif key == ord("c"):
+            self._open_creator()
         elif key in (ord("["), ord("]")) and self.detector is not None:
             step = 0.05 if key == ord("]") else -0.05
             self.detector.conf = round(min(0.95, max(0.05, self.detector.conf + step)), 2)
@@ -437,7 +481,13 @@ class DemoApp:
             self._screenshot()
 
     def _handle_click(self, point) -> None:
-        """A left click at ``point`` (pixels of the picture): select the 3D person there (entering selection mode)."""
+        """A left click at ``point`` (pixels of the picture): a choice on the creator's screen when it is shown, else
+        select the 3D person there (entering selection mode)."""
+        if self._creating():
+            message = self.creator_view.click(point)
+            if message:
+                self.notify(message, 3.0, error=message.startswith("cannot"))
+            return
         if self.switcher.active_name != "scene":
             return
         source = self.scene_source
