@@ -76,7 +76,8 @@ class WindowRequest:
     And:
         priority: higher first (see :class:`Scheduler`).
         frame: the index of the frame the box or region comes from (the window is rendered with a later frame).
-        sensor: a sensor for this request alone (the service's otherwise).
+        sensor: a sensor for this request alone (else the preset's, else the service's).
+        preset: a camera preset for this request alone (a name or a :class:`~.camera_model.CameraModel`).
         subject: the scene's person this is about, when the caller knows it (the evaluation): the truth and the
             camera model's motion blur use it; otherwise the person whose eyes are nearest the window's middle.
     """
@@ -91,6 +92,7 @@ class WindowRequest:
     priority: float = 0.0
     frame: int | None = None
     sensor: Sensor | None = None
+    preset: object = None
     subject: object = None
     head_size: float = 0.5
     eye_m: float = EYE_DISTANCE_M

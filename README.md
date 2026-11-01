@@ -1085,6 +1085,37 @@ resolution, gives the detector and the screen a copy scaled to the frame
 size, and cuts the windows from the full picture (averaged over `k x k`
 pixels at level `k`).
 
+**The camera model.** A render is noiseless, perfectly focused and frozen in
+time; a camera's picture is not. A camera preset
+([`sensor/camera_model.py`](src/bifold_demo/sensor/camera_model.py)) is
+applied to every window at the window's own pixel scale, in the order light
+meets the faults: in linear light, lens blur (a Gaussian, in sensor pixels),
+motion blur (the person's projected speed times the exposure, a line kernel;
+only the person is smeared, over the still background, using their coverage
+of the window from `Renderer.window_mask`), optionally a Bayer mosaic,
+Poisson-Gaussian sensor noise in electrons (a binned pixel collects `k x k`
+times the light), OpenCV demosaicing, then the sRGB and a contrast tone
+curve, sharpening and JPEG. The noise is seeded by the preset's seed, the
+frame, the tag and the window's place, so runs reproduce.
+
+| Preset | Sensor | Lens blur | Exposure | Electrons at white / read noise | Mosaic | JPEG |
+|---|---|---|---|---|---|---|
+| `ideal` | the declared one (7680x4320) | - | - | - | - | - |
+| `good 8K` | 7680x4320 | 0.7 px | 1/250 s | 2500 / 1.5 | edge-aware | 90 |
+| `good 4K` | 3840x2160 | 0.6 px | 1/250 s | 6000 / 2.0 | edge-aware | 90 |
+| `budget 1080p` | 1920x1080 | 1.0 px | 1/60 s | 1500 / 4.0 | bilinear | 70 |
+
+A preset with its own sensor size places its windows on that sensor, so
+`budget 1080p` shows what such a camera gives the recogniser: an audience face
+at 4 m has about 99 pixels between the eyes with the 8K sensor, 50 with 4K
+and 25 with 1080p. The numbers are plausible values for such cameras, not
+measurements of one; calibrate them against the intended camera's footage.
+`WindowService(preset="good 4K")` sets the preset (a request may bring its
+own); `CameraModel(...)` makes another, and `preset.with_exposure(1 / 1000)`
+trades motion blur for noise. On this machine's CPU a preset takes about
+8 ms for a 256x256 window, 30 ms for 512x512 (40 ms with motion blur) and
+60-85 ms for 768x768; `ideal` takes nothing.
+
 **Agreement.** Windows equal the same pixels cut from a render of the whole
 sensor: on a test scene with textured boxes, a sphere, skinned people with
 their blob shadows and fog, eleven windows of 16 to 420 pixels at levels 1 to
@@ -1902,7 +1933,8 @@ src/bifold_demo/
                models.py, cli.py (bifold-faces)                          ← face recognition
   sensor/      geometry.py (a declared high-resolution sensor, its windows and
                pixel maps), requests.py (requests, head regions, the scheduler),
-               service.py (windows with the frames, the truth)          ← the virtual high-resolution sensor
+               service.py (windows with the frames, the truth),
+               camera_model.py (blur, noise, mosaic, tone, JPEG; presets)  ← the virtual high-resolution sensor
   people/      prompts.py, generator.py (text-to-image), cutout.py,
                library.py, defaults.py, cli.py (bifold-people)          ← 2D people generator
   app.py       main loop and command line; loader.py loads and reloads scene files;

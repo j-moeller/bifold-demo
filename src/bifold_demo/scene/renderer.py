@@ -166,6 +166,19 @@ void main() {
 }
 """
 _PROBE_SHADOW = 0.7  # the part of a blob shadow that counts (outside it, it darkens the floor by under 12 %)
+
+# Where one person covers a window (Renderer.window_mask): white where they are the nearest surface; what textures cut
+# out (hair cards) is left out as when drawing.
+_MASK_FS = """
+#version 330 core
+uniform sampler2D u_texture;
+in vec2 v_uv;
+out vec4 f_color;
+void main() {
+    if (texture(u_texture, v_uv).a < 0.5) discard;
+    f_color = vec4(1.0);
+}
+"""
 WINDOW_TARGETS = 6  # window sizes whose framebuffers are kept (least recently used dropped first)
 
 
@@ -224,6 +237,8 @@ class Renderer:
         self._frame_id = 0  # counts the frames drawn by render(), for the joint palettes windows reuse
         self.cull_view = False  # also cull the whole view (windows always do, unless asked not to)
         self.window_stats: dict = {}  # what the last culled window drew and left out (objects, people, shadows)
+        self._last_window = None  # (target, size, view-projection, camera position, time) of the last window
+        self._masks = None  # (object program, skinned program): see window_mask
         info = self.ctx.info
         self.max_window = int(info.get("GL_MAX_RENDERBUFFER_SIZE", 16384))  # the longest side a window may have
         self.info = info.get("GL_RENDERER", "OpenGL")
@@ -257,6 +272,62 @@ class Renderer:
         with self.ctx:  # its own context (another renderer's may be current)
             return self._render_window(scene, ndc, size, aspect, cull)
 
+    def window_mask(self, person) -> np.ndarray:
+        """How much of each pixel of the window drawn last by :meth:`render_window` shows ``person`` (a character,
+        with what they wear and carry) as the nearest surface: HxW float32, 0-1, soft at the edges as the MSAA
+        samples fall. For the camera model's motion blur (only the moving person is smeared). Call it right after
+        that window, from the same thread."""
+        with self.ctx:  # its own context (another renderer's may be current)
+            return self._window_mask(person)
+
+    def _window_mask(self, person) -> np.ndarray:
+        if self._last_window is None:
+            raise RuntimeError("window_mask needs a window drawn first")
+        (fbo, resolve), (width, height), view_proj, eye, t = self._last_window
+        mgl, ctx = self._moderngl, self.ctx
+        objects, skinned = self._mask_programs()
+        fbo.use()
+        ctx.viewport = (0, 0, width, height)
+        fbo.depth_mask = False  # keep the window's depth: the clear below only clears the colour
+        try:
+            fbo.clear(0.0, 0.0, 0.0, 0.0)
+            ctx.enable(mgl.DEPTH_TEST)
+            ctx.depth_func = "<="  # the person meets their own depth where they are in front
+            if person.current_visible:
+                model, _ = person.matrices(eye)
+                skinned["u_mvp"].write(gl_bytes(view_proj @ model))
+                self._joint_texture(person, reuse=True).use(1)
+                overrides = getattr(person, "texture_overrides", None)
+                for primitive in (*person.skinned_model.primitives, *getattr(person, "worn", ())):
+                    _vao, texture = self._skinned_primitive(primitive)
+                    if overrides:
+                        texture = overrides.get(primitive.name, texture)
+                    self._gl_texture(texture.at_time(t)).use(0)
+                    self._probe_vao(primitive, skinned).render(mgl.TRIANGLES)
+                for prop in getattr(person, "props", ()):
+                    if prop.current_visible:
+                        objects["u_mvp"].write(gl_bytes(view_proj @ prop.matrices(eye)[0]))
+                        self._gl_texture(prop.current_texture or self._white).use(0)
+                        self._probe_vao(prop.mesh, objects).render(mgl.TRIANGLES)
+        finally:
+            ctx.depth_func = "<"
+            fbo.depth_mask = True
+        if fbo is not resolve:
+            ctx.copy_framebuffer(resolve, fbo)
+        data = resolve.read(components=1, alignment=1)
+        mask = np.frombuffer(data, dtype=np.uint8).reshape(height, width)
+        return np.flipud(mask).astype(np.float32) / 255.0  # OpenGL rows start at the bottom
+
+    def _mask_programs(self):
+        if self._masks is None:
+            self._probe_programs()  # (its table of vertex arrays is shared)
+            objects = self.ctx.program(vertex_shader=_OBJECT_VS, fragment_shader=_MASK_FS)
+            skinned = self.ctx.program(vertex_shader=_SKINNED_VS, fragment_shader=_MASK_FS)
+            objects["u_texture"].value = skinned["u_texture"].value = 0
+            skinned["u_joints"].value = 1
+            self._masks = (objects, skinned)
+        return self._masks
+
     def _render(self, scene: Scene) -> np.ndarray:
         self._frame_id += 1
         camera = scene.camera
@@ -275,8 +346,12 @@ class Renderer:
         camera = scene.camera
         view_proj = crop @ camera.projection_matrix(self.aspect if aspect is None else float(aspect)) \
             @ camera.view_matrix()
-        return self._draw_scene(scene, self._window_target(width, height), (width, height), view_proj,
-                                aspect=aspect, ndc=ndc, cull=cull, window=True)
+        target = self._window_target(width, height)
+        self._last_window = None
+        image = self._draw_scene(scene, target, (width, height), view_proj, aspect=aspect, ndc=ndc, cull=cull,
+                                 window=True)
+        self._last_window = (target, (width, height), view_proj, camera.current_position, scene.time)
+        return image
 
     def _draw_scene(self, scene: Scene, target, size, view_proj: np.ndarray, aspect: float | None = None,
                     ndc=None, cull: bool = False, window: bool = False) -> np.ndarray:
@@ -797,6 +872,10 @@ class Renderer:
             for program in self._probes:
                 program.release()
             self._probes = None
+        if self._masks is not None:
+            for program in self._masks:
+                program.release()
+            self._masks = None
         if self._shadow_vbo is not None:
             self._shadow_vao.release()
             self._shadow_vbo.release()
@@ -807,6 +886,7 @@ class Renderer:
         for entry in self._window_targets.values():
             self._release_target(entry)
         self._window_targets.clear()
+        self._last_window = None
 
 
 def _scene_uniforms(scene: Scene) -> dict:

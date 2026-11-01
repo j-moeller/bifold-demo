@@ -18,12 +18,16 @@ Only what may show in a window is drawn (:mod:`bifold_demo.scene.frustum`).
   3D head point; the face size wanted; a pixel limit; a priority. :class:`HeadRegion`: the head's square in a box.
   :class:`Scheduler`: at most a few windows a frame, by priority, tracks taking turns.
 - :class:`WindowService` (:mod:`.service`): requests in, windows out with every frame of a source
-  (``frame.windows``: :class:`WindowResult`, with the window's image, place, scale, time and :class:`Truth`);
-  :func:`render_windows` and :func:`crop_windows` for direct use.
+  (``frame.windows``: :class:`WindowResult`, with the window's image, place, scale, time, camera preset and
+  :class:`Truth`); :func:`render_windows` and :func:`crop_windows` for direct use.
+- :class:`CameraModel` (:mod:`.camera_model`): a camera's faults at the window's pixel scale (lens and motion blur,
+  Poisson-Gaussian noise, a Bayer mosaic and demosaicing, tone, sharpening, JPEG), seeded; :data:`PRESETS` "ideal",
+  "good 8K", "good 4K" and "budget 1080p".
 
 The design and the measurements behind it are in ``docs/research/high_res_faces.md`` (sections 2.1 and 3.4).
 """
 
+from .camera_model import PRESETS, CameraModel, camera_preset
 from .geometry import DEFAULT_SCALE, Sensor, Window
 from .requests import DEFAULT_FACE_PX, DEFAULT_MAX_PIXELS, HeadRegion, Scheduler, WindowRequest
 from .service import Truth, WindowResult, WindowService, crop_windows, render_windows
@@ -32,6 +36,8 @@ __all__ = [
     "DEFAULT_FACE_PX",
     "DEFAULT_MAX_PIXELS",
     "DEFAULT_SCALE",
+    "PRESETS",
+    "CameraModel",
     "HeadRegion",
     "Scheduler",
     "Sensor",
@@ -40,6 +46,7 @@ __all__ = [
     "WindowRequest",
     "WindowResult",
     "WindowService",
+    "camera_preset",
     "crop_windows",
     "render_windows",
 ]

@@ -139,7 +139,7 @@ def test_windows_of_a_person_box_hold_their_head_and_know_who_it_is(gl):
         assert [r.tag for r in results] == ["near"]  # the region outside the view is left out
         result = results[0]
         assert result.image.shape == (result.window.height, result.window.width, 3)
-        assert result.time == scene.time and result.frame == 7 and result.camera == "ideal"
+        assert result.time == scene.time and result.frame == 7 and result.preset == "ideal"
         assert result.window.level == 1 and result.window.width % 16 == 0
         assert result.render_ms > 0
         truth = result.truth  # the boxy people have no eye bones: nobody known

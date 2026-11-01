@@ -13,6 +13,11 @@ Each :class:`WindowResult` holds the image, its :class:`~.geometry.Window` (wher
 its scale, to map faces back to the frame), the camera preset, the frame's time and index and what the request
 asked. For a scene it also holds :class:`Truth`: who the scene knows is in the window and where their eyes are, for
 the evaluation only (recognition must not use it).
+
+The camera preset (:mod:`.camera_model`) is applied to each window at its own pixel scale. A preset that brings its
+own sensor size (``lines``) places the window on that sensor instead of the declared one; a request's own ``sensor``
+comes before both. For its motion blur the preset gets the person's speed from :class:`Motion` and, when they move,
+their coverage of the window (:meth:`~bifold_demo.scene.renderer.Renderer.window_mask`).
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from .camera_model import CameraModel, camera_preset
 from .geometry import DEFAULT_SCALE, Sensor, Window
 from .requests import DEFAULT_WINDOWS, HeadRegion, Scheduler, WindowRequest, head_point_region
 
@@ -67,7 +73,7 @@ class WindowResult:
         image: HxWx3 BGR pixels, after the camera model.
         time: the scene time of the frame (all windows of a frame have the frame's time); ``None`` for a real camera.
         frame: the index of the frame it was delivered with.
-        camera: the name of the camera preset used.
+        preset: the name of the camera preset applied.
         eye_distance: the pixels between the eyes the request's estimate gives in the window (``None``: no estimate).
         truth: who the scene knows is in it (``None`` for a real camera, or when not asked for).
         render_ms, camera_ms: the time rendering (or cutting) and the camera model took.
@@ -78,7 +84,7 @@ class WindowResult:
     image: np.ndarray
     time: float | None
     frame: int
-    camera: str = "ideal"
+    preset: str = "ideal"
     eye_distance: float | None = None
     truth: Truth | None = None
     render_ms: float = 0.0
@@ -191,6 +197,12 @@ class Motion:
 def find_truth(scene, window: Window, motion: Motion | None = None, subject=None) -> Truth | None:
     """Who the scene knows is in ``window``: ``subject`` when given, else the visible person whose eyes are in the
     window, nearest its middle (``None`` when nobody's are)."""
+    found = _find_person(scene, window, motion, subject)
+    return None if found is None else found[1]
+
+
+def _find_person(scene, window: Window, motion: Motion | None, subject) -> tuple[object, Truth] | None:
+    """``(person, truth)`` for :func:`find_truth`."""
     camera = scene.camera
     clip_from_world = window.crop_matrix() @ camera.projection_matrix(window.sensor.view_aspect) @ camera.view_matrix()
     size = np.array(window.size, dtype=np.float64)
@@ -232,29 +244,41 @@ def find_truth(scene, window: Window, motion: Motion | None = None, subject=None
             if moved is not None:
                 velocity = tuple(float(v) for v in (moved[1] - moved[0]) / step)
     model = getattr(person, "skinned_model", None)
-    return Truth(name=str(person.name), avatar=str(getattr(model, "name", "")),
-                 distance=float(np.linalg.norm(middle - np.asarray(camera.current_position, dtype=np.float64))),
-                 eyes=tuple(tuple(float(v) for v in p) for p in px), eye_distance=float(np.linalg.norm(px[0] - px[1])),
-                 inside=inside, velocity=velocity)
+    return person, Truth(name=str(person.name), avatar=str(getattr(model, "name", "")),
+                         distance=float(np.linalg.norm(middle - np.asarray(camera.current_position, dtype=np.float64))),
+                         eyes=tuple(tuple(float(v) for v in p) for p in px),
+                         eye_distance=float(np.linalg.norm(px[0] - px[1])), inside=inside, velocity=velocity)
 
 
 # -- windows ----------------------------------------------------------------------------------------------------------
 
 
+def _sensor_for(request: WindowRequest, model: CameraModel, declared: Sensor, view) -> Sensor:
+    """The sensor a request's window lies on: its own, else its camera's size, else the declared one."""
+    if request.sensor is not None:
+        return request.sensor
+    if model.lines is not None:
+        return Sensor.with_lines(model.lines, view)
+    return declared
+
+
 def render_windows(scene, renderer, requests: Iterable[WindowRequest], sensor: Sensor | None = None, frame: int = 0,
                    head: HeadRegion | None = None, multiple: int = MULTIPLE, truth: bool = True,
-                   motion: Motion | None = None) -> list[WindowResult]:
+                   motion: Motion | None = None, preset="ideal") -> list[WindowResult]:
     """Render the windows of ``requests`` for ``scene`` as ``renderer`` drew it last (call it right after
-    ``renderer.render(scene)``: the windows then show the frame's moment and reuse its uploads).
+    ``renderer.render(scene)``: the windows then show the frame's moment and reuse its uploads), through the camera
+    ``preset`` (a name or a :class:`~.camera_model.CameraModel`; a request's own comes first).
 
     ``sensor``: the declared sensor (default: :data:`~.geometry.DEFAULT_SCALE` times the renderer's view); requests
     whose region is not in the view are left out. ``truth``: find who is in each window (see :class:`Truth`);
-    ``motion``: people's speeds for it."""
+    ``motion``: people's speeds, for the truth and the motion blur. ``frame``: the frame's index (results and the
+    noise's seed)."""
     view = (renderer.width, renderer.height)
     declared = sensor or Sensor.scaled(DEFAULT_SCALE, view)
     results = []
     for request in requests:
-        chosen = request.sensor or declared
+        model = camera_preset(request.preset if request.preset is not None else preset)
+        chosen = _sensor_for(request, model, declared, view)
         if chosen.view != view:
             raise ValueError(f"a sensor for a {chosen.view[0]}x{chosen.view[1]} view cannot make windows of a "
                              f"{view[0]}x{view[1]} renderer's view")
@@ -265,18 +289,27 @@ def render_windows(scene, renderer, requests: Iterable[WindowRequest], sensor: S
         start = time.perf_counter()
         image = renderer.render_window(scene, window.ndc, window.size, aspect=chosen.view_aspect)
         render_ms = (time.perf_counter() - start) * 1000.0
-        found = find_truth(scene, window, motion, request.subject) if truth else None
-        results.append(WindowResult(request, window, image, float(scene.time), frame, eye_distance=eyes, truth=found,
-                                    render_ms=render_ms))
+        found = _find_person(scene, window, motion, request.subject) if truth or model.needs_motion else None
+        start = time.perf_counter()
+        velocity, mask = (0.0, 0.0), None
+        if model.needs_motion and found is not None and np.hypot(*found[1].velocity) * model.exposure >= 0.5:
+            velocity = found[1].velocity
+            mask = renderer.window_mask(found[0])  # only the moving person is smeared
+        image = model.apply(image, window.level, velocity, mask, model.window_seed(frame, request.tag,
+                                                                                 window.sensor_rect))
+        camera_ms = (time.perf_counter() - start) * 1000.0  # the camera model, with the mask it needs
+        results.append(WindowResult(request, window, image, float(scene.time), frame, model.name, eyes,
+                                    found[1] if truth and found is not None else None, render_ms, camera_ms))
     return results
 
 
 def crop_windows(image: np.ndarray, view, requests: Iterable[WindowRequest], sensor: Sensor | None = None,
-                 frame: int = 0, head: HeadRegion | None = None, multiple: int = MULTIPLE) -> list[WindowResult]:
+                 frame: int = 0, head: HeadRegion | None = None, multiple: int = MULTIPLE,
+                 preset="ideal") -> list[WindowResult]:
     """Windows cut from a real camera's full-resolution ``image`` (BGR), of which the detector sees a copy of
     ``view`` = (width, height) pixels: the image is the sensor (``sensor`` must match it), and a window at level
     ``k`` is its crop averaged over ``k x k`` pixels. Requests with head points are left out (a real camera knows no
-    scene)."""
+    scene). ``preset`` adds a camera's faults on top of the real camera's own (its sensor size is not used)."""
     h, w = image.shape[:2]
     sensor = sensor or Sensor(w, h, view)
     if sensor.size != (w, h):
@@ -285,6 +318,7 @@ def crop_windows(image: np.ndarray, view, requests: Iterable[WindowRequest], sen
     for request in requests:
         if request.head is not None:
             continue
+        model = camera_preset(request.preset if request.preset is not None else preset)
         planned = plan_request(request, request.sensor or sensor, None, head, multiple)
         if planned is None:
             continue
@@ -293,8 +327,11 @@ def crop_windows(image: np.ndarray, view, requests: Iterable[WindowRequest], sen
         x0, y0, x1, y1 = window.sensor_rect
         crop = image[y0:y1, x0:x1]
         crop = cv2.resize(crop, window.size, interpolation=cv2.INTER_AREA) if window.level > 1 else crop.copy()
-        results.append(WindowResult(request, window, crop, None, frame, eye_distance=eyes,
-                                    render_ms=(time.perf_counter() - start) * 1000.0))
+        cut_ms = (time.perf_counter() - start) * 1000.0
+        start = time.perf_counter()
+        crop = model.apply(crop, window.level, seed=model.window_seed(frame, request.tag, window.sensor_rect))
+        results.append(WindowResult(request, window, crop, None, frame, model.name, eyes, None, cut_ms,
+                                    (time.perf_counter() - start) * 1000.0))
     return results
 
 
@@ -309,14 +346,17 @@ class WindowService:
         head: where heads are in person boxes (:class:`~.requests.HeadRegion`).
         multiple: window sides are grown to a multiple of it.
         truth: find who the scene knows is in each window.
+        preset: the camera preset (a name of :data:`~.camera_model.PRESETS` or a
+            :class:`~.camera_model.CameraModel`); a preset with its own sensor size uses it instead of ``sensor``.
 
     :meth:`request` and :meth:`request_once` may be called from any thread; the windows are made on the source's.
     ``last``: the windows of the latest frame.
     """
 
     def __init__(self, sensor: Sensor | None = None, max_windows: int = DEFAULT_WINDOWS, priority=None,
-                 head: HeadRegion | None = None, multiple: int = MULTIPLE, truth: bool = True):
+                 head: HeadRegion | None = None, multiple: int = MULTIPLE, truth: bool = True, preset="ideal"):
         self.sensor = sensor
+        self.preset = camera_preset(preset)
         self.scheduler = Scheduler(max_windows, priority)
         self.head = head or HeadRegion()
         self.multiple = multiple
@@ -360,7 +400,7 @@ class WindowService:
         self.motion.observe(scene)
         chosen = self._choose(frame.index)
         self.last = render_windows(scene, renderer, chosen, self.sensor, frame.index, self.head, self.multiple,
-                                   self.truth, self.motion) if chosen else []
+                                   self.truth, self.motion, self.preset) if chosen else []
         return self.last
 
     def for_image(self, image: np.ndarray, frame) -> list[WindowResult]:
@@ -369,6 +409,6 @@ class WindowService:
         sensor = self.sensor
         if sensor is not None and sensor.size != (image.shape[1], image.shape[0]):
             sensor = None  # the camera delivers another size than declared: use what it delivers
-        self.last = crop_windows(image, frame.size, chosen, sensor, frame.index, self.head,
-                                 self.multiple) if chosen else []
+        self.last = crop_windows(image, frame.size, chosen, sensor, frame.index, self.head, self.multiple,
+                                 self.preset) if chosen else []
         return self.last
