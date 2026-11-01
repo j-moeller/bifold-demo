@@ -24,12 +24,12 @@ Nothing here is an instruction for the code; the module docstrings and the READM
 | A: face → head texture | A1 literature review | on the branch (`e06e165`) | [docs/research/face_head_texture.md](../research/face_head_texture.md) |
 | A | A2 UV bake (shared with B) | on the branch (`1d962c7`) | `src/bifold_demo/characters/uvbake.py` |
 | A | **A3 landmarks on the head mesh, photos registered** (stages 0-1) | reviewed, fixed, **on the branch** (`e33a8ee`, `76edcc9`, `412fc48`) | [A3-head-landmarks-and-registration.md](A3-head-landmarks-and-registration.md) |
-| A | **A4 photos fused into the head texture, lighting taken out** (stages 3-4) | being built: 3 WIP commits plus uncommitted edits; not reviewed | [A4-photos-fused-into-the-head-texture.md](A4-photos-fused-into-the-head-texture.md) |
+| A | **A4 photos fused into the head texture, lighting taken out** (stages 3-4) | finished (lean, not reviewed) and **on the branch** (`f37be31`, `b080ae8`) | [A4-photos-fused-into-the-head-texture.md](A4-photos-fused-into-the-head-texture.md) |
 | B: character creator | B0 literature review | on the branch (`e494da2`) | [docs/research/outfit_textures.md](../research/outfit_textures.md) |
 | B | **B1 garment regions, fills, patterns, presets** (stages 0-1) | reviewed, fixed, **on the branch** (`b2adef8`, `dc46e51`, `2c75ec0`) | [B1-outfit-regions-and-fills.md](B1-outfit-regions-and-fills.md) |
-| B | **B2 a fabric from a description** (stage 2) | built (`c608f1f`, `7c5a26b`) and reviewed (0 high, 8 medium, 4 low); the fix is mostly done but uncommitted | [B2-fabric-from-a-description.md](B2-fabric-from-a-description.md) |
+| B | **B2 a fabric from a description** (stage 2) | built, reviewed, fixed and **on the branch** (`79de578`, `1d839e6`, `21d792d`) | [B2-fabric-from-a-description.md](B2-fabric-from-a-description.md) |
 | C: saved characters in the scene | C1 the saved format and the book | on the branch (`5054840`) | `src/bifold_demo/characters/created.py` |
-| C | **C2 created characters take over places in the fair** | built, reviewed, fixed (`f88536b`), checked again by four checkers, fixed again (`2d0a1c3`); the recheck was stopped part way | [C2-created-characters-in-the-fair.md](C2-created-characters-in-the-fair.md) |
+| C | **C2 created characters take over places in the fair** | built, reviewed, fixed twice and **on the branch** (`c7475c4` ... `e16477f`) | [C2-created-characters-in-the-fair.md](C2-created-characters-in-the-fair.md) |
 
 [environment-and-findings.md](environment-and-findings.md) covers what all steps share: the machine, what can and
 cannot be downloaded here, the safety and privacy rules, and findings that matter across components.
@@ -158,3 +158,17 @@ the runs went on from their saved results and progress logs, and no work was los
 - **A4:** three WIP commits and uncommitted edits. The fusion, the light and the CLI work, with 16 tests; the
   real-avatar tests, the docs and the preview were not done.
 - **The scheduled check** to resume stopped runs was deleted.
+
+**1 November, 10:35-11:30 UTC.** Work resumed on request, with a lower bar: the project is a testing bed, so minor
+graphical imperfections do not matter. Steps now run as single agents (implement and test); there are no more
+multi-checker rounds.
+
+- **On the branch:**
+  - C2: its five commits; the full suite gave 646 passed, 9 skipped;
+  - A4: two clean commits; the head-texture, renderer and created-cast tests gave 183 passed;
+  - B2, with its review fix: the fabric, outfit, people, created and CLI tests gave 426 passed.
+- **The patches** in [patches/](patches/) are superseded by these commits and stay only as a record.
+- **Running:**
+  - B4, the character creator screen: brief `briefs/B4_creator.md`;
+  - A5-A7: completion of unseen texels, body skin matched to the face, identity check, the new head textures used by
+    FaceCast and the creator. Brief `briefs/A567_finish.md`.

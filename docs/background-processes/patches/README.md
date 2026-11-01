@@ -1,5 +1,8 @@
 # Patches: the unfinished work, saved
 
+**Superseded (1 November 2026):** B2, C2 and A4 were finished and are on the branch as commits. These patches stay
+only as a record of the state on 27 October.
+
 When all work was stopped on request (27 October 2026, about 06:40 UTC), three steps existed only in local git
 worktrees, which are not pushed and are lost if the container is reclaimed. Their work is saved here, one patch per
 directory.
