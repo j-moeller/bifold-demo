@@ -131,3 +131,9 @@ branch and pushed; its results go into the progress log.
   - S2, part 1: head normal and specular maps, 2048 detail textures, tangents, cache format 2;
   - S2, part 2: linear light.
   - The full suite is running on the branch.
+- **1 November, 17:50 UTC:** the full suite on the branch found a regression from S2's linear light.
+  - The head-texture test on real portraits (it runs only when the test-photo folder is set) passes after S2
+    part 1 and fails after part 2: for a 480p portrait, 7.8 % of face texels reach the keep or refine level,
+    against the 10 % required.
+  - The pipeline's own renders of the avatar (landmarks, regions, shading) change under linear light.
+  - The S2 builder is fixing it; the rest of the suite is running.
