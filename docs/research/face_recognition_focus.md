@@ -153,3 +153,15 @@ branch and pushed; its results go into the progress log.
   - the camera model at the camera's own pixels: good 4K at level 4 gives 29.4 dB, was 26.7;
   - framebuffers kept within 192 MB (42 MB in the reviewer's case, was 205);
   - `WindowRequest(eye_px=...)` for E1: 8-160 px within 0.1 %.
+- **2 November, 15:50 UTC: stopped on request ("stop all retries").** The account's weekly usage limit had
+  stopped the builders, and the scheduled check-ins kept re-firing. All check-ins are deleted and nothing
+  runs.
+  - **The branch:** the full suite with S1's fixes and F1 part 4 gave 870 passed, 25 skipped; the known
+    linear-light regression was left out.
+  - **F1:** parts 1-4 are on the branch. The builder had finished its work and was waiting for its full suite
+    and final report; its worktree is `.claude/worktrees/agent-ae1a230ca5fea359e` (last commit `ae2c3c0`). Its
+    independent review has not started.
+  - **S2:** parts 1-2 are on the branch. The fix for the linear-light regression (the real-photo head-texture
+    test) and the remaining pieces are uncommitted in `.claude/worktrees/agent-acf4f9b29edc8aa9e`.
+  - **To resume:** message the two builders (their work is saved), then review F1 and S2, and start F2 and
+    E1.
