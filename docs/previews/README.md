@@ -186,3 +186,11 @@ work goes on. The people are avatars from the
   the person at 4 m through the camera presets "ideal", "good 8K", "good 4K"
   and "budget 1080p" (the last two on their own 4K and 1080p sensors). Renders
   of avatars only (`docs/research/virtual_sensor_results.md`).
+- `high_res_heads.jpg`: high-resolution heads (step S2). Top: three avatars'
+  faces in windows of the 8K sensor at 2 m (eyes about 130 pixels apart), as
+  the renderer drew them before S2, in linear light with the 1024 textures,
+  with the heads' normal and specular maps, and with the 2048 head textures
+  as well. Bottom: a close portrait (Male_Adult_05) with the 1024 texture and
+  no maps, and with the 2048 texture and its maps: the folds of the eyelids,
+  the nose and the forehead, the pores and the sheen of the skin. Renders of
+  avatars only (`docs/research/high_res_heads_results.md`).

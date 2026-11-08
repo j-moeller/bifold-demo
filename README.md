@@ -1426,6 +1426,21 @@ texture comes back as well as at 1024: fake photos of an avatar fused onto
 its own head match its texture within a median delta E of 3.3 (90 % within
 8.1), 3.0 and 7.5 compared at 1024, as at 1024.
 
+**Measured** ([docs/research/high_res_heads_results.md](docs/research/high_res_heads_results.md),
+preview [docs/previews/high_res_heads.jpg](docs/previews/high_res_heads.jpg)).
+The maps change faces the most: in the sensor's windows a face's embedding
+moves to a cosine of 0.86 from the same window drawn flat, and the 20 avatars'
+identities separate a little better (d' up by 0.3-0.4 for AdaFace IR-101,
+ArcFace R50 and SFace). The 2048 textures hardly reach today's embedders,
+whose crops have the eyes 35 pixels apart: from 1024 to 2048 the embeddings
+move to a cosine of 0.998 and the separation does not change; they show
+where a picture shows a face larger than about 110 pixels between the eyes
+(close portraits, S4's close-ups). YuNet and SCRFD find every face of the
+measurement (2-5 m) in every configuration. On the software renderer linear
+light and the maps make the view about 1.25 times and the head windows 1.4
+times slower; the maps take 107 MiB for the 20 heads, the 2048 textures 43
+MiB per head drawn with them.
+
 **Older caches** (format 1, without maps) still load and draw as before;
 `bifold-characters list` names them, and `fetch` makes them again with the
 maps (it downloads their files again). To upgrade a library in place:
