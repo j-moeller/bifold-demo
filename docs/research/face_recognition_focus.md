@@ -245,3 +245,36 @@ branch and pushed; its results go into the progress log.
     head-texture pipeline, the creator, the cast, the pipeline) with every model, the photos and the 2048 library:
     333 passed, none skipped. Lint unchanged.
   - S2's independent review is still running.
+- **8 November, 22:10 UTC: stopped on request, S2's review unfinished.** F1 is done; S2 is on the branch, its review
+  stopped part way. The reviewer's checks so far:
+  - **Found sound:**
+    - `Renderer.linear = False` draws exactly as the old renderer (bit for bit, with multisampling, the view and
+      three windows).
+    - Tangents on all 20 heads: no degenerate triangles, skinned and turned with the head.
+    - The packed maps are kept as data at upload and in their mipmaps.
+    - No seams under raking light.
+    - The memory figures are exact.
+    - The full suite on the branch with the 2048 library: 897 passed, 14 skipped. Lint unchanged.
+    - On avatars the maps help recognition: AdaFace d' +0.5-0.65 with the `good 4K` and `budget 1080p` cameras,
+      on turned and lowered heads too. 2048 adds nothing at these distances.
+  - **Problems found** (not yet sent to the builder):
+    - **Faces from photos lose identity.** A face from photos is drawn with the avatar's own normal and specular
+      maps. On 48 windows AdaFace's same-person score fell from 0.363 to 0.275 on every window (d' 6.02 to 4.72);
+      the ResNet-50 lost about as much, SFace less.
+    - **Detail streaming thrashes** with more than six people near the camera:
+      - with waiting, every window reads its head again (a frame and four windows take 2.6 s instead of about
+        0.5 s);
+      - in the live demo, no window of 480 got a 2048 head.
+    - **Weak tests:** 16 of 42 mutations survive the targeted tests, among them tangents not skinned or not
+      turned, evicted textures not freed, and `render_views`' pinned settings ignored.
+    - **Smaller:**
+      - a face from photos never gets the 2048 maps;
+      - the photo-face cache key ignores the texture size;
+      - the stated reason for the 64 px detail threshold is wrong (the threshold itself is fine);
+      - windows are 1.6-1.7 times slower, not 1.4;
+      - a one-off 70-160 ms hitch copying a 2048 photo face;
+      - some numbers in the docs were measured under other settings.
+  - **To resume:**
+    - finish the review (its notes: `scratchpad/steps/S2_review/notes.txt`) or send these findings to the S2
+      builder;
+    - then switch the shared avatar library to the 2048 one, run the full suite and report.
