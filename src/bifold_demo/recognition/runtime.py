@@ -11,7 +11,7 @@
   provider (see :mod:`.gallery`).
 * **Fixed shapes.** :class:`OnnxModel` keeps one session per input shape. On the CPU one session takes every batch
   size (the graph's batch dimension stays free) and the crops of a call go in one run (:func:`batches`: five crops
-  cost about a third less than five runs of one); with CoreML, which works best with fixed shapes, each input
+  cost a quarter to a third less than five runs of one); with CoreML, which works best with fixed shapes, each input
   shape gets its own session with every dimension fixed in the graph, so crops go in batches of 8 and then 1.
 * **Extra outputs.** A tensor inside the graph can be made an output as well (the AdaFace export normalises its
   embedding inside the graph; its length, AdaFace's quality signal, is the tensor before that division). This edits

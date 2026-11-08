@@ -940,7 +940,7 @@ shrunk with area averaging first so that they do not alias.
 [`quality.py`](src/bifold_demo/recognition/quality.py)). Every embedder takes
 a batch of aligned crops and gives unit embeddings and their raw lengths, in
 each model's own colour order and normalisation; on the CPU the crops of a
-call go in one run (five faces cost about a third less than five runs), with
+call go in one run (five faces cost a quarter to a third less than five runs), with
 CoreML, which wants fixed shapes, in batches of 8 and then single crops. The
 AdaFace export normalises its embedding inside its graph,
 which would lose AdaFace's quality signal (the embedding's length, which its

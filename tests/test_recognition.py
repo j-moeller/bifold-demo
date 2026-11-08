@@ -148,6 +148,21 @@ def test_new_photos_are_enrolled_outside_the_lock_so_looking_up_people_never_wai
         safety.cancel()
 
 
+def test_a_worker_that_cannot_start_leaves_the_gallery_usable(tmp_path, monkeypatch):
+    folder = tmp_path / "faces"
+    _photo(folder / "Ada" / "one.png", (200, 10, 10))
+    gallery = Gallery(folder, FakeEngine())
+
+    def no_thread(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", no_thread)
+    with pytest.raises(RuntimeError, match="new thread"):
+        gallery.refresh(force=True, wait=False)
+    monkeypatch.undo()
+    assert gallery.refresh(force=True) and gallery.people() == {"Ada": 1}  # (the enrolment lock was let go)
+
+
 def test_adding_photos_copies_them_into_the_persons_folder(tmp_path):
     folder = tmp_path / "faces"
     a = _photo(tmp_path / "in" / "me.png", (200, 10, 10))

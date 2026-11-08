@@ -48,7 +48,8 @@ def test_an_onnx_embedder_gives_unit_vectors_and_raw_norms_in_any_batch(tmp_path
 
 def test_on_the_cpu_a_call_is_one_run_and_with_fixed_shapes_batches_of_8_and_1(tmp_path):
     """Review M6: CPU sessions take any batch size, so the crops of a call go in one run (five crops in one run cost
-    about a third less than five runs); fixed shapes (CoreML) keep batches of 8 and 1. The results are the same."""
+    a quarter to a third less than five runs); fixed shapes (CoreML) keep batches of 8 and 1. The results are the
+    same."""
     from bifold_demo.recognition import runtime
 
     assert runtime.batches(5, fixed=False) == [slice(0, 5)]

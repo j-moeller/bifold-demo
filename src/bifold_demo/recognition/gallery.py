@@ -326,7 +326,12 @@ class Gallery:
             self._busy.release()
             raise
         if plan[-1] and not wait:
-            threading.Thread(target=self._enrol_new, args=(*plan, True), name="faces enrolment", daemon=True).start()
+            worker = threading.Thread(target=self._enrol_new, args=(*plan, True), name="faces enrolment", daemon=True)
+            try:
+                worker.start()
+            except BaseException:  # (no thread: nothing would release the lock)
+                self._busy.release()
+                raise
             return False
         return self._enrol_new(*plan)
 
