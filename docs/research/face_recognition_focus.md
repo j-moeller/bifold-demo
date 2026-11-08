@@ -178,3 +178,33 @@ branch and pushed; its results go into the progress log.
     head-texture test that had failed.
   - Running: F1's final suite and report, then its independent review; S2's shading and detail streaming,
     photo textures at 2048 and measurements.
+- **8 November, 21:05 UTC: S2 built, F1 reviewed.**
+  - **S2:** parts 3-5 are on the branch:
+    - normal and specular shading, light from above, and 2048 heads only where a picture shows the eyes at least
+      64 px apart;
+    - faces from photos at 2048;
+    - the results note [high_res_heads_results.md](high_res_heads_results.md) and the preview.
+    - Three conflicts with S1's review fixes and F1's profile flag (`app.py`, `renderer.py`, `scene_source.py`),
+      combined.
+    - The builder's full suite: 855 passed, 8 skipped. The related tests on the branch, with the 2048 library and
+      the photos: 231 passed.
+    - **What changes the faces is the maps, not 2048.** On S1's windows at 2-5 m the maps move AdaFace's embedding of
+      the same face to a cosine of 0.86 (0.70 at worst) and separate identities a little better (d' +0.3-0.4);
+      1024 against 2048 gives 0.998, because the embedders see a 112-pixel crop. The 2048 textures matter for
+      close-ups (S4).
+    - Cost on llvmpipe: the 720p view 1.2-1.3 times, the head windows 1.4 times slower; 107 MiB of maps for the 20
+      heads and 43 MiB per head drawn at 2048. A face from photos at 2048 takes 2-3.5 times as long.
+    - Its independent review is running.
+  - **F1 review:** no high findings, 6 medium, 11 low. Confirmed: every model file and hash, the preprocessing and
+    colour orders, SCRFD decoding (identical to the reference), alignment, unit embeddings and bitwise determinism,
+    the measurements. To fix:
+    - "best" does not fall back when AdaFace is present but damaged;
+    - code that only detects faces now needs, and downloads, the recogniser;
+    - `--face-profile` is ignored in the creator and the head-texture check;
+    - the thresholds from a Gaussian fit are not strict for the ResNets (counted on all 3,000 LFW non-mated
+      pairs, the ResNet-50's cut at a false-match rate of 1e-3 is 0.216, not 0.19);
+    - adding photos while the demo runs freezes the view for 0.7-3 s per photo;
+    - batches of 2-7 crops run one at a time (29-47 % slower).
+    - **F2's budget on this CPU:** AdaFace takes 0.7-1.0 s per face here, 5-10 times the research's estimate. F2
+      should plan for about one AdaFace embedding a second, or use the ResNet-50.
+    - The F1 builder is fixing them forward.
