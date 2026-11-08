@@ -165,3 +165,16 @@ branch and pushed; its results go into the progress log.
     test) and the remaining pieces are uncommitted in `.claude/worktrees/agent-acf4f9b29edc8aa9e`.
   - **To resume:** message the two builders (their work is saved), then review F1 and S2, and start F2 and
     E1.
+- **8 November, 19:20 UTC: resumed on request ("Resume the builders and finish F1 and S2").** The container had
+  restarted with a full disk; old October scratch files were deleted (19 GB free). The builders had committed
+  more before the stop than the last entry says. Now on the branch:
+  - F1 part 5: the README's note on CPU speed per profile (on four cores AdaFace takes about half a second per
+    face, the ResNet-50 a tenth, SFace 20-30 ms);
+  - F1 part 6: the results note gives the threshold estimates unrounded, as the registry uses them;
+  - S2's fix for the linear-light regression: the head-texture pipeline's own renders of the avatar draw on the
+    stored sRGB values whatever the light model (`Renderer.linear`), so its landmarks and regions are the same
+    as before to the bit. One conflict in `renderer.py` with S1's windows, combined.
+  - The tests of the touched modules, with real avatars and photos: 133 passed, including the real-photo
+    head-texture test that had failed.
+  - Running: F1's final suite and report, then its independent review; S2's shading and detail streaming,
+    photo textures at 2048 and measurements.
