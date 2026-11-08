@@ -208,3 +208,40 @@ branch and pushed; its results go into the progress log.
     - **F2's budget on this CPU:** AdaFace takes 0.7-1.0 s per face here, 5-10 times the research's estimate. F2
       should plan for about one AdaFace embedding a second, or use the ResNet-50.
     - The F1 builder is fixing them forward.
+- **8 November, 22:00 UTC: F1's review fixed; F1 is done.** The builder fixed all 6 medium and 11 low findings forward
+  in nine commits, now on the branch (no conflicts):
+  - **"best" falls back when AdaFace is unusable.** A recogniser is used only if its file is there, its SHA-256
+    matches (checked once per process) and it loads; otherwise the profile's next model is used, with a note.
+  - **Detection no longer needs the recogniser.** The engine loads the detector only; the recogniser and eDifFIQA-T
+    load on first use. SCRFD comes from its 17 MB copy before the 289 MB pack. Offline errors point to
+    `--face-profile commercial`.
+  - **`--face-profile` reaches every face model of a run:** the creator, the faces painted on the 3D people, the
+    head-texture check and its command line.
+  - **Counted thresholds.** On all 3,000 LFW non-mated pairs the cut at a false-match rate of 1e-3 is 0.210 for
+    AdaFace and 0.216 for the ResNet-50. Both now use **0.22**; the old 0.18 and 0.19 let 5 and 6 pairs through
+    instead of 3. On LFW's mated pairs this costs nothing: 2 of 750 fall below the old and the new cut alike. A test
+    pins the thresholds.
+  - **Adding photos no longer freezes the view.** Enrolment runs outside the gallery's lock, and in the live demo on a
+    worker thread (`refresh(wait=False)`). Reading the gallery during an enrolment waited 0.4-0.6 s before; now it
+    does not wait.
+  - **One run per call on the CPU.** Embedding five heads through the engine took 1.17 s before and 0.83 s after.
+  - **The lows:**
+    - odd canvas sizes;
+    - tight close-ups: 15 of 15 faces found at every fill, where at 83 % none were found before;
+    - the three surviving mutants killed;
+    - a replaced photo leaves every model's cache;
+    - the blur check now rejects a 3-pixel blur;
+    - telemetry off on every import path;
+    - fetch errors;
+    - pitch kept out of decisions;
+    - AuraFace used only after it passes its checks and beats SFace;
+    - doc errors.
+  - **Four API additions for F2 and E1:**
+    - model ids on every result;
+    - raw scores per photo and template;
+    - several images in one batch;
+    - caches that remember the detector and the model's hash.
+  - **Tests.** The builder's full suite: 821 passed, 9 skipped. On the branch, F1's tests and their callers (the
+    head-texture pipeline, the creator, the cast, the pipeline) with every model, the photos and the 2048 library:
+    333 passed, none skipped. Lint unchanged.
+  - S2's independent review is still running.
