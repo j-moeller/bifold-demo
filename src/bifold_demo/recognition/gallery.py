@@ -37,7 +37,8 @@ calibration per model and face size (step F2) plugs in there.
 **Caches.** Embeddings of different models cannot be compared, so they are cached per model in
 ``faces/.embeddings.<model id>.npz``, with the execution provider that made them (CoreML's numbers differ slightly
 from the CPU's: a cache made by another provider is not used); only new or changed photos are looked at again. The
-embeddings are biometric data like the photos: when a photo leaves the folder its entry leaves every model's cache.
+embeddings are biometric data like the photos: when a photo leaves the folder, or is replaced by another under the
+same name, its entry leaves every model's cache.
 """
 
 from __future__ import annotations
@@ -445,10 +446,12 @@ class Gallery:
             "version": np.array(CACHE_VERSION),
         }
         _write(self._cache_path(), rows)
-        self._forget_elsewhere({str(p.path.relative_to(self.folder)) for p in photos})
+        self._forget_elsewhere({str(p.path.relative_to(self.folder)): p.stamp for p in photos})
 
-    def _forget_elsewhere(self, kept: set[str]) -> None:
-        """Remove the photos no longer in the folder from the other models' caches (and the old shared cache)."""
+    def _forget_elsewhere(self, kept: dict[str, tuple[int, int]]) -> None:
+        """Remove from the other models' caches (and the old shared cache) the photos no longer in the folder and
+        those changed since they were cached there (a photo replaced under the same name): ``kept`` maps the
+        folder's photos to their stamps."""
         (self.folder / CACHE).unlink(missing_ok=True)
         mine = self._cache_path().name
         for other in self.folder.glob(".embeddings.*.npz"):
@@ -457,7 +460,9 @@ class Gallery:
             try:
                 with np.load(other, allow_pickle=False) as data:
                     rows = {key: data[key] for key in data.files}
-                keep = np.array([str(p) in kept for p in rows["paths"]], bool)
+                stamps = rows["stamps"].reshape(-1, 2)
+                keep = np.array([kept.get(str(p)) == (int(a), int(b)) for p, (a, b) in zip(rows["paths"], stamps)],
+                                bool)
                 if keep.all():
                     continue
                 for key, value in rows.items():

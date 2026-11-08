@@ -35,6 +35,7 @@ from .quality import FiqaModel, Quality, assess
 MIN_FACE = 24  # pixels: smaller faces are found but too small to recognise reliably
 DETECT_SCORE = None  # the detector's own default (SCRFD 0.5, YuNet 0.7)
 HEAD_CANVAS = 192  # pixels: the canvas a person's head region is scaled to (the review suggests 160-192)
+FALLBACK_CANVASES = (640, 320)  # tried in turn when SCRFD finds no face in a whole image at its own size
 
 __all__ = ["DETECT_SCORE", "MIN_FACE", "Face", "FaceEngine", "FaceRecord"]
 
@@ -213,10 +214,11 @@ class FaceEngine:
 
     def detect(self, image: np.ndarray, min_size: float = MIN_FACE, canvas=None, region=None) -> list[Face]:
         """Faces in ``image`` (BGR) at least ``min_size`` pixels across, biggest first. ``canvas``: what the
-        detector looks at (see :mod:`.detect`; default: the whole image at its own resolution, and when that finds
-        nothing in a big image, the image shrunk to 640 pixels, where a face filling a close-up photo is the size
-        SCRFD knows best). ``region`` ``(x, y, w, h)``: look only there (a person's head), scaled to ``canvas``
-        (default :data:`HEAD_CANVAS`); the faces come back in the image's pixels."""
+        detector looks at (see :mod:`.detect`; default: the whole image at its own resolution, and when SCRFD finds
+        nothing there, the image shrunk to :data:`FALLBACK_CANVASES`, 640 and then 320 pixels: on the test photos
+        SCRFD misses most faces filling more than three quarters of a 640 canvas's height, and finds them all at
+        320). ``region`` ``(x, y, w, h)``: look only there (a person's head), scaled to ``canvas`` (default
+        :data:`HEAD_CANVAS`); the faces come back in the image's pixels."""
         if region is not None:
             h, w = image.shape[:2]
             x0, y0 = max(0, round(region[0])), max(0, round(region[1]))
@@ -226,8 +228,12 @@ class FaceEngine:
             found = self.detector.detect(image[y0:y1, x0:x1], min_size, HEAD_CANVAS if canvas is None else canvas)
             return [f.mapped(1.0, (x0, y0)) for f in found]
         faces = self.detector.detect(image, min_size, canvas)
-        if not faces and canvas is None and isinstance(self.detector, ScrfdDetector) and max(image.shape[:2]) > 800:
-            faces = self.detector.detect(image, min_size, 640)
+        if canvas is None and isinstance(self.detector, ScrfdDetector):
+            for smaller in FALLBACK_CANVASES:
+                if faces:
+                    break
+                if max(image.shape[:2]) > 1.25 * smaller:  # (else much the same canvas as the image's own)
+                    faces = self.detector.detect(image, min_size, smaller)
         return faces
 
     def align(self, image: np.ndarray, face: Face) -> Aligned:

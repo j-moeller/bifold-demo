@@ -3,6 +3,7 @@ per-model caches, with a scripted stand-in engine (no model needed)."""
 
 import dataclasses
 import math
+import os
 
 import cv2
 import numpy as np
@@ -170,6 +171,27 @@ def test_caches_are_kept_per_model_and_forget_removed_photos(tmp_path):
     coreml = ScriptedEngine(shots, "model_one", provider="coreml")
     G.Gallery(folder, coreml).refresh(force=True)
     assert coreml.analysed == 1  # made by another provider: looked at again
+
+
+def test_a_photo_replaced_under_its_name_is_enrolled_again_and_leaves_the_other_caches(tmp_path):
+    """Review L3 and L4: a photo changed in place is looked at again (its size and time changed), and the other
+    models' caches lose the old photo's embedding (it is no longer the person's photo)."""
+    old, new = _unit(1), _unit(2)
+    shots = {(10, 0, 0): Shot(old), (20, 0, 0): Shot(new)}
+    folder = tmp_path / "faces"
+    photo = _photo(folder / "Ada" / "a.png", (10, 0, 0))
+    one = ScriptedEngine(shots, "model_one")
+    gallery = G.Gallery(folder, one)
+    gallery.refresh(force=True)
+    G.Gallery(folder, ScriptedEngine(shots, "model_two")).refresh(force=True)
+    _photo(photo, (20, 0, 0))  # another photo under the same name
+    os.utime(photo, ns=(photo.stat().st_atime_ns, photo.stat().st_mtime_ns + 10**9))
+    assert gallery.refresh(force=True) and one.analysed == 2
+    assert gallery.match(new).name == "Ada" and gallery.scores(old)[0].score < 0.5
+    with np.load(folder / G.cache_name("model_one")) as data:
+        assert np.allclose(data["vectors"][0], new)
+    with np.load(folder / G.cache_name("model_two")) as data:
+        assert len(data["paths"]) == 0  # the replaced photo's embedding is gone
 
 
 def test_a_photo_without_a_quality_record_is_still_enrolled():

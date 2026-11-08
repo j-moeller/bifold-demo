@@ -74,6 +74,10 @@ crop alone as in a batch of 9 (to 1e-4).
 - **Speed** (SCRFD-10G, after warm-up): 12 ms on a 160 px canvas (a head cut out of a frame), 35 ms at 320, 120 ms at
   640, 300-390 ms at a whole 1280 x 736 frame; YuNet 44 ms for a whole 1280 x 720 frame, 3 ms at 160. Sessions
   with every input dimension fixed are no faster on the CPU; they are there for CoreML.
+- **Tight close-ups** (found in the review): with the face box filling 83 % of the photo's height, SCRFD on a 640
+  canvas found 0 of the 15 test faces (77 %: 5, 71 %: 14), on a 320 canvas all 15. The engine now tries 640 and then
+  320 when the image's own canvas finds nothing: 15 of 15 at every fill from 65 to 83 % (YuNet: 2-7 of 15).
+  Canvases that are not multiples of 32 are rounded up (they made SCRFD's outputs fail to tile the canvas).
 
 ## 3. Verification on LFW
 

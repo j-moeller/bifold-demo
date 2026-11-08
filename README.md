@@ -915,11 +915,13 @@ other eye, the nose tip and the mouth corners left to right) and a score.
 SCRFD's anchor decoding and suppression of overlapping boxes are written from
 InsightFace's reference code and tested against hand-made network outputs;
 SCRFD and YuNet put the landmarks within a fifth of the eye distance of each
-other on every test photo. SCRFD looks at a *canvas*: 640 x 640 for photos,
-the frame's own size for small faces in a camera picture, 160-192 pixels for a
-head cut out of a frame (measured here on four shared cores: 12 ms at 160, 35
-ms at 320, 120 ms at 640, 300-390 ms at 1280 x 736; YuNet 44 ms for a
-1280 x 720 frame). Faces are lined up on the ArcFace five-point template at
+other on every test photo. SCRFD looks at a *canvas* (a multiple of 32
+pixels): the picture's own size for small faces in a camera picture, and when
+that finds nothing, 640 and then 320 pixels (a face filling a close-up photo
+is found only there); 160-192 pixels for a head cut out of a frame (measured
+here on four shared cores: 12 ms at 160, 35 ms at 320, 120 ms at 640, 300-390
+ms at 1280 x 736; YuNet 44 ms for a 1280 x 720 frame). Faces are lined up on
+the ArcFace five-point template at
 112 x 112 by a least-squares similarity transform, exactly as InsightFace's
 `norm_crop` and OpenCV's `alignCrop` do (the same pixels as `alignCrop`); the
 crop is black where it reaches beyond the picture (as in training), the share

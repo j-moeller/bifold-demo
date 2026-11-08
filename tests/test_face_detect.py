@@ -130,6 +130,14 @@ def test_scrfd_outputs_decode_into_boxes_and_landmarks():
         detect.decode_scrfd(_outputs((96, 64)), (64, 64))
 
 
+def test_overlapping_boxes_are_suppressed_at_insightfaces_overlap_by_default():
+    """Review L3: SCRFD's suppression and score keep InsightFace's defaults (overlap 0.4, score 0.5)."""
+    assert (detect.SCRFD_SCORE, detect.SCRFD_NMS) == (0.5, 0.4)
+    boxes = np.array([[0, 0, 19, 19], [6, 0, 25, 19]], float)  # overlap 280 / 520 = 0.54 (with the +1 areas)
+    scores = np.array([0.9, 0.8])
+    assert detect.nms(boxes, scores) == [0] and detect.nms(boxes, scores, 0.6) == [0, 1]
+
+
 def test_nms_keeps_the_best_of_overlapping_boxes():
     boxes = np.array([[0, 0, 9, 9], [1, 1, 10, 10], [5, 0, 14, 9], [50, 50, 60, 60]], float)
     scores = np.array([0.8, 0.9, 0.7, 0.5])
@@ -163,12 +171,18 @@ def test_the_scrfd_detector_letterboxes_and_maps_back():
     assert np.allclose(face.box, (0, 16, 80, 96)) and face.score == pytest.approx(0.95)  # canvas x 2
     assert np.allclose(face.points[0], ((24 + 0) * 2, (32 - 16) * 2))
     assert detector.detect(image, min_size=100) == []
+    for canvas, shape in ((200, (224, 224)), ((300, 200), (224, 320)), (180, (192, 192))):  # (review L1: crashed)
+        detector.detect(image, canvas=canvas)
+        assert detector.model.blobs[-1].shape[2:] == shape
 
 
 def test_canvas_sizes_and_letterboxing():
     assert detect.canvas_size((720, 1280), "image") == (1280, 736)
     assert detect.canvas_size((3000, 4000), "image") == (1600, 1216)
     assert detect.canvas_size((10, 10), 160) == (160, 160) and detect.canvas_size((10, 10), (96, 64)) == (96, 64)
+    # review L1: any canvas is rounded up to a multiple of 32, SCRFD's coarsest stride (else its outputs do not tile)
+    assert detect.canvas_size((10, 10), 200) == (224, 224) and detect.canvas_size((10, 10), (300, 200)) == (320, 224)
+    assert detect.canvas_size((10, 10), 250) == (256, 256) and detect.canvas_size((10, 10), 20) == (32, 32)
     board, scale = detect.letterbox(np.full((50, 100, 3), 9, np.uint8), (64, 64))
     assert scale == 0.64 and (board[:32] == 9).all() and (board[32:] == 0).all()
 

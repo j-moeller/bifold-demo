@@ -19,8 +19,9 @@ red-green-blue, ``(pixel - 127.5) / 128``.
 The *canvas* decides what size of face can be found. ``canvas=640`` (InsightFace's default) suits photos with a
 big face; a whole camera frame with small faces needs its own resolution (``canvas="image"``: the image's size,
 rounded up to a multiple of 32, at most :data:`MAX_SIDE` on the longer side); a head cut out of a frame is best
-scaled up to a canvas of 160-192 pixels (an integer ``canvas`` scales the image up or down to fit). Faces come back
-in the image's pixels, biggest first.
+scaled up to a canvas of 160-192 pixels (an integer ``canvas`` scales the image up or down to fit). Every canvas is
+rounded up to a multiple of 32, SCRFD's coarsest stride (200 becomes 224). Faces come back in the image's pixels,
+biggest first.
 """
 
 from __future__ import annotations
@@ -83,16 +84,21 @@ def _biggest_first(faces: list[Face], min_size: float) -> list[Face]:
 
 def canvas_size(shape, canvas) -> tuple[int, int]:
     """The canvas ``(width, height)`` for an image of ``shape`` (see the module docs): an int gives a square, a pair
-    itself, ``"image"`` the image's size (at most :data:`MAX_SIDE`) rounded up to a multiple of 32."""
+    itself, ``"image"`` the image's size (at most :data:`MAX_SIDE`); each side rounded up to a multiple of 32."""
     if isinstance(canvas, str):
         if canvas != "image":
             raise ValueError(f"canvas must be a size, a (width, height) pair or 'image', not {canvas!r}")
         h, w = shape[:2]
         scale = min(1.0, MAX_SIDE / max(h, w))
-        return (max(32, -(-round(w * scale) // 32) * 32), max(32, -(-round(h * scale) // 32) * 32))
+        return _stride_multiple(w * scale), _stride_multiple(h * scale)
     if np.ndim(canvas) == 0:
-        return int(canvas), int(canvas)
-    return int(canvas[0]), int(canvas[1])
+        return _stride_multiple(canvas), _stride_multiple(canvas)
+    return _stride_multiple(canvas[0]), _stride_multiple(canvas[1])
+
+
+def _stride_multiple(size) -> int:
+    """``size`` rounded up to a multiple of 32 (at least 32): SCRFD's feature maps must tile the canvas exactly."""
+    return max(32, -(-round(size) // 32) * 32)
 
 
 def letterbox(image: np.ndarray, size: tuple[int, int]) -> tuple[np.ndarray, float]:

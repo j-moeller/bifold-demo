@@ -120,6 +120,29 @@ def test_records_embed_all_faces_of_an_image_in_one_batch(tiny):
     assert plain.analyse(image)[0].quality.fiqa is None and plain.quality_spec is None
 
 
+def test_a_close_up_that_fills_the_photo_is_looked_for_on_smaller_canvases(tiny):
+    """Review L2: SCRFD misses a face filling most of a 640 canvas (a tight close-up); when the image's own canvas
+    finds nothing the engine tries 640, then 320 (each only if the image is much bigger)."""
+    engine = E.FaceEngine(tiny, download=False, progress=None)
+    seen = []
+
+    def found_at_320(image, min_size=0.0, canvas=None):
+        seen.append(canvas)
+        return [_face()] if canvas == 320 else []
+
+    engine.detector.detect = found_at_320
+    assert len(engine.detect(np.zeros((1600, 1200, 3), np.uint8))) == 1 and seen == [None, 640, 320]
+    seen.clear()
+    assert len(engine.detect(np.zeros((700, 500, 3), np.uint8))) == 1 and seen == [None, 320]  # (640: much the same)
+    seen.clear()
+    assert engine.detect(np.zeros((300, 300, 3), np.uint8)) == [] and seen == [None]
+    seen.clear()
+    assert engine.detect(np.zeros((1600, 1200, 3), np.uint8), canvas=640) == [] and seen == [640]  # as asked
+    seen.clear()
+    assert engine.detect(np.zeros((1600, 1200, 3), np.uint8), region=(0, 0, 400, 400)) == []
+    assert seen == [E.HEAD_CANVAS]  # a head region: no fallback
+
+
 def test_a_region_is_searched_alone_and_its_faces_come_back_in_the_frame(tiny):
     engine = E.FaceEngine(tiny, download=False, progress=None)
     seen = []
