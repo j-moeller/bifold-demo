@@ -31,8 +31,10 @@ steps' (F2, E1).
   times (yaw -60 to 60 in steps of 15, pitch -15, 0, 15, three lights), 640 x 480, about 79 pixels between the eyes
   when frontal. Detection and pose use all 1,620; the recognisers, at 0.1-0.6 s per face here, the 540 under one
   light (section 4).
-- **Photos of people**: the local test photos (6 people; 12 distinct faces after removing identical files; one
-  photo exists at three resolutions). Far too few for rates: they show whether a model works at all.
+- **Photos of people**: the local test photos: 14 faces of 6 people after removing identical files (one photo of
+  one person is there at three resolutions and counts three times), 15 mated pairs (3 of them that photo against
+  itself at another resolution) and 76 non-mated pairs. Far too few for rates: they show whether a model works at
+  all. The colour-order check of `bifold-faces check` used the 8 photos of 4 people in the photos' `train` folder.
 
 ## 1. The model files and graphs
 
@@ -137,7 +139,8 @@ recordings) is open. It is recorded in each face's quality record but used as no
 
 ## 5. Photos of people
 
-12 distinct faces of 6 people (8 mated and 58 non-mated pairs): whether a model works at all, not rates.
+14 faces of 6 people (15 mated pairs, 3 of them one photo at two resolutions, and 76 non-mated pairs): whether a
+model works at all, not rates.
 
 | Model | d' | Lowest mated score | Highest non-mated score |
 |---|---|---|---|
