@@ -114,12 +114,16 @@ class Profile:
 
 SCRFD = ModelSpec(
     "scrfd_10g_kps", "SCRFD-10G with five landmarks (InsightFace, det_10g)", "detector",
-    member_of(BUFFALO_L, "det_10g.onnx", "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91",
-              16_923_827, mirrors=(ADAFACE + "det_10g.onnx",)),
+    # the same bytes (the same SHA-256) as InsightFace's buffalo_l member, so the 17 MB copy comes first and the
+    # 289 MB pack only when it cannot be had
+    ModelFile("det_10g.onnx", ADAFACE + "det_10g.onnx",
+              "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91", 16_923_827,
+              (Source(ADAFACE + "det_10g.onnx"), Source(BUFFALO_L.url, "det_10g.onnx", BUFFALO_L.sha256,
+                                                        BUFFALO_L.size))),
     "onnxruntime", (640, 640), bgr=False, mean=127.5, std=128.0, dim=0,
     licence=INSIGHTFACE_LICENCE, commercial=False, data="WIDER FACE",
-    origin="InsightFace's buffalo_l pack (GitHub release v0.7); the same file (same SHA-256) is mirrored by UniFace "
-           "and the AdaFace export",
+    origin="InsightFace's buffalo_l pack (GitHub release v0.7); byte-identical copies (the same SHA-256) are hosted "
+           "with the AdaFace export (fetched first: 17 MB instead of the 289 MB pack) and by UniFace",
     inputs=(Tensor("input.1", (1, 3, "?", "?")),),
     outputs=tuple(Tensor(name, (n, c)) for name, n, c in (
         ("448", 12800, 1), ("471", 3200, 1), ("494", 800, 1), ("451", 12800, 4), ("474", 3200, 4),

@@ -1,10 +1,10 @@
 """Finding faces in an image and turning them into embeddings, with the models of a profile (:mod:`.registry`).
 
 A :class:`FaceEngine` puts the stages together: the profile's detector (:mod:`.detect`), the ArcFace alignment
-(:mod:`.align`), its embedder (:mod:`.embed`; the first one of the profile that is there, so ``best`` falls back to
-``buffalo_l``'s ResNet-50 when AdaFace cannot be had) and its quality model (:mod:`.quality`). The embedder and the
-quality model are loaded when first needed, so code that only finds faces (painting a photo onto an avatar) does not
-pay for a 260 MB recogniser.
+(:mod:`.align`), its embedder (:mod:`.embed`; the first one of the profile that can be had, has its registered
+SHA-256 and loads, so ``best`` falls back to ``buffalo_l``'s ResNet-50 when AdaFace is missing or damaged) and its
+quality model (:mod:`.quality`). The embedder and the quality model are found, downloaded and loaded when first
+needed, so code that only finds faces (painting a photo onto an avatar) needs neither, offline too.
 
 * :meth:`FaceEngine.detect`, :meth:`~FaceEngine.embed` and :meth:`~FaceEngine.faces` are the demo's old interface
   (biggest face first; a unit embedding per face).
@@ -55,51 +55,115 @@ class FaceEngine:
     """The face recognition's models for ``profile`` (default: ``$BIFOLD_FACE_PROFILE``, else ``best``), from
     ``models_folder`` (see :mod:`.models`), downloaded when missing if ``download``. ``score``: the detection score
     a face must reach (default: the detector's own); ``provider``: ``cpu`` or ``coreml`` (default: automatic);
-    ``quality``: also use the profile's quality model."""
+    ``quality``: also use the profile's quality model.
+
+    Only the detector is loaded here. The recogniser and the quality model are found when first needed: the file
+    (downloaded if allowed), its registered SHA-256 (checked once per process, so a damaged file of the right size is
+    caught) and a model that loads; when the profile's first recogniser fails any of these, the next one is used and
+    :attr:`notes` says why. Without a usable model, the error names the commercial profile, which needs only YuNet
+    and SFace."""
 
     def __init__(self, models_folder=None, download: bool = True, score: float | None = DETECT_SCORE,
                  profile: str | None = None, provider: str | None = None, quality: bool = True, progress=print):
         self.profile = registry.profile(profile)
         self.models_folder = models_folder
+        self.download = bool(download)
         self.provider = provider
+        self.progress = progress
         self.notes: list[str] = []  # what was chosen instead of what, for the user
-        spec = registry.model(self.profile.detector)
-        path = registry.path(spec, models_folder, download, progress)
+        self._lock = threading.RLock()
+        self.detector_spec = spec = registry.model(self.profile.detector)
         kwargs = {} if score is None else {"score": score}
-        if spec.form == "opencv":
-            self.detector = YuNetDetector(path, spec, **kwargs)
-        else:
-            self.detector = ScrfdDetector(path, spec, canvas="image", provider=provider, **kwargs)
-        self.embedder_spec, self._embedder_path = self._choose(self.profile.embedders, download, progress)
-        self.quality_spec = None
-        if quality and self.profile.quality:
+        try:
+            path = self._file(spec)
+            if spec.form == "opencv":
+                self.detector = YuNetDetector(path, spec, **kwargs)
+            else:
+                self.detector = ScrfdDetector(path, spec, canvas="image", provider=provider, **kwargs)
+        except Exception as exc:  # missing, damaged or not loading: say what to do instead
+            raise FileNotFoundError(f"the face detector of the profile {self.profile.name} ({spec.title}) cannot "
+                                    f"be had: {exc}{self._hint()}") from exc
+        self._embedder = self._embedder_spec = self._embedder_path = None
+        self._quality = bool(quality) and bool(self.profile.quality)
+        self._fiqa = self._fiqa_spec = None
+        self._fiqa_checked = False
+
+    def _file(self, spec):
+        """The file of ``spec`` (downloaded if allowed) with its registered SHA-256 (hashed once per process)."""
+        from .. import downloads
+
+        path = registry.path(spec, self.models_folder, self.download, self.progress)
+        if not downloads.verified(path, spec.file.sha256):
+            raise OSError(f"{path} is damaged: its SHA-256 is not the registered one (fetch it again: bifold-faces "
+                          f"fetch --model {spec.id})")
+        return path
+
+    def _hint(self) -> str:
+        """What to do when a model of the profile cannot be had (offline, say): the commercial profile."""
+        if self.profile.name == "commercial":
+            return ""
+        from .. import downloads
+        from .models import models_dir
+
+        commercial = registry.PROFILES["commercial"]
+        folder = models_dir(self.models_folder)
+        needed = [registry.model(commercial.detector), registry.model(commercial.embedders[-1])]
+        here = all(downloads.present(spec.file, folder) is not None for spec in needed)
+        where = f"both are in {folder}" if here else "0.2 and 39 MB to download"
+        return (f". The commercial profile needs only YuNet and SFace ({where}): --face-profile commercial or "
+                f"BIFOLD_FACE_PROFILE=commercial")
+
+    def _resolve_embedder(self) -> None:
+        with self._lock:
+            if self._embedder is not None:
+                return
+            errors = []
+            for model_id in self.profile.embedders:
+                spec = registry.model(model_id)
+                try:
+                    path = self._file(spec)
+                    made = embedder(spec, path, self.provider)
+                except Exception as exc:  # noqa: BLE001 - missing, damaged or not loading: the next one
+                    errors.append(f"{spec.title}: {exc}")
+                    continue
+                if errors:
+                    self.notes.append(f"using {spec.title} ({'; '.join(errors)})")
+                self._embedder, self._embedder_spec, self._embedder_path = made, spec, path
+                return
+            raise FileNotFoundError(f"no face recogniser of the profile {self.profile.name} can be had: "
+                                    f"{'; '.join(errors)}{self._hint()}")
+
+    def _resolve_fiqa(self) -> None:
+        with self._lock:
+            if self._fiqa_checked:
+                return
+            self._fiqa_checked = True
+            if not self._quality:
+                return
             spec = registry.model(self.profile.quality)
             try:
-                self._fiqa_path = registry.path(spec, models_folder, download, progress)
-                self.quality_spec = spec
-            except OSError as exc:  # the geometric measures still work
+                self._fiqa = FiqaModel(self._file(spec), spec, self.provider)
+                self._fiqa_spec = spec
+            except Exception as exc:  # noqa: BLE001 - (ONNX Runtime's errors too) the geometric measures still work
                 self.notes.append(f"no {spec.title}: {exc}")
-        self._embedder = None
-        self._fiqa = None
-        self._lock = threading.Lock()
-
-    def _choose(self, ids, download, progress):
-        """The first embedder of ``ids`` whose file is (or can be made) present."""
-        errors = []
-        for model_id in ids:
-            spec = registry.model(model_id)
-            try:
-                path = registry.path(spec, self.models_folder, download, progress)
-            except OSError as exc:  # missing without downloads, or the download failed
-                errors.append(f"{spec.title}: {exc}")
-                continue
-            if errors:
-                self.notes.append(f"using {spec.title} ({'; '.join(errors)})")
-            return spec, path
-        raise FileNotFoundError("no face recogniser of the profile "
-                                f"{self.profile.name} is available: {'; '.join(errors)}")
 
     # -- the models -------------------------------------------------------------------------------------------------
+
+    @property
+    def embedder_spec(self):
+        """The recogniser in use (found when first asked for, see the class docs)."""
+        self._resolve_embedder()
+        return self._embedder_spec
+
+    @property
+    def embedder_path(self):
+        self._resolve_embedder()
+        return self._embedder_path
+
+    @property
+    def embedder(self):
+        self._resolve_embedder()
+        return self._embedder
 
     @property
     def model_id(self) -> str:
@@ -126,30 +190,21 @@ class FaceEngine:
         return provider_choice(self.provider)
 
     @property
-    def embedder(self):
-        with self._lock:
-            if self._embedder is None:
-                self._embedder = embedder(self.embedder_spec, self._embedder_path, self.provider)
-            return self._embedder
+    def quality_spec(self):
+        """The quality model in use, or ``None`` (the profile has none, ``quality=False``, or it cannot be had or
+        loaded: then a note says why)."""
+        self._resolve_fiqa()
+        return self._fiqa_spec
 
     @property
     def fiqa(self) -> FiqaModel | None:
-        """The quality model, or ``None`` (the profile has none, or its file cannot be had: then a note says so)."""
-        if self.quality_spec is None:
-            return None
-        with self._lock:
-            if self._fiqa is None:
-                try:
-                    self._fiqa = FiqaModel(self._fiqa_path, self.quality_spec, self.provider)
-                except Exception as exc:  # noqa: BLE001 - (ONNX Runtime's errors too) geometry still works
-                    self.notes.append(f"no {self.quality_spec.title}: {exc}")
-                    self.quality_spec = None
-                    return None
-            return self._fiqa
+        """The quality model, or ``None`` (see :attr:`quality_spec`)."""
+        self._resolve_fiqa()
+        return self._fiqa
 
     def describe(self) -> str:
-        """``best: SCRFD-10G ... + AdaFace ...`` for the user."""
-        parts = [registry.model(self.profile.detector).title, self.embedder_spec.title]
+        """``best: SCRFD-10G ... + AdaFace ...`` for the user (finds the recogniser if it is not found yet)."""
+        parts = [self.detector_spec.title, self.embedder_spec.title]
         if self.quality_spec is not None:
             parts.append(self.quality_spec.title)
         return f"{self.profile.name}: {' + '.join(parts)}"

@@ -52,16 +52,49 @@ def _face(x0=200.0, eyes=60.0):
 
 def test_the_best_profile_falls_back_when_adaface_is_missing(tiny):
     engine = E.FaceEngine(tiny, download=False, progress=None)
+    assert engine._embedder is None and engine.notes == []  # the recogniser is found when first needed
     assert engine.profile.name == "best" and engine.model_id == "buffalo_l_r50" and engine.dim == 8
     assert engine.threshold == 0.42 and engine.provider_name == "cpu"
     assert len(engine.notes) == 1 and "using ArcFace ResNet-50" in engine.notes[0] and "AdaFace" in engine.notes[0]
     assert engine.describe().startswith("best: SCRFD-10G") and "eDifFIQA-T" in engine.describe()
-    assert engine._embedder is None  # loaded when first needed
+    assert engine.embedder_path == tiny / registry.BUFFALO_L_R50.file.name
     with pytest.raises(FileNotFoundError, match="face_detection_yunet_2023mar.onnx is missing"):
         E.FaceEngine(tiny, download=False, profile="commercial", progress=None)  # its detector is not there
     (tiny / registry.BUFFALO_L_R50.file.name).unlink()
-    with pytest.raises(FileNotFoundError, match="no face recogniser of the profile licensed"):
-        E.FaceEngine(tiny, download=False, profile="licensed", progress=None)
+    licensed = E.FaceEngine(tiny, download=False, profile="licensed", progress=None)  # finding faces still works
+    with pytest.raises(FileNotFoundError, match="no face recogniser of the profile licensed.*--face-profile commercial"):
+        licensed.describe()
+
+
+def _register(folder, spec, data: bytes, sha=None):
+    """Put ``data`` in ``folder`` as ``spec``'s file, registered with its size and ``sha`` (default: its own)."""
+    (folder / spec.file.name).write_bytes(data)
+    file = ModelFile(spec.file.name, "file:///nowhere", sha or hashlib.sha256(data).hexdigest(), len(data))
+    registry.MODELS[spec.id] = dataclasses.replace(spec, file=file, threshold=0.33)
+
+
+def test_a_damaged_or_unloadable_adaface_falls_back_to_the_resnet(tiny):
+    good = (tiny / registry.BUFFALO_L_R50.file.name).read_bytes()
+    _register(tiny, registry.ADAFACE_IR101, bytes(len(good)), sha=hashlib.sha256(good).hexdigest())  # zeros
+    engine = E.FaceEngine(tiny, download=False, progress=None)
+    assert engine.model_id == "buffalo_l_r50" and "is damaged: its SHA-256" in engine.notes[0]
+    _register(tiny, registry.ADAFACE_IR101, b"not a model at all")  # the right hash, but it does not load
+    engine = E.FaceEngine(tiny, download=False, progress=None)
+    assert engine.model_id == "buffalo_l_r50" and "AdaFace IR-101" in engine.notes[0]
+    assert len(engine.analyse(np.zeros((200, 200, 3), np.uint8), faces=[_face(60.0, 40.0)])) == 1  # it works
+
+
+def test_finding_faces_needs_no_recogniser_and_a_missing_detector_names_the_commercial_profile(tiny):
+    for spec in (registry.BUFFALO_L_R50, registry.EDIFFIQA_T):
+        (tiny / spec.file.name).unlink()
+    engine = E.FaceEngine(tiny, download=False, progress=None)  # SCRFD alone: enough to find faces
+    engine.detector = Faces([_face()])
+    assert len(engine.detect(np.zeros((400, 400, 3), np.uint8))) == 1 and engine._embedder is None
+    assert engine.quality_spec is None and "no eDifFIQA-T" in engine.notes[0]
+    (tiny / registry.SCRFD.file.name).unlink()
+    with pytest.raises(FileNotFoundError, match="face detector of the profile best .*--face-profile commercial"):
+        E.FaceEngine(tiny, download=False, progress=None)
+    assert registry.SCRFD.file.places()[0].member is None  # the 17 MB file first, the 289 MB pack second
 
 
 def test_records_embed_all_faces_of_an_image_in_one_batch(tiny):

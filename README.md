@@ -898,9 +898,10 @@ InsightFace publishes its models as zip packs (`buffalo_l.zip`,
 deletes the pack. Every file is checked against its pinned SHA-256 before it
 replaces anything, and a file that cannot be had from one source is tried from
 the next (InsightFace's files are also mirrored, byte for byte, by the AdaFace
-export and UniFace). The models run with ONNX Runtime: on a Mac with CoreML
-first (falling back to the CPU), elsewhere on the CPU (`BIFOLD_FACE_PROVIDER`
-and `BIFOLD_FACE_THREADS` override). ONNX Runtime 1.29 and later send usage
+export and UniFace; SCRFD comes from its 17 MB copy first, so finding faces
+does not cost the 289 MB pack). The models run with ONNX Runtime: on a Mac
+with CoreML first (falling back to the CPU), elsewhere on the CPU
+(`BIFOLD_FACE_PROVIDER` and `BIFOLD_FACE_THREADS` override). ONNX Runtime 1.29 and later send usage
 telemetry to Microsoft by default; the recognition switches it off
 (`ORT_DISABLE_TELEMETRY=1`) before ONNX Runtime loads.
 
@@ -945,9 +946,14 @@ of 0.87 and falls steadily as faces get smaller); and AdaFace's norm.
 **The engine and the gallery**
 ([`engine.py`](src/bifold_demo/recognition/engine.py),
 [`gallery.py`](src/bifold_demo/recognition/gallery.py)). `FaceEngine` puts a
-profile's models together (the recogniser is loaded when first needed, so code
-that only finds faces stays light; `analyse` embeds all the faces of an image
-in one batch and gives a record per face). The gallery embeds each photo with
+profile's models together. Only the detector is loaded at once; the recogniser
+and the quality model are found when first needed (downloaded if allowed, their
+SHA-256 checked once per process, loaded), so code that only finds faces needs
+neither, offline too. When AdaFace is missing, damaged or does not load, the
+best profile takes the ResNet-50 and says why; when no model of a profile can
+be had, the error points to the commercial profile (YuNet and SFace).
+`analyse` embeds all the faces of an image in one batch and gives a record per
+face. The gallery embeds each photo with
 exactly the engine's detector, alignment and model, checks it (above), and
 keeps, per person, every photo and a template per pose bin (the
 quality-weighted mean of the bin's embeddings); a person's score is the best of

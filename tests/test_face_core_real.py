@@ -97,7 +97,7 @@ def test_the_registered_colour_order_separates_people_better():
         engine = _engine(profile)
         spec = engine.embedder_spec
         crops, labels = checks.labelled_faces(folder, engine.detector)
-        report = checks.colour_order(spec, engine._embedder_path, crops, labels)
+        report = checks.colour_order(spec, engine.embedder_path, crops, labels)
         assert report.ok, str(report)
         mine, other = ("BGR", "RGB") if spec.bgr else ("RGB", "BGR")
         assert report.values[mine]["d_prime"] > report.values[other]["d_prime"] + 0.5, str(report)

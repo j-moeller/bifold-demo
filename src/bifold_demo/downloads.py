@@ -79,14 +79,21 @@ _verified: dict[tuple, bool] = {}  # (path, size, mtime_ns, sha256) -> whether t
 _verified_lock = threading.Lock()
 
 
-def verified(path, expected: str) -> bool:
-    """Whether the file at ``path`` has the SHA-256 ``expected`` (hashed once per process while it is unchanged)."""
-    path = Path(path)
+def _key(path: Path, expected: str) -> tuple | None:
     try:
         st = path.stat()
     except OSError:
+        return None
+    return (str(path.resolve()), st.st_size, st.st_mtime_ns, expected)
+
+
+def verified(path, expected: str) -> bool:
+    """Whether the file at ``path`` has the SHA-256 ``expected`` (hashed once per process while it is unchanged; a
+    file this process downloaded and checked is not hashed again)."""
+    path = Path(path)
+    key = _key(path, expected)
+    if key is None:
         return False
-    key = (str(path.resolve()), st.st_size, st.st_mtime_ns, expected)
     with _verified_lock:
         known = _verified.get(key)
     if known is None:
@@ -94,6 +101,14 @@ def verified(path, expected: str) -> bool:
         with _verified_lock:
             _verified[key] = known
     return known
+
+
+def _remember(path: Path, expected: str) -> None:
+    """Note that the file at ``path`` (just written and checked) has the SHA-256 ``expected``."""
+    key = _key(path, expected)
+    if key is not None:
+        with _verified_lock:
+            _verified[key] = True
 
 
 def present(model: ModelFile, folder) -> Path | None:
@@ -193,6 +208,7 @@ def _download(model: ModelFile, source: Source, folder: Path, progress, tag: str
     try:
         _fetch(source.url, tmp, model.sha256, model.size, progress, tag, model.name)
         os.replace(tmp, path)
+        _remember(path, model.sha256)
     finally:
         tmp.unlink(missing_ok=True)
     return path
@@ -246,6 +262,7 @@ def _extract(archive: zipfile.ZipFile, member: str, model: ModelFile, folder: Pa
         if digest.hexdigest() != model.sha256:
             raise OSError(f"{member} does not match its checksum")
         os.replace(tmp, path)
+        _remember(path, model.sha256)
     finally:
         tmp.unlink(missing_ok=True)
     return path
