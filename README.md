@@ -892,6 +892,7 @@ terms are for research, so anything that ships needs a legal review first.
 ```bash
 bifold-faces fetch --profile best      # SCRFD-10G, AdaFace, buffalo_l (fallback), eDifFIQA-T: 560 MB, 460 MB kept
 bifold-faces fetch --model sface_2021dec yunet_2023mar
+bifold-faces fetch --all               # every model; fails only for one that needs no other site (not AuraFace)
 bifold-faces list                      # the models (licences, profiles, fetched or not), then the known people
 ```
 
@@ -904,8 +905,9 @@ export and UniFace; SCRFD comes from its 17 MB copy first, so finding faces
 does not cost the 289 MB pack). The models run with ONNX Runtime: on a Mac
 with CoreML first (falling back to the CPU), elsewhere on the CPU
 (`BIFOLD_FACE_PROVIDER` and `BIFOLD_FACE_THREADS` override). ONNX Runtime 1.29 and later send usage
-telemetry to Microsoft by default; the recognition switches it off
-(`ORT_DISABLE_TELEMETRY=1`) before ONNX Runtime loads.
+telemetry to Microsoft by default; importing `bifold_demo` switches it off
+(`ORT_DISABLE_TELEMETRY=1`, unless set already) before anything loads ONNX
+Runtime (the face models, or Ultralytics running an `.onnx` YOLO model).
 
 **Detection and alignment**
 ([`detect.py`](src/bifold_demo/recognition/detect.py),
@@ -960,7 +962,11 @@ best profile takes the ResNet-50 and says why; when no model of a profile can
 be had, the error points to the commercial profile (YuNet and SFace).
 `analyse` embeds all the faces of an image in one batch and gives a record per
 face. The gallery embeds each photo with
-exactly the engine's detector, alignment and model, checks it (above), and
+exactly the engine's detector, alignment and model, checks it (one dominant
+face; at least 40 pixels between the eyes; blur, rejected under a sharpness of
+0.10 and warned under 0.30, where sharp test photos measure 1.2-4.8 and a
+blur of 3 crop pixels brings them under 0.10; light; with eDifFIQA-T, a
+warning when it finds the face hard to recognise), and
 keeps, per person, every photo and a template per pose bin (the
 quality-weighted mean of the bin's embeddings); a person's score is the best of
 the two. The decision whom a face shows is a replaceable step

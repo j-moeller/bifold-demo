@@ -9,9 +9,17 @@ Quick start::
     scene.add(Box(texture="cat.jpg", position=(2, 0.5, 0), rotation=spin(45)), name="cube")
     scene["photo"].texture = "dog.jpg"   # swap textures at any time
     run(scene)
+
+Importing the package switches ONNX Runtime's usage telemetry off (``ORT_DISABLE_TELEMETRY=1``, unless set already)
+before anything can load ONNX Runtime: the face models, or Ultralytics running an ``.onnx`` YOLO model (see
+:mod:`bifold_demo.recognition.runtime`).
 """
 
-from .app import DemoConfig, run
+import os
+
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")  # before ONNX Runtime is first loaded (see above)
+
+from .app import DemoConfig, run  # (after the telemetry switch)
 from .scene import (
     Body,
     Box,

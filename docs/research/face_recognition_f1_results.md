@@ -170,6 +170,24 @@ against 0.839 in the other: RGB is right, by a modest margin. Its median falls s
 32 pixels between the eyes, 0.62 at 24, 0.56 at 16, 0.50 at 12. The ResNet-50's own norm does not rank them at all
 (-0.11).
 
+**The enrolment blur check** (recalibrated after the review: the first cut-offs, 0.02 and 0.04, were far too low
+and let a 3-pixel blur pass silently). On the 15 test photos, at full size and shrunk to 60 (the 12 bigger ones) and
+45 pixels between the eyes, with a Gaussian blur of k crop pixels (sigma = k x the eye distance / 35.2):
+
+| Blur | Sharpness (median, range) | eDifFIQA-T (median, range) |
+|---|---|---|
+| none | 2.3-2.8 (1.17-4.76) | 0.76-0.77 (0.61-0.83) |
+| 1 px | 0.67-0.71 (0.23-1.15) | 0.69-0.70 (0.54-0.72) |
+| 2 px | 0.18-0.20 (0.04-0.26) | 0.52-0.53 (0.39-0.61) |
+| 3 px | 0.06-0.07 (0.02-0.09) | 0.32-0.35 (0.16-0.47) |
+| 4 px | 0.04 (0.01-0.05) | 0.18-0.21 (0.09-0.34) |
+
+Avatar renders (pitch 0): frontal 1.68-4.41 (eDifFIQA 0.66-0.79), turned 30 degrees 0.82-4.58 (0.62-0.76), turned
+60 degrees 0.38-4.25 (0.37-0.59). So a photo is now rejected under a sharpness of 0.10 (every 3-pixel blur) and
+warned under 0.30 (every 2-pixel blur, no sharp photo or render); eDifFIQA-T adds a warning under 0.45 except for
+profile views (which score low by their pose). eDifFIQA-T only warns: quality scores can differ between groups of
+people, and a rejection should have a reason the user can see.
+
 ## 7. Speed per crop
 
 Here, after warm-up, ONNX Runtime 1.31.1 on the CPU with four threads, alone on the machine:

@@ -265,7 +265,8 @@ def path(spec: ModelSpec, folder=None, download: bool = True, progress=print):
 def fetch(name: str | None = None, folder=None, progress=print, ids=None) -> dict[str, object]:
     """Download the models of the profile ``name`` (or the models ``ids``) into the models folder: ``{model id: its
     path, or the error}`` (a zip pack is downloaded once for all its files). A model with a fallback after it may
-    fail (AuraFace where Hugging Face cannot be reached); :class:`OSError` when a stage has no model at all."""
+    fail (AuraFace where Hugging Face cannot be reached); for a profile, :class:`OSError` when a stage has no model
+    at all. Models asked for by ``ids`` are each reported, whatever fails (the caller decides what matters)."""
     from .. import downloads
 
     if ids is None:
@@ -288,7 +289,7 @@ def fetch(name: str | None = None, folder=None, progress=print, ids=None) -> dic
         else:
             why = " / ".join(errors.get(spec.file.name, [])) or "not downloaded"
             out[spec.id] = OSError(f"{spec.id}: {why}" + (f" ({spec.needs} must be reachable)" if spec.needs else ""))
-    for stage in stages:
+    for stage in stages if ids is None else ():
         if all(isinstance(out[i], Exception) for i in stage):
             raise OSError("; ".join(str(out[i]) for i in stage))
     return out

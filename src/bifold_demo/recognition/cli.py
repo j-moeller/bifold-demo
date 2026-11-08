@@ -53,7 +53,9 @@ def cmd_fetch(args) -> int:
     for model_id, result in found.items():
         if isinstance(result, Exception):
             print(f"{model_id}: not fetched: {result}", file=sys.stderr)
-            if args.model:  # asked for by name: a failure is an error (a profile's fallback covers it)
+            # asked for by name: any failure is an error; --all: only a model that needs no other site (AuraFace
+            # needs Hugging Face, which may be out of reach); a profile: its fallback covers it
+            if args.model or (args.all and not registry.model(model_id).needs):
                 status = 1
         else:
             print(f"{model_id}: {result}")

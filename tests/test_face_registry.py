@@ -8,6 +8,7 @@ import io
 import os
 import re
 import zipfile
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -181,6 +182,37 @@ def test_fetching_a_profile_takes_the_fallback_when_the_first_choice_cannot_be_h
         registry.fetch("commercial", tmp_path / "models", progress=None)
 
 
+def test_fetching_models_by_name_reports_each_and_exits_by_what_was_asked(tmp_path, capsys, monkeypatch):
+    """Review L7: ``fetch --all`` / ``--model`` report every model; --all fails only for a model that needs no other
+    site, --model for any model asked for."""
+    import dataclasses
+
+    from bifold_demo.recognition import cli
+
+    def fake(spec, data, reachable=True):
+        remote = tmp_path / "remote" / spec.file.name
+        remote.parent.mkdir(exist_ok=True)
+        if reachable:
+            remote.write_bytes(data)
+        return dataclasses.replace(spec, file=ModelFile(spec.file.name, remote.as_uri(), _sha(data), len(data)))
+
+    specs = {"yunet_2023mar": fake(registry.YUNET, b"det"), "auraface_v1": fake(registry.AURAFACE, b"a", False),
+             "sface_2021dec": fake(registry.SFACE, b"sface")}
+    monkeypatch.setattr(registry, "MODELS", specs)
+    found = registry.fetch(folder=tmp_path / "models", progress=None, ids=list(specs))  # no OSError: each reported
+    assert isinstance(found["auraface_v1"], OSError) and found["sface_2021dec"].is_file()
+    models = ["--models", str(tmp_path / "models")]
+    assert cli.main([*models, "fetch", "--all"]) == 0  # only AuraFace failed, and it needs huggingface.co
+    captured = capsys.readouterr()
+    assert "sface_2021dec: " in captured.out and "auraface_v1: not fetched" in captured.err
+    assert cli.main([*models, "fetch", "--model", "auraface_v1", "sface_2021dec"]) == 1  # asked for by name
+    assert "auraface_v1: not fetched" in capsys.readouterr().err
+    assert cli.main([*models, "fetch", "--model", "sface_2021dec"]) == 0
+    (tmp_path / "models" / registry.SFACE.file.name).unlink()
+    specs["sface_2021dec"] = fake(registry.SFACE, b"other sface", False)  # cannot be had, needs nothing else
+    assert cli.main([*models, "fetch", "--all"]) == 1
+
+
 def test_bifold_faces_list_shows_the_models_with_their_licences(tmp_path, capsys, monkeypatch):
     from bifold_demo.recognition import cli
 
@@ -200,6 +232,25 @@ def test_importing_the_recognition_switches_onnx_runtime_telemetry_off():
 
     assert os.environ.get("ORT_DISABLE_TELEMETRY") == "1"
     assert runtime.ort() is runtime.ort()
+
+
+def test_importing_the_package_switches_onnx_runtime_telemetry_off_before_anything_loads_it():
+    """Review L6: not only the recognition: Ultralytics running an .onnx YOLO model would load ONNX Runtime first."""
+    import subprocess
+    import sys
+
+    import bifold_demo
+
+    env = {k: v for k, v in os.environ.items() if k != "ORT_DISABLE_TELEMETRY"}
+    here = str(Path(bifold_demo.__file__).parents[1])  # (the child imports the same package as the tests)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [here, env.get("PYTHONPATH")]))
+    code = ("import os, sys; import bifold_demo; "
+            "print(os.environ.get('ORT_DISABLE_TELEMETRY'), 'onnxruntime' in sys.modules)")
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True).stdout
+    assert out.split() == ["1", "False"]
+    env["ORT_DISABLE_TELEMETRY"] = "0"  # a choice made outside is kept
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True).stdout
+    assert out.split()[0] == "0"
 
 
 def test_batches_are_cut_into_fixed_sizes():

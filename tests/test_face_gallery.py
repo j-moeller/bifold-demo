@@ -31,8 +31,9 @@ class Shot:
     vector: np.ndarray
     ied: float = 100.0
     yaw: float = 0.0
-    sharpness: float = 0.2
+    sharpness: float = 2.0
     brightness: float = 120.0
+    fiqa: float = 0.9
     faces: int = 1
     second: float = 0.3  # the second face's size, relative to the first
 
@@ -60,7 +61,7 @@ class ScriptedEngine:
     def analyse(self, image, faces):
         self.analysed += 1
         shot = self._shot(image)
-        q = Quality(shot.ied, shot.yaw, 0.0, 0.0, shot.sharpness, shot.brightness, 40.0, 0.0, 0.0, 0.9)
+        q = Quality(shot.ied, shot.yaw, 0.0, 0.0, shot.sharpness, shot.brightness, 40.0, 0.0, 0.0, 0.9, shot.fiqa)
         crop = Aligned(np.zeros((112, 112, 3), np.uint8), np.eye(2, 3), 1.0, 0.0)
         return [FaceRecord(faces[0], crop, shot.vector, 20.0, q)]
 
@@ -74,9 +75,9 @@ def _photo(path, colour):
 def test_enrolment_checks_each_photo(tmp_path):
     shots = {(10, 0, 0): Shot(_unit(1)), (20, 0, 0): Shot(_unit(2), faces=2, second=0.8),
              (30, 0, 0): Shot(_unit(3), ied=30.0), (40, 0, 0): Shot(_unit(4), ied=60.0),
-             (50, 0, 0): Shot(_unit(5), sharpness=0.01), (60, 0, 0): Shot(_unit(6), sharpness=0.03),
-             (70, 0, 0): Shot(_unit(7), brightness=30.0), (80, 0, 0): Shot(_unit(8), yaw=70.0),
-             (90, 0, 0): Shot(_unit(9), faces=2, second=0.4)}
+             (50, 0, 0): Shot(_unit(5), sharpness=0.06), (60, 0, 0): Shot(_unit(6), sharpness=0.2),
+             (70, 0, 0): Shot(_unit(7), brightness=30.0), (80, 0, 0): Shot(_unit(8), yaw=70.0, fiqa=0.3),
+             (90, 0, 0): Shot(_unit(9), faces=2, second=0.4), (100, 0, 0): Shot(_unit(10), fiqa=0.3)}
     folder = tmp_path / "faces"
     for k, colour in enumerate(shots, 1):
         _photo(folder / f"P{k}" / "a.png", colour)
@@ -91,9 +92,10 @@ def test_enrolment_checks_each_photo(tmp_path):
     assert report["P5"][0] == "rejected" and "blurred" in report["P5"][1][0]
     assert report["P6"][0] == "ok" and "a little blurred" in report["P6"][1][0]
     assert report["P7"][0] == "ok" and "badly lit" in report["P7"][1][0]
-    assert report["P8"][0] == "ok" and "profile view (+70 degrees)" in report["P8"][1][0]
+    assert report["P8"] == ("ok", (report["P8"][1][0],)) and "profile view (+70 degrees)" in report["P8"][1][0]
+    assert report["P10"][0] == "ok" and "hard to recognise (eDifFIQA 0.30" in report["P10"][1][0]
     assert "P1" not in report and "P9" not in report  # a small second face is fine
-    assert gallery.people() == {f"P{k}": 1 for k in (1, 4, 6, 7, 8, 9)}
+    assert gallery.people() == {f"P{k}": 1 for k in (1, 4, 6, 7, 8, 9, 10)}
     assert sorted(p.parent.name for p in gallery.problems()) == ["P0", "P2", "P3", "P5"]
     assert gallery.match(_unit(3)).name is None  # a rejected photo is no one's
 

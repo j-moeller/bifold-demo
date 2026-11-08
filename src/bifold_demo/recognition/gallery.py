@@ -19,7 +19,12 @@ checked (**enrolment**):
   photo ambiguous, so it is rejected;
 * **the eye distance**: rejected under :data:`MIN_EYES` pixels, a warning under :data:`GOOD_EYES` (the standards ask
   for 90 in reference photos);
-* **blur**: rejected when the aligned face's sharpness is under :data:`BLURRED`, a warning under :data:`SOFT`;
+* **blur**: rejected when the aligned face's sharpness is under :data:`BLURRED`, a warning under :data:`SOFT`
+  (measured on the test photos: sharp ones 1.2-4.8; blurred by a Gaussian of 1 crop pixel 0.23-1.15, of 2 pixels
+  0.04-0.26, of 3 pixels 0.02-0.09; avatar renders turned 60 degrees 0.38 and more);
+* **how recognisable** (the profiles with eDifFIQA-T): a warning when its score is under :data:`HARD` (sharp photos
+  0.61-0.83, blurred by 2 crop pixels 0.39-0.61, by 3 pixels 0.16-0.47), except for profile views, which score lower
+  anyway (renders turned 60 degrees: 0.37-0.59); a warning only, as such scores can differ between groups of people;
 * **light**: a warning when the face is very dark, very bright or clipped;
 * **duplicates**: a photo whose embedding is within :data:`DUPLICATE` (cosine, InsightFace's default) of a better
   photo of the same person adds nothing and is left out (it stays in the folder);
@@ -64,7 +69,8 @@ CACHE_VERSION = 2  # raised when what is cached changes (the alignment, the chec
 RESCAN = 1.0  # seconds between looks at the folder
 DOMINANT = 0.7  # a second face this big (relative to the biggest) makes a photo ambiguous
 MIN_EYES, GOOD_EYES = 40.0, 90.0  # pixels between the eyes: rejected under, warned under
-BLURRED, SOFT = 0.02, 0.04  # the aligned face's sharpness (see quality.image_measures): rejected under, warned under
+BLURRED, SOFT = 0.10, 0.30  # the aligned face's sharpness (see quality.image_measures): rejected under, warned under
+HARD = 0.45  # eDifFIQA-T's score: a warning under it (not for profile views; see the module docs)
 DARK, BRIGHT, CLIPPED = 50.0, 215.0, 0.15  # mean grey level of the face, share of clipped pixels: warned beyond
 DUPLICATE = 0.98  # cosine: a photo this close to a better one of the same person adds nothing
 
@@ -193,9 +199,13 @@ def enrol(engine, image: np.ndarray) -> dict:
     elif q.ied < GOOD_EYES:
         warnings.append(f"a small face: {q.ied:.0f} pixels between the eyes ({GOOD_EYES:.0f} or more is best)")
     if q.sharpness < BLURRED:
-        rejected.append(f"the face is blurred (sharpness {q.sharpness:.3f}, at least {BLURRED})")
+        rejected.append(f"the face is blurred (sharpness {q.sharpness:.2f}, at least {BLURRED}; "
+                        "sharp photos 1 or more)")
     elif q.sharpness < SOFT:
-        warnings.append(f"the face is a little blurred (sharpness {q.sharpness:.3f})")
+        warnings.append(f"the face is a little blurred (sharpness {q.sharpness:.2f}; sharp photos 1 or more)")
+    if q.fiqa is not None and q.fiqa < HARD and q.pose != "profile":
+        warnings.append(f"the model finds the face hard to recognise (eDifFIQA {q.fiqa:.2f}; good photos 0.6-0.8): "
+                        "blurred, badly lit or partly covered?")
     if q.brightness < DARK or q.brightness > BRIGHT or q.clipped > CLIPPED:
         warnings.append(f"the face is badly lit (brightness {q.brightness:.0f} of 255, {q.clipped:.0%} clipped)")
     if q.pose == "profile":
