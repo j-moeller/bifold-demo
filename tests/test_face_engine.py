@@ -85,6 +85,45 @@ def test_a_damaged_or_unloadable_adaface_falls_back_to_the_resnet(tiny):
     assert len(engine.analyse(np.zeros((200, 200, 3), np.uint8), faces=[_face(60.0, 40.0)])) == 1  # it works
 
 
+def test_a_gated_model_is_used_only_once_a_recorded_check_shows_it_beats_its_gate(tiny, monkeypatch):
+    """Review L9: AuraFace (colour order and normalisation assumed) is used by the commercial profile only once
+    ``bifold-faces check`` has recorded that it passed and beats SFace on the same test packs. Here a tiny AuraFace is
+    gated on the tiny ResNet-50."""
+    from bifold_demo.recognition import checks
+
+    data = (tiny / registry.BUFFALO_L_R50.file.name).read_bytes()
+    _register(tiny, registry.AURAFACE, data)
+    aura = registry.MODELS[registry.AURAFACE.id] = dataclasses.replace(registry.MODELS[registry.AURAFACE.id],
+                                                                       gate=registry.BUFFALO_L_R50.id, dim=8)
+    r50 = registry.MODELS[registry.BUFFALO_L_R50.id]
+    gated = registry.Profile("gated", registry.SCRFD.id, (aura.id, r50.id), None, "a test profile")
+    monkeypatch.setitem(registry.PROFILES, "gated", gated)
+
+    def used():
+        engine = E.FaceEngine(tiny, download=False, profile="gated", progress=None)
+        engine.describe()  # (the recogniser is found when first needed)
+        return engine
+
+    engine = used()
+    assert engine.model_id == r50.id and "not used until a recorded check shows it beats" in engine.notes[0]
+    assert f"bifold-faces check --model {aura.id} {r50.id} --pack lfw.bin" in engine.notes[0]
+
+    def accuracy(spec, value, ok=True):
+        return checks.Report(f"{spec.id}: LFW", ok=ok, values={"accuracy": value})
+
+    checks.record(aura, tiny, [checks.Report(f"{aura.id}: file"), accuracy(aura, 99.70)])
+    assert "on a test pack" in used().notes[0]  # nothing of the gate model's to compare with
+    checks.record(r50, tiny, [accuracy(r50, 99.80)])
+    assert used().model_id == r50.id and "99.70 % against" in checks.gate(aura, tiny)
+    checks.record(r50, tiny, [accuracy(r50, 99.60)])  # (a later check replaces the same report)
+    assert checks.gate(aura, tiny) is None and used().model_id == aura.id and used().notes == []
+    checks.record(aura, tiny, [checks.Report(f"{aura.id}: colour order", ok=False)])  # added to the record
+    assert "its recorded check failed (auraface_v1: colour order)" in checks.gate(aura, tiny)
+    assert used().model_id == r50.id
+    registry.MODELS[aura.id] = dataclasses.replace(aura, file=dataclasses.replace(aura.file, sha256="0" * 64))
+    assert "not used until" in checks.gate(registry.MODELS[aura.id], tiny)  # a record of another file counts not
+
+
 def test_finding_faces_needs_no_recogniser_and_a_missing_detector_names_the_commercial_profile(tiny):
     for spec in (registry.BUFFALO_L_R50, registry.EDIFFIQA_T):
         (tiny / spec.file.name).unlink()

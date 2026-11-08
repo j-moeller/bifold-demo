@@ -8,8 +8,9 @@ steps' (F2, E1).
 
 **In short.**
 
-- Every model file has its pinned SHA-256 (the InsightFace, AdaFace and eDifFIQA hashes also match UniFace's
-  independent pins), every graph has only standard ONNX operators, and every embedder is deterministic and
+- Every model file has its pinned SHA-256 (the InsightFace, AdaFace and eDifFIQA hashes also match the ones UniFace
+  pins; UniFace is by the author of the AdaFace and eDifFIQA exports, so for those two that shows consistency, not
+  independent provenance), every graph has only standard ONNX operators, and every embedder is deterministic and
   batch-independent.
 - The AdaFace IR-101 community export works: 99.87 % on a balanced 1,500-pair LFW subset (published 99.82 % on the
   full protocol), the best separation of all (d' 8.2), and BGR input as its exporter says. It stays the default.
@@ -48,7 +49,7 @@ steps' (F2, E1).
 | `buffalo_l` ResNet-50 (`w600k_r50.onnx`) | `4c06341c...`, 174.4 | opset 11, `input.1` Nx3x112x112, raw 512 output | As UniFace pins it |
 | `antelopev2` ResNet-100 (`glintr100.onnx`) | `4ab1d643...`, 260.7 | opset 11, raw 512 output | Optional (no profile) |
 | SFace 2021dec | `0ba9fbfa...`, 38.7 | opset 11, normalises its input itself | As before |
-| eDifFIQA-T | `7a83be63...`, 6.9 | opset 20 (`Gelu`), `input` Bx3x112x112, `quality` Bx1 | Community export; pinned by UniFace too |
+| eDifFIQA-T | `7a83be63...`, 6.9 | opset 20 (`Gelu`), `input` Bx3x112x112, `quality` Bx1 | Community export; pinned by UniFace too (the same author) |
 | AuraFace-v1 | `a7933ea5...` (from Hugging Face's listing, via a search excerpt), size unknown | not seen | Hugging Face only: fetched and checked on the Mac |
 
 Every graph has only standard ONNX operators; every embedder gives the same answer twice and the same answer for a
@@ -64,8 +65,12 @@ crop alone as in a batch of 9 (to 1e-4).
 - **Pose from the five landmarks** (a 3D mean face fitted by scaled orthography; its two depths fitted to the renders):
   with SCRFD's landmarks the yaw comes back within 2 degrees (median) with a spread of 1.6-3.6 degrees at every yaw
   from -60 to 60, and the pose bin (frontal under 20 degrees, left, right, profile from 55) is right in 98.6 % of the
-  renders. The pitch reads about 5 degrees further down than the avatars look (a constant offset). YuNet's landmarks
-  follow the pose less well: 84 % of the bins right, the pitch hardly at all.
+  renders. The pitch reads about 5 degrees further down than the avatars look. On real photos (the review, against
+  MediaPipe's estimate on 16 frontal photos) the yaw agrees (0.94 times MediaPipe's, a median difference of 1.7
+  degrees) but the pitch read 10-17 degrees further down on 6 of them: five points cannot tell a nod from a face's
+  own proportions. So the pitch is recorded only and used in no decision (the pose bins, the template weights and
+  the enrolment checks use the yaw). YuNet's landmarks follow the pose less well: 84 % of the bins right, the pitch
+  hardly at all.
 - **Shrinking big faces before the alignment warp** (area averaging when the crop has fewer than 0.8 pixels per
   image pixel) makes no measurable difference on the renders (crop scale 0.48; d' 5.31 with it against 5.38 without
   for the ResNet-50, 4.62 against 4.64 for SFace) and a mixed one on the 8 training photos (scales 0.18-0.69; the
@@ -108,7 +113,7 @@ beside) it was left for the Mac, like AuraFace.
 
 ## 4. Avatar renders
 
-The 540 renders under one of the three lights (20 avatars, yaw -60 to 60, pitch -15 to 15; 7,020 mated and 138,780
+The 540 renders under one of the three lights (20 avatars, yaw -60 to 60, pitch -15 to 15; 7,020 mated and 138,510
 non-mated pairs), SCRFD's landmarks unless said otherwise. "Frontal gallery": one render per avatar (yaw 0, pitch 0)
 as the known person, every other render named by its best match.
 
@@ -211,7 +216,8 @@ analysed in one call with the licensed profile (SCRFD on each head region, then 
 - **The full benchmark protocol** (all 6,000 LFW pairs with mirrored crops, CFP-FP and AgeDB-30) for AdaFace, the
   ResNet-50 and the ResNet-100s, and **AuraFace** altogether: on the Mac (`bifold-faces fetch --all`, then
   `bifold-faces check --all --speed --pack lfw.bin cfp_fp.bin agedb_30.bin`), with CoreML's speed and how much of each
-  graph CoreML takes.
+  graph CoreML takes. The commercial profile uses AuraFace only once such a recorded check (kept in the models
+  folder's `checks/`) has passed and beats SFace's on the same packs; until then it uses SFace.
 - **AdaFace's norm** as a quality signal: on real low-quality faces (TinyFace, webcam recordings at a distance).
 - **Thresholds** are provisional cuts at one false match in a thousand LFW stranger pairs; the open-set decisions
   calibrated per model and face size against a target FPIR are the next step's (F2), on real data.

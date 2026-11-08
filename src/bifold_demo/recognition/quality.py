@@ -11,7 +11,12 @@ here, the decision per person track in F2):
   * ``yaw``, ``pitch``, ``roll`` in degrees, as the head textures count them: yaw to the head's own left positive,
     pitch down positive, roll towards the left shoulder positive. They come from fitting a mean face's five points
     in 3D (:data:`FACE_3D`: the alignment template with depths calibrated on avatar renders at known angles) to the
-    landmarks with a scaled orthographic camera (a linear least-squares fit, then the nearest rotation);
+    landmarks with a scaled orthographic camera (a linear least-squares fit, then the nearest rotation). The yaw is
+    reliable (on real photos within about 2 degrees of MediaPipe's estimate); **the pitch is not**: five points
+    cannot tell a nod from a face's own proportions (a long nose, a short chin), so on real photos it read 10-17
+    degrees further down than MediaPipe's on 6 of 16 frontal photos. It is recorded only: nothing here decides on it
+    (the pose bins, the weight and the enrolment checks use the yaw), and F2 should not either without a better
+    estimate (MediaPipe's face landmarks, which the head textures use);
   * ``pose``: the pose bin, ``frontal`` (yaw within :data:`FRONTAL` degrees), ``left`` and ``right`` (turned to the
     head's own left or right), ``profile`` (beyond :data:`PROFILE` degrees either way).
 
@@ -42,7 +47,8 @@ POSES = ("frontal", "left", "right", "profile")
 # (the nose tip and the mouth corners stand out from the eyes' plane). The depths were fitted to SCRFD's landmarks on
 # 1620 renders of 20 avatars at known angles (yaw -60 to 60, pitch -15 to 15): the yaw comes back within 2 degrees
 # (median) with a spread of 1.6-3.6 degrees, the pose bin in 98.6 % of the renders; the pitch reads about 5 degrees
-# further down than the avatars look. YuNet's landmarks follow the pose less well (84 % of the bins right).
+# further down than the avatars look, and 10-17 degrees on some real photos (see the module docs: it is used in no
+# decision). YuNet's landmarks follow the pose less well (84 % of the bins right).
 NOSE_DEPTH, MOUTH_DEPTH = 32.0, 14.0
 FACE_3D = np.c_[TEMPLATE, [0.0, 0.0, -NOSE_DEPTH, -MOUTH_DEPTH, -MOUTH_DEPTH]]
 REGION = (slice(36, 104), slice(28, 84))  # rows, columns of the aligned crop: eyes to chin, cheek to cheek

@@ -884,8 +884,12 @@ weights can be run here (TinyFace rank-1 72 %, IJB-C 97.7 % at 1e-4); its ONNX
 file is a community export, so it is checked before it is trusted (its
 SHA-256 is pinned, its graph has only standard operators, and its accuracy is
 measured against the published one). AuraFace is on Hugging Face only and is
-fetched where Hugging Face can be reached; elsewhere the commercial profile
-uses SFace. "Commercial" is about the weights' licences only: the detectors
+fetched where Hugging Face can be reached; its colour order and normalisation
+are assumed, so the commercial profile uses it only once a recorded check shows
+it beats SFace on the same test packs (`bifold-faces check --model auraface_v1
+sface_2021dec --pack lfw.bin` keeps what it finds in the models folder's
+`checks/`); until then, and elsewhere, the commercial profile uses SFace.
+"Commercial" is about the weights' licences only: the detectors
 were trained on WIDER FACE and most recognisers on web-scraped faces whose
 terms are for research, so anything that ships needs a legal review first.
 
@@ -946,7 +950,8 @@ quality record: the eye distance; yaw, pitch and roll from a 3D fit of the
 five landmarks (calibrated on 1620 avatar renders at known angles: with
 SCRFD's landmarks the yaw comes back within 2° with a spread of 2-4°, the pose
 bin — frontal, left, right, profile — in 98.6 % of the renders; YuNet's
-landmarks give 84 %); sharpness, brightness, contrast and clipping on the
+landmarks give 84 %; the pitch is only recorded, as on real photos it can be
+10-17° off, so nothing decides on it); sharpness, brightness, contrast and clipping on the
 aligned face; the share of the crop beyond the picture; eDifFIQA-T's score
 (which ranks renders by how recognisable they are with a Spearman correlation
 of 0.87 and falls steadily as faces get smaller); and AdaFace's norm.

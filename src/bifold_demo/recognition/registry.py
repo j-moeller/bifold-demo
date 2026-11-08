@@ -16,7 +16,9 @@ makes the whole process's choice, or ``BIFOLD_FACE_PROFILE``; :func:`profile_nam
 * ``licensed``: SCRFD-10G and ``buffalo_l`` ResNet-50, InsightFace's own files, for which InsightFace sells
   commercial licences. Without such a licence they are research-only too.
 * ``commercial``: YuNet with AuraFace-v1 (Apache-2.0; on Hugging Face only, so it is fetched where Hugging Face can
-  be reached), else SFace (Apache-2.0), with the geometric quality measures only.
+  be reached), else SFace (Apache-2.0), with the geometric quality measures only. AuraFace's colour order and
+  normalisation are assumed, so it is used only once a recorded ``bifold-faces check`` shows it beats SFace on the
+  same test packs (its ``gate``; see :func:`.checks.gate`); until then the profile uses SFace.
 
 "Commercially usable" here means the weights' licence allows it. The training data (WIDER FACE for the detectors,
 web-scraped faces for most recognisers) and patents are further questions that need a legal review before anything
@@ -93,6 +95,7 @@ class ModelSpec:
     published: dict = field(default_factory=dict)  # accuracy published by the authors (per cent)
     needs: str = ""  # a host the file can only be fetched from, said when the download fails
     optional: bool = False  # in no profile: fetched only on request
+    gate: str = ""  # a model this one must beat in a recorded ``bifold-faces check`` before an engine uses it
 
     @property
     def profiles(self) -> tuple[str, ...]:
@@ -150,7 +153,8 @@ ADAFACE_IR101 = ModelSpec(
                            "quality-adaptive margin",
     origin="a community ONNX export of the official weights by Yakhyokhuja Valikhujaev (yakhyo/adaface-onnx, "
            "GitHub release 'weights'; the export script is not published); the same SHA-256 is pinned by his UniFace "
-           "toolkit. Checked here: standard operators only, accuracy on LFW, colour order (bifold-faces check)",
+           "toolkit (consistency, not independent provenance). Checked here: standard operators only, accuracy on "
+           "LFW, colour order (bifold-faces check)",
     inputs=(Tensor("input", ("batch_size", 3, 112, 112)),),
     outputs=(Tensor("output", ("batch_size", 512)),),
     opset=16, norm_output="/model/ReduceL2_output_0", norm_quality=True, threshold=0.18,
@@ -198,7 +202,7 @@ AURAFACE = ModelSpec(
            "to be InsightFace's (it is run by InsightFace's library) until bifold-faces check confirms them",
     threshold=0.18,  # interim (AdaFace's): not measurable here, calibrate where Hugging Face can be reached
     published={"LFW": 99.65, "CFP-FP": 95.19, "AgeDB-30": 96.10, "CALFW": 94.70, "CPLFW": 90.93},
-    needs="huggingface.co")
+    needs="huggingface.co", gate="sface_2021dec")
 
 EDIFFIQA_T = ModelSpec(
     "ediffiqa_t", "eDifFIQA-T (face image quality, MobileFaceNet)", "quality",
@@ -208,7 +212,8 @@ EDIFFIQA_T = ModelSpec(
     licence="MIT (the eDifFIQA code and the export); no separate terms for the weights", commercial=False,
     data="quality labels from VGGFace2 and a CosFace ResNet-100 (research data)",
     origin="a community ONNX export of the official weights (yakhyo/face-image-quality-assessment, release "
-           "'weights'); the same SHA-256 is pinned by UniFace",
+           "'weights'); the same SHA-256 is pinned by his UniFace toolkit (consistency, not independent "
+           "provenance)",
     inputs=(Tensor("input", ("batch_size", 3, 112, 112)),), outputs=(Tensor("quality", ("batch_size", 1)),),
     opset=20)
 

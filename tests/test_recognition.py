@@ -197,7 +197,7 @@ def test_the_engine_finds_the_faces_and_tells_people_apart(engine, zidane):
     faces = engine.faces(zidane)
     assert len(faces) == 2 and all(f.score > 0.6 for f, _ in faces)
     (_, a), (_, b) = faces
-    assert abs(np.linalg.norm(a) - 1.0) < 1e-6 and a @ b < THRESHOLD  # two different men
+    assert abs(np.linalg.norm(a) - 1.0) < 1e-6 and a @ b < engine.threshold  # two different men (its model's cut)
     # the same men in other "photos": brighter, smaller, mirrored
     brighter = cv2.convertScaleAbs(zidane, alpha=1.2, beta=25)
     smaller = cv2.resize(zidane, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
@@ -207,7 +207,7 @@ def test_the_engine_finds_the_faces_and_tells_people_apart(engine, zidane):
         scores = np.array([[x @ y for _, y in found] for x in (a, b)])
         assert (scores.max(axis=1) > 0.6).all()  # each man is found again ...
         assert scores[0].argmax() != scores[1].argmax()  # ... in a face of his own
-        assert scores[0, scores[1].argmax()] < THRESHOLD and scores[1, scores[0].argmax()] < THRESHOLD
+        assert scores[0, scores[1].argmax()] < engine.threshold and scores[1, scores[0].argmax()] < engine.threshold
 
 
 def test_a_gallery_of_real_photos_names_the_faces(engine, zidane, tmp_path):

@@ -120,3 +120,6 @@ def test_bifold_faces_check_reports_a_missing_model(tmp_path, capsys):
     assert cli.main(["--models", str(tmp_path), "check", "--model", "sface_2021dec"]) == 1
     out = capsys.readouterr().out
     assert "sface_2021dec: file: FAILED" in out and "is missing" in out and "0 of 1 checks passed" in out
+    assert not (tmp_path / checks.RECORDS).exists()  # nothing recorded of a missing file
+    assert cli.main(["--models", str(tmp_path), "check", "--model", "auraface_v1"]) == 1
+    assert "auraface_v1: not used until a recorded check shows it beats SFace" in capsys.readouterr().out

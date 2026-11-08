@@ -18,11 +18,19 @@
   and is refused: re-save it with protocol 3 or later). Only ``lfw.bin`` can be had from GitHub
   (``leondgarse/Keras_insightface`` release ``v1.0.0``); the others are on Hugging Face, so those checks run where
   it can be reached (``bifold-faces check --pack DIR/cfp_fp.bin``).
+
+**Records.** ``bifold-faces check`` keeps what it found per model in the models folder (``checks/<model id>.json``,
+with the file's SHA-256; a later check adds to it, e.g. another pack): :func:`record`, :func:`recorded`. A model with
+a ``gate`` in the registry (AuraFace, whose colour order and normalisation are assumed) is used by an engine only
+once its record has passed every check and its accuracy on the test packs beats the gate model's on the same packs
+(:func:`gate`), as the research asks ("adopt only if it beats SFace").
 """
 
 from __future__ import annotations
 
 import io
+import json
+import os
 import pickle
 import time
 from dataclasses import dataclass, field
@@ -32,6 +40,7 @@ import cv2
 import numpy as np
 
 STANDARD_DOMAINS = ("", "ai.onnx", "ai.onnx.ml")
+RECORDS = "checks"  # the folder in the models folder that keeps what bifold-faces check found, a file per model
 
 
 @dataclass
@@ -376,3 +385,67 @@ def published_accuracy(spec, path, pack) -> Report:
     else:
         report.fail(f"{line}, published {published:.2f} %: well below")
     return report
+
+
+# -- records and gates ----------------------------------------------------------------------------------------------
+
+
+def record(spec, folder, reports) -> Path:
+    """Keep ``reports``, what ``bifold-faces check`` found for ``spec``, in the models ``folder`` (see the module
+    docs), merged with what earlier checks of the same file found; the record's path."""
+    path = Path(folder) / RECORDS / f"{spec.id}.json"
+    found = recorded(spec, folder) or {"model": spec.id, "sha256": spec.file.sha256, "reports": {}}
+    found["reports"].update({r.name: {"ok": r.ok, "lines": r.lines, "values": r.values} for r in reports})
+    found["ok"] = all(r["ok"] for r in found["reports"].values())
+    found["when"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(found, indent=1, default=str))
+    os.replace(tmp, path)
+    return path
+
+
+def recorded(spec, folder) -> dict | None:
+    """The record of ``spec``'s checks in the models ``folder``; ``None`` when there is none, or it is of another
+    file (another SHA-256)."""
+    try:
+        found = json.loads((Path(folder) / RECORDS / f"{spec.id}.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return found if isinstance(found, dict) and found.get("sha256") == spec.file.sha256 else None
+
+
+def _accuracies(found: dict | None) -> dict[str, float]:
+    """``{benchmark: accuracy}`` of the test packs in a record."""
+    out = {}
+    for name, report in (found or {}).get("reports", {}).items():
+        values = report.get("values") or {}
+        if "accuracy" in values:
+            out[name.split(": ", 1)[-1]] = float(values["accuracy"])
+    return out
+
+
+def gate(spec, folder) -> str | None:
+    """Why an engine may not use ``spec`` yet (``None``: it may; see the module docs): a model with a ``gate`` needs
+    a record in the models ``folder`` that passed every check, with a mean accuracy on the test packs it shares with
+    the gate model's record above that model's."""
+    if not spec.gate:
+        return None
+    from . import registry
+
+    other = registry.model(spec.gate)
+    how = f"bifold-faces check --model {spec.id} {other.id} --pack lfw.bin"
+    mine = recorded(spec, folder)
+    if mine is None:
+        return f"not used until a recorded check shows it beats {other.title} ({how})"
+    if not mine.get("ok"):
+        failed = [name for name, r in mine["reports"].items() if not r["ok"]]
+        return f"not used: its recorded check failed ({', '.join(failed)})"
+    ours, theirs = _accuracies(mine), _accuracies(recorded(other, folder))
+    shared = sorted(set(ours) & set(theirs))
+    if not shared:
+        return f"not used until a recorded check on a test pack shows it beats {other.title} ({how})"
+    a, b = (float(np.mean([found[k] for k in shared])) for found in (ours, theirs))
+    if a <= b:
+        return f"not used: {a:.2f} % against {other.title}'s {b:.2f} % on {', '.join(shared)} (recorded checks)"
+    return None

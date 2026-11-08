@@ -28,8 +28,10 @@ import numpy as np
 
 from . import registry
 from .align import Aligned, align, crops
+from .checks import gate
 from .detect import Face, ScrfdDetector, YuNetDetector
 from .embed import Embeddings, embedder
+from .models import models_dir
 from .quality import FiqaModel, Quality, assess
 
 MIN_FACE = 24  # pixels: smaller faces are found but too small to recognise reliably
@@ -104,7 +106,6 @@ class FaceEngine:
         if self.profile.name == "commercial":
             return ""
         from .. import downloads
-        from .models import models_dir
 
         commercial = registry.PROFILES["commercial"]
         folder = models_dir(self.models_folder)
@@ -122,6 +123,9 @@ class FaceEngine:
             for model_id in self.profile.embedders:
                 spec = registry.model(model_id)
                 try:
+                    blocked = gate(spec, models_dir(self.models_folder)) if spec.gate else None
+                    if blocked:  # (before fetching it: a model nobody checked is not downloaded either)
+                        raise RuntimeError(blocked)
                     path = self._file(spec)
                     made = embedder(spec, path, self.provider)
                 except Exception as exc:  # noqa: BLE001 - missing, damaged or not loading: the next one

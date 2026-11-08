@@ -26,7 +26,7 @@ checked (**enrolment**):
   0.61-0.83, blurred by 2 crop pixels 0.39-0.61, by 3 pixels 0.16-0.47), except for profile views, which score lower
   anyway (renders turned 60 degrees: 0.37-0.59); a warning only, as such scores can differ between groups of people;
 * **light**: a warning when the face is very dark, very bright or clipped;
-* **duplicates**: a photo whose embedding is within :data:`DUPLICATE` (cosine, InsightFace's default) of a better
+* **duplicates**: a photo whose embedding is within :data:`DUPLICATE` (cosine; a choice made here) of a better
   photo of the same person adds nothing and is left out (it stays in the folder);
 * **the pose bin** of each photo (frontal, left, right, profile; see :mod:`.quality`);
 * **near-twins**: two people whose photos reach the threshold against each other get a warning: the model finds them
@@ -63,7 +63,8 @@ import numpy as np
 
 from ..scene.textures import IMAGE_EXTENSIONS
 
-THRESHOLD = 0.363  # cosine similarity: OpenCV's recommended cut for SFace (99.6 % on LFW); other models: their own
+THRESHOLD = 0.363  # SFace's cosine cut (OpenCV's, 99.6 % on LFW), for a stand-in engine without a threshold of its
+# own; every model of the registry has its own (FaceEngine.threshold, Gallery.threshold): compare scores with those
 CACHE = ".embeddings.npz"  # the cache of the demo before the per-model caches (removed when a new one is written)
 CACHE_VERSION = 2  # raised when what is cached changes (the alignment, the checks): older caches are not used
 RESCAN = 1.0  # seconds between looks at the folder

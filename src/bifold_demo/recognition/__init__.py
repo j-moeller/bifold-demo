@@ -28,6 +28,6 @@ import os
 os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")  # before ONNX Runtime is first imported
 
 from .engine import Face, FaceEngine, FaceRecord  # (after the telemetry switch)
-from .gallery import THRESHOLD, Gallery, Match, PersonScore
+from .gallery import THRESHOLD, Gallery, Match, PersonScore  # (THRESHOLD: SFace's; see gallery.THRESHOLD)
 
 __all__ = ["THRESHOLD", "Face", "FaceEngine", "FaceRecord", "Gallery", "Match", "PersonScore"]

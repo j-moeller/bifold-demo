@@ -108,6 +108,11 @@ def _list_models(args) -> None:
         here = downloads.present(spec.file, folder) is not None
         mark = "*" if spec.id in registry.PROFILES[name].models() else " "
         where = "fetched" if here else "not fetched" + (f", needs {spec.needs}" if spec.needs else "")
+        if spec.gate and here:
+            from .checks import gate
+
+            blocked = gate(spec, folder)
+            where += f"; {blocked}" if blocked else f"; checked: beats {registry.model(spec.gate).title}"
         print(f"{mark} {spec.id:<20} {spec.task:<9} {spec.title} [{where}]")
         use = "commercial use allowed by the licence" if spec.commercial else "research use only"
         print(f"      licence: {spec.licence}; {use}")
@@ -158,7 +163,13 @@ def cmd_check(args) -> int:
                 mine += [checks.published_accuracy(spec, path, pack) for pack in args.pack or ()]
         for report in mine:
             print(report)
+        if path.is_file():
+            print(f"{spec.id}: recorded in {checks.record(spec, folder, mine)}")
         reports += mine
+    for spec in map(registry.model, dict.fromkeys(ids)):
+        if spec.gate:
+            blocked = checks.gate(spec, folder)
+            print(f"{spec.id}: {blocked or f'used by its profiles (it beats {registry.model(spec.gate).title})'}")
     if args.json:
         Path(args.json).write_text(json.dumps({r.name: {"ok": r.ok, "lines": r.lines, "values": r.values}
                                                for r in reports}, indent=1, default=str))
