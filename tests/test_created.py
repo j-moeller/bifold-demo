@@ -214,6 +214,7 @@ def test_images_of_any_kind_are_read_right_and_cut_to_size(tmp_path):
         "palette": lambda f: Image.fromarray(np.full((8, 8, 3), red, np.uint8)).convert("P", palette=Image.ADAPTIVE)
         .save(f),
         "big": lambda f: cv2.imwrite(str(f), np.full((3000, 1500, 3), red[::-1], np.uint8)),
+        "f001_head": lambda f: cv2.imwrite(str(f), np.full((3000, 1500, 3), red[::-1], np.uint8)),
     }
     for name, write in files.items():
         write(folder / f"{name}.png")
@@ -225,6 +226,9 @@ def test_images_of_any_kind_are_read_right_and_cut_to_size(tmp_path):
     assert tuple(images["grey"][0, 0]) == (90, 90, 90, 255) and tuple(images["grey_alpha"][0, 0]) == (90, 90, 90, 200)
     assert tuple(images["palette"][0, 0]) == (*red, 255)
     assert images["big"].shape == (created_module.MAX_TEXTURE, created_module.MAX_TEXTURE // 2, 4)
+    assert images["f001_head"].shape == (2048, 1024, 4)  # a head keeps the size of a high-resolution head
+    assert load(folder, lazy=True).textures["f001_head"].shape == (2048, 1024, 4)
+    assert created_module.max_texture("m009_head") == 2048 and created_module.max_texture("m009_body") == 1024
 
 
 def test_the_book_keeps_a_character_while_its_file_cannot_be_read(tmp_path):

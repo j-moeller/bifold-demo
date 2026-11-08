@@ -44,6 +44,7 @@ FILE = "character.json"
 FORMAT = 1
 RESCAN = 1.0  # seconds between looks at the folder
 MAX_TEXTURE = 1024  # pixels: a larger image is scaled down when it is read (as the avatars' own textures are)
+MAX_HEAD_TEXTURE = 2048  # pixels: a head's texture keeps the size of a high-resolution head (a face from photos)
 ITEM_FILES = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tif", ".tiff", ".mp4", ".avi", ".mov", ".mkv",
               ".webm")  # an item look with one of these endings is a file of the character's folder
 
@@ -177,7 +178,7 @@ class Textures(MutableMapping):
         with self._lock:
             image = self._images.get(primitive)
             if image is None:
-                image = self._images[primitive] = _read(self._files[primitive])
+                image = self._images[primitive] = _read(self._files[primitive], max_texture(primitive))
             return image
 
     def __setitem__(self, primitive: str, image) -> None:
@@ -200,20 +201,27 @@ class Textures(MutableMapping):
         return f"Textures({', '.join(self._files)})"
 
 
-def _read(path: Path) -> np.ndarray:
+def max_texture(primitive: str) -> int:
+    """The largest side a texture of the avatar's part called ``primitive`` keeps: :data:`MAX_HEAD_TEXTURE` for a
+    head (a name ending in ``head``, as the Rocketbox heads' do: ``f001_head``), :data:`MAX_TEXTURE` for the rest
+    (bodies, hair, items)."""
+    return MAX_HEAD_TEXTURE if str(primitive).lower().endswith("head") else MAX_TEXTURE
+
+
+def _read(path: Path, largest: int = MAX_TEXTURE) -> np.ndarray:
     """The image file ``path`` as RGBA ``uint8`` (any PNG: grey, a palette, 16 bits per channel), at most
-    ``MAX_TEXTURE`` pixels wide and high. Raises ``OSError`` or ``ValueError`` when it cannot be read."""
+    ``largest`` pixels wide and high. Raises ``OSError`` or ``ValueError`` when it cannot be read."""
     from ..scene.textures import _read_image
 
     try:
-        return _read_image(Path(path), MAX_TEXTURE)
+        return _read_image(Path(path), largest)
     except ValueError as exc:  # not an image (yet: half written, say)
         raise OSError(f"cannot read {path}: {exc}") from None
 
 
-def _rgba8(image) -> np.ndarray:
-    """An image of a character in memory (RGB or RGBA; 8 or 16 bits) as RGBA ``uint8``, at most ``MAX_TEXTURE``
-    pixels wide and high."""
+def _rgba8(image, largest: int = MAX_TEXTURE) -> np.ndarray:
+    """An image of a character in memory (RGB or RGBA; 8 or 16 bits) as RGBA ``uint8``, at most ``largest`` pixels
+    wide and high."""
     from ..scene.textures import _array_to_rgba, _fit
 
     image = np.asarray(image)
@@ -221,7 +229,7 @@ def _rgba8(image) -> np.ndarray:
         image = (image >> 8).astype(np.uint8)
     if not (image.dtype == np.uint8 and image.ndim == 3 and image.shape[2] == 4):  # (read from a file: it is)
         image = _array_to_rgba(image, "rgb")
-    return _fit(image, MAX_TEXTURE)
+    return _fit(image, largest)
 
 
 def load(path, lazy: bool = False) -> CreatedCharacter:
@@ -258,7 +266,8 @@ def _load(path: Path, raw: bytes, lazy: bool) -> CreatedCharacter:
     items = _check_items(data.get("items"))
 
     def images(found):
-        return Textures(found) if lazy else {primitive: _read(file) for primitive, file in found.items()}
+        return Textures(found) if lazy else {primitive: _read(file, max_texture(primitive))
+                                             for primitive, file in found.items()}
 
     return CreatedCharacter(name, avatar, face, _mapping(data, "outfit"), items, images(files),
                             _seconds(data, "created"), _seconds(data, "updated"), path, images(bases))
@@ -464,7 +473,7 @@ def textures_of(character, primitives=None) -> dict[str, np.ndarray]:
 
 def textures_for(created: CreatedCharacter, model) -> dict:
     """The textures of ``created`` for the primitives of ``model`` (its avatar), ready to draw
-    (:class:`~bifold_demo.scene.textures.Texture`, at most ``MAX_TEXTURE`` pixels wide and high): the slow part of
+    (:class:`~bifold_demo.scene.textures.Texture`, at most :func:`max_texture` pixels wide and high): the slow part of
     :func:`apply_looks` (reading and converting the images), which can run on another thread (it pauses between
     images, see :mod:`bifold_demo.pacing`). Raises ``OSError`` or ``ValueError`` for an image it cannot use."""
     from ..pacing import pause
@@ -475,7 +484,7 @@ def textures_for(created: CreatedCharacter, model) -> dict:
     for name in created.textures:
         if name in names:
             pause()
-            out[name] = Texture(_rgba8(created.textures[name]), name=f"{created.name} {name}")
+            out[name] = Texture(_rgba8(created.textures[name], max_texture(name)), name=f"{created.name} {name}")
             pause()
             prepare_upload(out[name])
     return out

@@ -12,6 +12,7 @@ import numpy as np
 import test_headtex_fuse_avatars as fuse_tests
 from test_headtex_fuse_avatars import CHARACTERS, OTHER, PERSON, PHOTO_SIZE, fused, register
 
+from bifold_demo.characters.headtex import fuse
 from bifold_demo.characters.headtex import landmarks as stage0
 from bifold_demo.characters.headtex import person as stages
 from bifold_demo.characters.headtex import texture as stage4
@@ -80,7 +81,9 @@ def test_the_command_line_finishes_and_saves_a_created_character(library, tmp_pa
                  "--characters", str(CHARACTERS)])
     printed = capsys.readouterr().out
     assert code == 0 and "stage 6: the body's skin times" in printed and "the face's skin against the hands'" in printed
-    assert cv2.imread(str(out), cv2.IMREAD_UNCHANGED).shape == (1024, 1024, 4)
+    other = library.load(OTHER)
+    side = fuse.texture_size(other.primitives[stage0.face_photo.head_layout(other).primitive])  # 2048 or 1024
+    assert cv2.imread(str(out), cv2.IMREAD_UNCHANGED).shape == (side, side, 4)
     assert cv2.imread(str(tmp_path / "head_body.png"), cv2.IMREAD_UNCHANGED).shape[2] == 4
     assert cv2.imread(str(tmp_path / "views.jpg")).shape[0] == 2 * 480
     created = load(tmp_path / "created" / "Test person")

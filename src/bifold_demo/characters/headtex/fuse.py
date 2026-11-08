@@ -49,7 +49,9 @@ the photo (no aliasing in a 12-megapixel photo). Its weight is the product of:
   a little misregistered, shows the neck below): rising from 0 to 1 over :data:`EDGE_RAMP`, :data:`BORDER_RAMP` and
   :data:`OUTLINE_RAMP` of the face's size, so a slightly misregistered edge does not bleed hair or background in;
 * the view's quality (stage 1) and the photo pixels per texel (:data:`GOOD_FOOTPRINT` for full marks, seen squarely;
-  smoothed over a few texels, as it is constant per triangle);
+  smoothed over a few texels, as it is constant per triangle), counted in texels of the head's ordinary texture
+  (:attr:`HeadAtlas.marks_size`: 1024 for the Rocketbox heads), so a texture made at their 2048 detail size marks a
+  photo as one made at 1024 does, and the confidence and the trimap below do not change with the size;
 * a tenth on the lips of a photo with an open mouth.
 
 Stage 4 (:mod:`.light`) then divides each projection by its photo's fitted light and, after the gains, multiplies the
@@ -123,7 +125,7 @@ EDGE_RAMP = 0.05  # of the face's size: the weight rises from 0 to 1 over this d
 BORDER_RAMP = 0.02  # ... and over this from the photo's border
 OUTLINE_RAMP = 0.03  # ... and over this from an outline of the head (where its depth jumps by DEPTH_EDGE or more)
 DEPTH_EDGE = 0.01  # metres between neighbouring pixels of a view's z-buffer: an outline
-GOOD_FOOTPRINT = 1.0  # photo pixels per texel (seen squarely) for full marks on resolution
+GOOD_FOOTPRINT = 1.0  # photo pixels per texel (seen squarely; texels at HeadAtlas.marks_size) for full marks
 RESOLUTION_SMOOTHING = 4.0  # texels (at 1024): the Gaussian that smooths the photo pixels per texel
 MOUTH_OPEN = 0.35  # MediaPipe's jawOpen score above which the lips count a tenth
 MASK_LEVEL = 0.5  # segmenter confidence: the edge of a mask
@@ -163,6 +165,7 @@ class HeadAtlas:
     shading: np.ndarray  # float32: the avatar's own painted shading (light.own_shading), 1 outside
     own_fit: light.Shading = field(default_factory=light.Shading.flat)
     scalp_from: str = "segmenter"  # where the scalp came from: "segmenter" (head_regions) or "colour"
+    marks_size: int = 0  # the texture size the photos' resolution is marked at (:func:`marks_size`; 0: size)
 
     @property
     def size(self) -> int:
@@ -204,7 +207,7 @@ class HeadAtlas:
 
 
 _atlases: dict[tuple, tuple] = {}
-ATLASES = 3  # head atlases kept in memory (about 60 MB each at 1024 texels)
+ATLASES = 2  # head atlases kept in memory (about 66 MiB each at 1024 texels, 265 MiB at 2048)
 
 
 def head_atlas(model, head, size: int | None = None, *, labels="auto", cache_dir=None) -> HeadAtlas:
@@ -247,7 +250,20 @@ def head_atlas(model, head, size: int | None = None, *, labels="auto", cache_dir
 
 
 def texture_size(prim) -> int:
-    """The head texture's larger side (1024 without one)."""
+    """The head texture's larger side (1024 without one): of its largest version (``full_texture``: 2048 for the
+    heads of a library prepared in format 2), so that a head from photos is made at the size the head can show."""
+    from ..outfit.regions import texture_of
+
+    texture = texture_of(getattr(prim, "full_texture", prim.texture))
+    return 1024 if texture is None else int(max(texture.width, texture.height))
+
+
+def marks_size(prim) -> int:
+    """The texture size a photo's resolution is marked at (:data:`GOOD_FOOTPRINT` photo pixels per texel): the head's
+    ordinary texture's larger side (1024 for the Rocketbox heads, whose 2048 version is their ``detail``; 1024
+    without one). A head texture made at another size marks a photo as one at this size does, so how much the photos
+    count, against each other and against the avatar's own texture, how sure the result is and what stage 5 fills in
+    do not change with the size: at 2048 a photo with half a pixel per texel has full marks."""
     from ..outfit.regions import texture_of
 
     texture = texture_of(prim.texture)
@@ -308,7 +324,7 @@ def _finish_atlas(model, primitive, bake, parts, hairline, features, patch, scal
     jacobian, area_scale = _uv_jacobian(prim, corners, size)
     scale = np.zeros((size, size), np.float32)
     scale[bake.covered] = area_scale[bake.triangle[bake.covered]]
-    texture = texture_of(prim.texture)
+    texture = texture_of(getattr(prim, "full_texture", prim.texture))
     if texture is None:
         rgba = np.full((size, size, 4), (190, 150, 130, 255), np.uint8)
     else:
@@ -321,7 +337,7 @@ def _finish_atlas(model, primitive, bake, parts, hairline, features, patch, scal
     front = face & (np.nan_to_num(bake.normal[..., 2]) > 0.3)  # the face skin a photo from the front sees
     fit, shading = light.own_shading(own, bake.normal, face | (parts == NECK), front)
     return HeadAtlas(model.name, primitive, bake, parts, hairline, features, patch, scale, jacobian, corners, own,
-                     np.ascontiguousarray(rgba), shading, fit, scalp_from)
+                     np.ascontiguousarray(rgba), shading, fit, scalp_from, marks_size(prim))
 
 
 def _uv_jacobian(prim, corners, size) -> tuple[np.ndarray, np.ndarray]:
@@ -564,7 +580,8 @@ def _hair_by_colour(model, head, bake, patch) -> np.ndarray:
     the avatar's skin (its cheeks and forehead), cleaned of specks."""
     from ..outfit.regions import _distance, texture_of
 
-    texture = texture_of(model.primitives[head.primitive].texture)
+    prim = model.primitives[head.primitive]
+    texture = texture_of(getattr(prim, "full_texture", prim.texture))
     size = bake.size
     if texture is None:
         return np.zeros((size, size), bool)
@@ -716,7 +733,8 @@ def project(view, atlas: HeadAtlas, *, debug: bool = False) -> Projection:
     seen = np.zeros((size, size), bool)
     seen[rows, cols] = True
     squarely = masked_soften(grid, seen, RESOLUTION_SMOOTHING * size / 1024)[rows, cols]
-    resolution = np.sqrt(np.clip(squarely / GOOD_FOOTPRINT, 0.0, 1.0))
+    marked = squarely * (size / (atlas.marks_size or size))  # per texel of the head's ordinary texture
+    resolution = np.sqrt(np.clip(marked / GOOD_FOOTPRINT, 0.0, 1.0))
     weight = angle * np.clip(allowed, 0.0, 1.0) * edge * resolution * max(view.quality, 0.05)
     shapes = view.marks.blendshapes if view.marks is not None else {}
     warnings = []

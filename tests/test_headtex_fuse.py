@@ -455,6 +455,29 @@ def test_fused_photos_give_back_the_texture(avatar, truth):
     assert set(result.timings) >= {"projection", "light and gains", "blend", "finish"}
 
 
+def test_a_larger_texture_marks_the_photos_as_the_ordinary_size_does(avatar, truth):
+    """A head texture made at twice its ordinary size (as at 2048 for a Rocketbox head) from small photos: the photos'
+    resolution is marked per texel of the ordinary texture, so the result is as sure and its trimap the same, and the
+    photos do not lose weight against the avatar's own texture (counted per texel of the larger texture, they had
+    under one pixel each and lost a third of their weight, and stage 5 would have filled in much of the face)."""
+    model, head, _atlas = avatar
+    assert fuse.marks_size(model.primitives[0]) == TEX
+    cameras = cameras_for([0.0, 35.0], distance=0.9)  # small in the photos
+    results = {size: session(model, head, truth, cameras, size=size) for size in (TEX, 2 * TEX)}
+    small, large = results[TEX], results[2 * TEX]
+    assert large.size == 2 * TEX and large.atlas.marks_size == TEX
+    face = (small.atlas.parts == fuse.FACE) & (small.confidence > 0.05)
+    assert face.sum() > 1500
+    seen = [p.footprint[p.weight > 0].astype(np.float64) for p in large.projections]
+    assert np.median(np.concatenate(seen)) < 0.8  # under one photo pixel per texel of the larger texture
+    shrunk = cv2.resize(large.confidence, (TEX, TEX), interpolation=cv2.INTER_AREA)
+    assert np.median(np.abs(shrunk[face] - small.confidence[face])) < 0.02
+    small_share = (small.trimap[face] != fuse.GENERATE).mean()
+    large_face = cv2.resize(face.astype(np.uint8), (2 * TEX, 2 * TEX), interpolation=cv2.INTER_NEAREST) > 0
+    assert abs((large.trimap[large_face] != fuse.GENERATE).mean() - small_share) < 0.03
+    assert abs(large.shares["avatar"] - small.shares["avatar"]) < 0.03
+
+
 def test_a_strong_shadow_over_half_the_face_is_not_baked_in(avatar, truth):
     """A light from the person's left with little light elsewhere: the right half of the face is several times
     darker in the photo. De-lit, the halves of the texture agree; without it, the shadow stays."""

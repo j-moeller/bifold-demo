@@ -136,16 +136,25 @@ def person_photos(avatars, renderers):
 def test_fake_photos_fused_onto_their_own_head_give_its_texture_back(avatars, mediapipe, person_photos):
     """Four renders (front, turned 40 degrees each way, from below) under four lights of different direction and
     colour: on the face texels the photos show surely the texture comes back within a few delta E (measured: the
-    median 4.5, 90 % within 9.3, PSNR 24.4 dB; the lightness 1.6-1.9 lower), its skin tone within 3.3."""
+    median 4.5, 90 % within 9.3, PSNR 24.4 dB; the lightness 1.6-1.9 lower), its skin tone within 3.3. On a head
+    prepared at 2048 the texture is compared at 1024, the size the photos' resolution is marked at (about one photo
+    pixel per texel there: they bring back the 2048 texture's finer detail only in part; measured at 1024: the median
+    4.3, 90 % within 11.0; at 2048: 5.0 and 13.2)."""
     avatar = avatars[PERSON]
     result = fused(avatar, register(avatar, mediapipe, *person_photos))
     atlas = avatar.atlas
     sure = (atlas.parts == fuse.FACE) & (result.trimap == fuse.KEEP)
     assert sure.sum() > 0.5 * (atlas.parts == fuse.FACE).sum()
-    got, want = light.lab(light.to_linear(result.rgba[..., :3][sure])), light.lab(atlas.own[sure])
+    got_linear, want_linear = light.to_linear(result.rgba[..., :3]), atlas.own
+    if atlas.size > atlas.marks_size:
+        side = (atlas.marks_size, atlas.marks_size)
+        got_linear, want_linear = (cv2.resize(np.ascontiguousarray(image, np.float32), side,
+                                              interpolation=cv2.INTER_AREA) for image in (got_linear, want_linear))
+        sure = cv2.resize(sure.astype(np.float32), side, interpolation=cv2.INTER_AREA) > 0.99
+    got, want = light.lab(got_linear[sure]), light.lab(want_linear[sure])
     error = light.delta_e(got, want)
     assert np.median(error) < 6.5 and np.percentile(error, 90) < 13.0
-    mse = ((result.rgba[..., :3][sure].astype(float) - light.to_srgb(atlas.own[sure]).astype(float)) ** 2).mean()
+    mse = ((light.to_srgb(got_linear[sure]).astype(float) - light.to_srgb(want_linear[sure]).astype(float)) ** 2).mean()
     assert 10 * np.log10(255 ** 2 / mse) > 21.0
     assert abs(float(np.mean(got[:, 0] - want[:, 0]))) < 5.0
     assert light.delta_e(result.skin.lab, result.own_skin.lab) < 6.0
@@ -159,7 +168,8 @@ def test_fake_photos_fused_onto_their_own_head_give_its_texture_back(avatars, me
     gutter = ~atlas.covered
     assert result.rgba[..., :3][gutter].mean() > 40  # not the black of the avatar's own texture there
     assert set(result.shares) == {"front", "three-quarter right", "three-quarter left", "front 2", "avatar"}
-    assert result.timings["projection"] + result.timings["blend"] < 30.0  # (a few seconds on a free machine)
+    # (a few seconds per million texels on a free machine: 1024 or, for a head prepared at 2048, four times as many)
+    assert result.timings["projection"] + result.timings["blend"] < 30.0 * (atlas.size / 1024) ** 2
 
 
 def test_a_strong_shadow_over_half_the_face_is_mostly_taken_out(avatars, mediapipe, renderers):
@@ -248,7 +258,9 @@ def test_the_command_line_makes_a_texture_and_renders(library, tmp_path, monkeyp
                  "--debug", str(tmp_path / "debug"), "--characters", str(CHARACTERS)])
     printed = capsys.readouterr().out
     assert code == 0 and "skin #" in printed and "timings:" in printed
-    assert cv2.imread(str(out), cv2.IMREAD_UNCHANGED).shape == (1024, 1024, 4)
+    head = model.primitives[stage0.face_photo.head_layout(model).primitive]
+    side = fuse.texture_size(head)  # 2048 on a head prepared at 2048, else 1024
+    assert cv2.imread(str(out), cv2.IMREAD_UNCHANGED).shape == (side, side, 4)
     assert cv2.imread(str(views)).shape[0] == 2 * 480  # with the texture, and the avatar's own
     assert (tmp_path / "debug" / "trimap.png").is_file() and (tmp_path / "debug" / "parts.png").is_file()
     assert main(["headtex", str(paths[0]), "--avatar", "Male_Adult_5", "-o", str(out), "--characters",

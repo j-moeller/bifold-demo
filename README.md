@@ -1406,6 +1406,26 @@ that a person wears instead of the model's (a face made from photos) is drawn
 from its 1024 mipmap level the same way. `renderer.memory()` says what the
 textures take.
 
+**Faces from photos at 2048.** The head-texture stages work at the size of
+the head's largest texture (`fuse.texture_size`: the detail texture's), so
+on a head prepared at 2048 a face from photos is made at 2048, and a created
+character keeps it at that size. The fusion still marks a photo's resolution
+per texel of the head's ordinary 1024 texture (`fuse.marks_size`): a photo
+with about 112 pixels between the eyes has full marks at either size, so how
+much the photos count against the avatar's own texture, how sure the result
+is and what stage 5 fills in do not change with the size (counted per 2048
+texel, a 480-pixel portrait had lost nearly all of its face to stage 5). To
+fill the 2048 texture at one photo pixel per texel a photo needs about 225
+pixels between the eyes (from about 0.75 m with a phone's main camera, 1.5 m
+with a 2x lens). For four photos on this 4-CPU machine, shared with two test
+runs, stages 3 and 4 took 19 s instead of 5 s, stages 5 to 7 16 s instead of
+8, and the head's atlas 11 s instead of 4 (once per avatar; it is cached on
+disk); an atlas holds 264 MiB instead of 66 (two are kept in memory,
+`fuse.ATLASES`), and the process grew by 1.3 GB instead of 0.2 GB. The
+texture comes back as well as at 1024: fake photos of an avatar fused onto
+its own head match its texture within a median delta E of 3.3 (90 % within
+8.1), 3.0 and 7.5 compared at 1024, as at 1024.
+
 **Older caches** (format 1, without maps) still load and draw as before;
 `bifold-characters list` names them, and `fetch` makes them again with the
 maps (it downloads their files again). To upgrade a library in place:
@@ -1929,7 +1949,8 @@ Saving a character whose name goes to another one's folder (`Ada?` and `Ada`
 both go to `Ada/`) is refused, and so is deleting it for the other; saving
 again keeps the other files of the folder (an item's picture). Images of any
 PNG kind are read (grey, a palette, 16 bits a channel), and larger than 1024
-pixels they are scaled down, like the avatars' own textures.
+pixels they are scaled down, like the avatars' own textures; a head's texture
+keeps up to 2048 (`created.max_texture`), the size of a high-resolution head.
 
 **Privacy.** A created character can wear a real person's face, painted from
 their photos: that is personal data. `created/` stays on this computer, git
