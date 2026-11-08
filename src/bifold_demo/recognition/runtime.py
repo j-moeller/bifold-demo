@@ -10,9 +10,9 @@
   may differ slightly (CoreML computes in 16-bit floats on the Neural Engine), so the gallery's caches remember the
   provider (see :mod:`.gallery`).
 * **Fixed shapes.** :class:`OnnxModel` keeps one session per input shape. On the CPU one session takes every batch
-  size (the graph's batch dimension stays free); with CoreML, which works best with fixed shapes, each input shape
-  gets its own session with every dimension fixed in the graph. Callers send batches of a few fixed sizes
-  (:func:`chunks`) so that both behave the same.
+  size (the graph's batch dimension stays free) and the crops of a call go in one run (:func:`batches`: five crops
+  cost about a third less than five runs of one); with CoreML, which works best with fixed shapes, each input
+  shape gets its own session with every dimension fixed in the graph, so crops go in batches of 8 and then 1.
 * **Extra outputs.** A tensor inside the graph can be made an output as well (the AdaFace export normalises its
   embedding inside the graph; its length, AdaFace's quality signal, is the tensor before that division). This edits
   the graph in memory with the ``onnx`` package; the weights are unchanged.
@@ -33,7 +33,8 @@ PROVIDER_ENV = "BIFOLD_FACE_PROVIDER"
 THREADS_ENV = "BIFOLD_FACE_THREADS"
 COREML = "CoreMLExecutionProvider"
 CPU = "CPUExecutionProvider"
-BATCHES = (8, 1)  # the batch sizes crops are sent in (biggest first)
+BATCHES = (8, 1)  # the batch sizes crops are sent in with fixed shapes (CoreML), biggest first
+MAX_BATCH = 64  # crops per run with a free batch dimension (the CPU)
 
 _lock = threading.Lock()
 _ort = None
@@ -82,6 +83,14 @@ def threads() -> int:
         return max(0, int(os.environ.get(THREADS_ENV, "0")))
     except ValueError:
         return 0
+
+
+def batches(count: int, fixed: bool, largest: int = MAX_BATCH) -> list[slice]:
+    """How ``count`` crops are sent to a model: with fixed shapes (CoreML) in batches of :data:`BATCHES`
+    (:func:`chunks`); with a free batch dimension (the CPU) all in one run, up to ``largest`` at a time."""
+    if fixed:
+        return chunks(count)
+    return [slice(start, min(start + largest, count)) for start in range(0, count, largest)]
 
 
 def chunks(count: int, sizes=BATCHES) -> list[slice]:

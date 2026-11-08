@@ -148,11 +148,11 @@ class FiqaModel:
 
     def score(self, crops: np.ndarray) -> np.ndarray:
         """``(N,)`` scores of aligned crops ``(N, 112, 112, 3)`` (BGR)."""
-        from .runtime import chunks
+        from .runtime import batches
 
         crops = np.asarray(crops)
         out = np.zeros(len(crops), np.float32)
-        for part in chunks(len(crops)):
+        for part in batches(len(crops), self.model.fixed):
             x = crops[part].astype(np.float32)
             if not self.bgr:
                 x = x[..., ::-1]

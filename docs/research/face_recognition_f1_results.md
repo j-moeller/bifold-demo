@@ -178,6 +178,12 @@ Here, after warm-up, ONNX Runtime 1.31.1 on the CPU with four threads, alone on 
 | eDifFIQA-T | 9 ms | 6 ms |
 | SFace (OpenCV, one crop at a time; measured beside other work) | 28 ms | 30 ms |
 
+On a busy machine one run of several crops gains more: five crops at a load of about 4 took 887 ms with the
+ResNet-50 in one run against 1,308 ms in five (AdaFace 3.9 s against 5.0 s; the review's measurement). So on the CPU
+the crops of a call go in one run; with CoreML, which wants fixed shapes, in batches of 8 and then 1. Five heads
+analysed in one call with the licensed profile (SCRFD on each head region, then alignment, embedding and eDifFIQA):
+2.6 s before, 1.6 s after, at a load of 5-8.
+
 ## 8. Open
 
 - **The full benchmark protocol** (all 6,000 LFW pairs with mirrored crops, CFP-FP and AgeDB-30) for AdaFace, the

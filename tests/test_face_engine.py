@@ -62,7 +62,8 @@ def test_the_best_profile_falls_back_when_adaface_is_missing(tiny):
         E.FaceEngine(tiny, download=False, profile="commercial", progress=None)  # its detector is not there
     (tiny / registry.BUFFALO_L_R50.file.name).unlink()
     licensed = E.FaceEngine(tiny, download=False, profile="licensed", progress=None)  # finding faces still works
-    with pytest.raises(FileNotFoundError, match="no face recogniser of the profile licensed.*--face-profile commercial"):
+    hint = "no face recogniser of the profile licensed.*--face-profile commercial"
+    with pytest.raises(FileNotFoundError, match=hint):
         licensed.describe()
 
 

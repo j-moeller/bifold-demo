@@ -716,7 +716,7 @@ def test_the_face_cast_and_selection_leave_their_faces_alone(scene, tmp_path, mo
     monkeypatch.setattr(face_photo, "head_layout", lambda model: object())  # every synthetic avatar has a face
 
     class Gallery:
-        def refresh(self):
+        def refresh(self, wait=True):
             pass
 
         def people(self):

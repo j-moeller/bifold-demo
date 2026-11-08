@@ -930,8 +930,10 @@ shrunk with area averaging first so that they do not alias.
 ([`embed.py`](src/bifold_demo/recognition/embed.py),
 [`quality.py`](src/bifold_demo/recognition/quality.py)). Every embedder takes
 a batch of aligned crops and gives unit embeddings and their raw lengths, in
-each model's own colour order and normalisation, in batches of 8 and then
-single crops. The AdaFace export normalises its embedding inside its graph,
+each model's own colour order and normalisation; on the CPU the crops of a
+call go in one run (five faces cost about a third less than five runs), with
+CoreML, which wants fixed shapes, in batches of 8 and then single crops. The
+AdaFace export normalises its embedding inside its graph,
 which would lose AdaFace's quality signal (the embedding's length, which its
 loss ties to how recognisable a face is); the length is read out of the graph
 as an extra output instead (on the avatar renders it did not follow pose or
@@ -961,9 +963,12 @@ keeps, per person, every photo and a template per pose bin (the
 quality-weighted mean of the bin's embeddings); a person's score is the best of
 the two. The decision whom a face shows is a replaceable step
 (`gallery.decide(scores, quality)`), so that calibrated open-set decisions per
-model and face size can take its place. Embeddings of different models cannot
-be compared, so the caches are per model, and a cache made by another ONNX
-Runtime provider (CoreML computes in 16-bit floats) is not used.
+model and face size can take its place. New photos are enrolled outside the
+gallery's lock (while the demo runs, on a worker thread), so neither the frames
+nor the lookups of who is known wait for the models (AdaFace takes seconds per
+photo here); the photos count once they are enrolled. Embeddings of different
+models cannot be compared, so the caches are per model, and a cache made by
+another ONNX Runtime provider (CoreML computes in 16-bit floats) is not used.
 
 **Checking the models** ([`checks.py`](src/bifold_demo/recognition/checks.py)).
 No model is trusted before it is checked, the community exports above all:

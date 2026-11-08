@@ -94,7 +94,7 @@ class FaceRecognizer:
 
     def recognize(self, image, now: float | None = None) -> list[Recognized]:
         now = time.monotonic() if now is None else now
-        self.gallery.refresh()
+        self.gallery.refresh(wait=False)  # new photos are enrolled on a worker thread meanwhile
         self._tracks = [t for t in self._tracks if now - t.seen <= FORGET_AFTER]
         found = self.engine.faces(image)
         pairs = sorted(((_overlap(face.box, track.box), i, j) for i, (face, _) in enumerate(found)

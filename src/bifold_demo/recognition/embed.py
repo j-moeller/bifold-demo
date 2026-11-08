@@ -7,8 +7,9 @@ a face is (its loss widens the margin for faces with long embeddings), so for Ad
 (``ModelSpec.norm_quality``); for the other models it is kept but means little.
 
 * :class:`OnnxEmbedder` runs an ONNX file with ONNX Runtime: the crops in the model's colour order, ``(pixel - mean)
-  / std``, in batches of 8 and then single crops (fixed shapes, see :mod:`.runtime`). The AdaFace export divides its
-  embedding by its length inside the graph; that length is read out of the graph as an extra output.
+  / std``, all in one run on the CPU, in batches of 8 and then single crops with CoreML (see :mod:`.runtime`). The
+  AdaFace export divides its embedding by its length inside the graph; that length is read out of the graph as an
+  extra output.
 * :class:`SFaceEmbedder` runs SFace with OpenCV's ``FaceRecognizerSF`` (its graph normalises its input itself), one
   crop at a time.
 
@@ -24,7 +25,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .runtime import OnnxModel, chunks
+from .runtime import OnnxModel, batches
 
 
 @dataclass(frozen=True)
@@ -83,7 +84,7 @@ class OnnxEmbedder:
         """The raw (not normalised) embeddings of ``crops``: ``(N, dim)``."""
         crops = _check(crops, self.spec.size)
         out = np.zeros((len(crops), self.dim), np.float32)
-        for part in chunks(len(crops)):
+        for part in batches(len(crops), self.model.fixed):
             outputs = self.model.run(self.blob(crops[part]))
             vectors = np.asarray(outputs[0], np.float32).reshape(-1, self.dim)
             if self.spec.norm_output:  # the graph's output is unit length; its length is the extra output

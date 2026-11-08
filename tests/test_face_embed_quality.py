@@ -40,10 +40,35 @@ def test_an_onnx_embedder_gives_unit_vectors_and_raw_norms_in_any_batch(tmp_path
     raw = cells @ weights
     assert np.allclose(out.norms, np.linalg.norm(raw, axis=1), rtol=1e-4)
     assert np.allclose(out.vectors, raw / np.linalg.norm(raw, axis=1, keepdims=True), atol=1e-5)
-    alone = model.embed(crops[3])  # one crop gives what it gives in a batch of 11 (8 + 1 + 1 + 1)
+    alone = model.embed(crops[3])  # one crop gives what it gives in a batch of 11
     assert np.allclose(alone.vectors[0], out.vectors[3], atol=1e-6)
     with pytest.raises(ValueError, match="aligned crops"):
         model.embed(np.zeros((2, 100, 100, 3), np.uint8))
+
+
+def test_on_the_cpu_a_call_is_one_run_and_with_fixed_shapes_batches_of_8_and_1(tmp_path):
+    """Review M6: CPU sessions take any batch size, so the crops of a call go in one run (five crops in one run cost
+    about a third less than five runs); fixed shapes (CoreML) keep batches of 8 and 1. The results are the same."""
+    from bifold_demo.recognition import runtime
+
+    assert runtime.batches(5, fixed=False) == [slice(0, 5)]
+    assert runtime.batches(130, fixed=False) == [slice(0, 64), slice(64, 128), slice(128, 130)]
+    assert runtime.batches(11, fixed=True) == [slice(0, 8), slice(8, 9), slice(9, 10), slice(10, 11)]
+    path, _ = tiny_embedder(tmp_path / "e.onnx")
+    fiqa_path, _ = tiny_embedder(tmp_path / "q.onnx", dim=1)
+    embedder = embed.OnnxEmbedder(path, _spec())
+    fiqa = quality.FiqaModel(fiqa_path, dataclasses.replace(registry.EDIFFIQA_T, id="tiny_fiqa"))
+    sent = []
+    for model in (embedder.model, fiqa.model):
+        model.run = lambda x, run=model.run: sent.append(len(x)) or run(x)
+    crops = _crops(11)
+    free = embedder.embed(crops).vectors, fiqa.score(crops)
+    assert sent == [11, 11]
+    sent.clear()
+    embedder.model.fixed = fiqa.model.fixed = True  # as with CoreML
+    fixed = embedder.embed(crops).vectors, fiqa.score(crops)
+    assert sent == [8, 1, 1, 1] * 2
+    assert np.allclose(fixed[0], free[0], atol=1e-6) and np.allclose(fixed[1], free[1], atol=1e-5)
 
 
 def test_the_colour_order_and_the_norm_read_out_of_the_graph(tmp_path):

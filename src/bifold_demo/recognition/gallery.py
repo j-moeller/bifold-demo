@@ -9,8 +9,11 @@ Layout of the faces folder (``faces/`` by default)::
       Grace Hopper.jpg     or a single photo named after the person
 
 The folder is looked at again at most once a second, so photos dropped in while the demo runs are known a moment
-later. Each photo is embedded with exactly the engine's detector, alignment and model, the ones the faces it will be
-compared with go through, and checked (**enrolment**):
+later. New photos are enrolled outside the gallery's lock: looking up who is known (:meth:`Gallery.people`,
+:meth:`Gallery.scores`, ...) never waits for the models, and the new photos count from the moment they are all
+enrolled (``refresh(wait=False)``, the render loop's call, enrols them on a worker thread). Each photo is embedded
+with exactly the engine's detector, alignment and model, the ones the faces it will be compared with go through, and
+checked (**enrolment**):
 
 * **one dominant face**: a second face nearly as big (at least :data:`DOMINANT` of the biggest's size) makes the
   photo ambiguous, so it is rejected;
@@ -39,6 +42,7 @@ embeddings are biometric data like the photos: when a photo leaves the folder it
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 import os
@@ -204,7 +208,8 @@ class Gallery:
     """Known people from ``folder`` (see the module docs), embedded with ``engine`` (a :class:`~.engine.FaceEngine`
     of ``profile``, made when first needed). ``threshold``: the score a face needs to be someone (default: the
     engine's model's own); ``decide``: what turns the scores into a :class:`Match` (default:
-    :class:`ThresholdDecision`). Thread safe."""
+    :class:`ThresholdDecision`). Thread safe. ``trouble``: why the last enrolment on a worker thread failed (``None``
+    when it did not)."""
 
     def __init__(self, folder="faces", engine=None, threshold: float | None = None, profile: str | None = None,
                  decide=None):
@@ -215,7 +220,9 @@ class Gallery:
         self.decide = decide or ThresholdDecision(self)
         self._photos: dict[Path, Photo] = {}
         self._checked = -math.inf
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # the state below; held only briefly (never while the models run)
+        self._busy = threading.Lock()  # one look at the folder and its enrolment at a time
+        self.trouble: str | None = None
         self._names: list[str] = []
         self._matrix = np.zeros((0, 0))
         self._owners = np.zeros(0, int)
@@ -229,9 +236,11 @@ class Gallery:
     @property
     def engine(self):
         if self._engine is None:
-            from .engine import FaceEngine
+            with self._lock:  # (made once, whichever thread asks first)
+                if self._engine is None:
+                    from .engine import FaceEngine
 
-            self._engine = FaceEngine(profile=self.profile)
+                    self._engine = FaceEngine(profile=self.profile)
         return self._engine
 
     @property
@@ -255,43 +264,78 @@ class Gallery:
 
     # -- the folder -------------------------------------------------------------------------------------------
 
-    def refresh(self, now: float | None = None, force: bool = False) -> bool:
-        """Look at the folder again (at most every ``RESCAN`` seconds unless ``force``); True if anything changed."""
+    def refresh(self, now: float | None = None, force: bool = False, wait: bool = True) -> bool:
+        """Look at the folder again (at most every ``RESCAN`` seconds unless ``force``); True if anything changed.
+
+        New and changed photos are enrolled outside the lock, then swapped in at once (see the module docs).
+        ``wait=False`` returns at once: photos to enrol go to a worker thread (the result: False, the change shows
+        when they are enrolled), and while photos are being enrolled the call does nothing."""
         now = time.monotonic() if now is None else now
         with self._lock:
             if not force and now - self._checked < RESCAN:
                 return False
             self._checked = now
-            first = not self._loaded
-            if first:
-                self._load_cache()
-                self._loaded = True
-            paths = _photos(self.folder) if self.folder.is_dir() else []
-            changed = first
-            keep: dict[Path, Photo] = {}
-            for path in paths:
-                name = _person(path, self.folder)
-                if name is None:
-                    continue
-                try:
-                    st = path.stat()
-                except OSError:
-                    continue
-                stamp = (st.st_size, st.st_mtime_ns)
-                old = self._photos.get(path)
-                if old is not None and old.stamp == stamp:
-                    old.name = name  # a renamed folder keeps the embeddings
-                    keep[path] = old
-                    continue
+        if not self._busy.acquire(blocking=wait):
+            return False  # photos are being enrolled: the next look sees what changed since
+        try:
+            plan = self._plan()
+        except BaseException:
+            self._busy.release()
+            raise
+        if plan[-1] and not wait:
+            threading.Thread(target=self._enrol_new, args=(*plan, True), name="faces enrolment", daemon=True).start()
+            return False
+        return self._enrol_new(*plan)
+
+    def _plan(self):
+        """``(first look, the photos known before, the folder's photos in order, those unchanged, those to enrol)``
+        (called holding ``_busy``: nothing else changes the photos meanwhile)."""
+        first = not self._loaded
+        known = self._read_cache() if first else self._photos
+        order: list[Path] = []
+        keep: dict[Path, Photo] = {}
+        todo: list[tuple[Path, str, tuple[int, int]]] = []
+        for path in _photos(self.folder) if self.folder.is_dir() else []:
+            name = _person(path, self.folder)
+            if name is None:
+                continue
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            stamp = (st.st_size, st.st_mtime_ns)
+            order.append(path)
+            old = known.get(path)
+            if old is not None and old.stamp == stamp:
+                keep[path] = old if old.name == name else dataclasses.replace(old, name=name)
+            else:
+                todo.append((path, name, stamp))
+        return first, known, order, keep, todo
+
+    def _enrol_new(self, first, known, order, keep, todo, quietly: bool = False) -> bool:
+        """Enrol ``todo`` (outside the lock), then swap the folder's photos in; releases ``_busy``. ``quietly`` (on
+        the worker thread): a failure goes to :attr:`trouble`, the photos are tried again at the next look."""
+        try:
+            for path, name, stamp in todo:
                 keep[path] = self._embed(path, name, stamp)
-                changed = True
-            if set(keep) != set(self._photos):
-                changed = True
-            self._photos = keep
+            photos = {path: keep[path] for path in order}
+            changed = first or bool(todo) or set(photos) != set(known)
+            with self._lock:
+                self._photos = photos
+                self._loaded = True
+                if changed:
+                    self._rebuild()
             if changed:
-                self._rebuild()
                 self._save_cache()
+            self.trouble = None
             return changed
+        except Exception as exc:
+            if not quietly:
+                raise
+            self.trouble = f"cannot enrol the new photos in {self.folder}: {type(exc).__name__}: {exc}"
+            return False
+        finally:
+            self._busy.release()
 
     def _embed(self, path: Path, name: str, stamp) -> Photo:
         found = enrol(self.engine, cv2.imread(str(path), cv2.IMREAD_COLOR))
@@ -358,14 +402,16 @@ class Gallery:
     def _cache_path(self) -> Path:
         return self.folder / cache_name(self.model_id)
 
-    def _load_cache(self) -> None:
+    def _read_cache(self) -> dict[Path, Photo]:
+        """The photos this model's cache knows (none when it was made differently: all are looked at again)."""
+        photos: dict[Path, Photo] = {}
         try:
             data = np.load(self._cache_path(), allow_pickle=False)
             if int(data["version"]) != CACHE_VERSION or str(data["provider"]) != self._provider():
-                return  # made differently: everything is looked at again
+                return photos  # made differently: everything is looked at again
             rows = {key: data[key] for key in data.files}
         except (OSError, KeyError, ValueError):
-            return
+            return photos
         for k, rel in enumerate(rows["paths"]):
             path = self.folder / str(rel)
             name = _person(path, self.folder) if path.is_relative_to(self.folder) else None
@@ -373,11 +419,12 @@ class Gallery:
                 continue
             vector = rows["vectors"][k].astype(np.float64)
             numbers = {key: float(rows[key][k]) for key in _NUMBERS}
-            self._photos[path] = Photo(
+            photos[path] = Photo(
                 path, name, (int(rows["stamps"][k][0]), int(rows["stamps"][k][1])),
                 vector if np.isfinite(vector).all() else None, status=str(rows["status"][k]),
                 problems=tuple(json.loads(str(rows["problems"][k]))), faces=int(rows["faces"][k]),
                 pose=str(rows["poses"][k]), **numbers)
+        return photos
 
     def _save_cache(self) -> None:
         if not self.folder.is_dir():

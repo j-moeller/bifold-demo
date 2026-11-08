@@ -1,6 +1,7 @@
 """Face recognition: the gallery of known people (with a stand-in engine) and the real models on a sample photo."""
 
 import os
+import threading
 from pathlib import Path
 
 import cv2
@@ -81,6 +82,70 @@ def test_the_gallery_caches_embeddings_and_sees_new_photos(tmp_path, monkeypatch
     (folder / "Bob" / "bob.png").unlink()
     assert gallery.refresh(now=3.0) and gallery.people() == {"Ada": 1}
     assert gallery.match(_vector((10, 10, 200))).name is None
+
+
+class SlowEngine(FakeEngine):
+    """A :class:`FakeEngine` whose embedding says when it starts, then waits for ``go`` (and raises ``fail``)."""
+
+    def __init__(self):
+        super().__init__()
+        self.started, self.go = threading.Event(), threading.Event()
+        self.fail = None
+
+    def embed(self, image, face):
+        self.started.set()
+        assert self.go.wait(30)  # (longer than the test's safety timer)
+        if self.fail is not None:
+            raise self.fail
+        return super().embed(image, face)
+
+
+def test_new_photos_are_enrolled_outside_the_lock_so_looking_up_people_never_waits(tmp_path):
+    """Review M5: the render loop asks who is known every frame; a new photo's enrolment (seconds with AdaFace) must
+    not hold it up. ``wait=False`` (the render loop's call) enrols on a worker thread; a failure there is told."""
+    folder = tmp_path / "faces"
+    _photo(folder / "Ada" / "one.png", (200, 10, 10))
+    engine = SlowEngine()
+    engine.go.set()
+    gallery = Gallery(folder, engine)
+    gallery.refresh(force=True)
+    engine.go.clear()
+    engine.started.clear()
+    _photo(folder / "Bob" / "bob.png", (10, 10, 200))
+    worker = threading.Thread(target=gallery.refresh, kwargs={"force": True})
+    worker.start()
+    safety = threading.Timer(10, engine.go.set)  # (so that a broken gallery fails the test instead of hanging it)
+    safety.start()
+    try:
+        assert engine.started.wait(10)  # Bob's photo is being embedded now
+        assert gallery.people() == {"Ada": 1} and gallery.match(_vector((200, 10, 10))).name == "Ada"
+        assert gallery.report() == [] and gallery.photos("Ada") and not engine.go.is_set()  # nothing waited
+        assert gallery.refresh(force=True, wait=False) is False  # busy: does nothing, at once
+        engine.go.set()
+        worker.join(10)
+        assert gallery.people() == {"Ada": 1, "Bob": 1}
+
+        engine.go.clear()
+        engine.started.clear()
+        _photo(folder / "Cy" / "cy.png", (10, 200, 10))
+        assert gallery.refresh(force=True, wait=False) is False  # returns at once: a worker thread enrols
+        assert engine.started.wait(10) and gallery.people() == {"Ada": 1, "Bob": 1}
+        engine.go.set()
+        assert gallery.refresh(force=True) is False  # waits for the worker, then finds nothing new
+        assert gallery.people() == {"Ada": 1, "Bob": 1, "Cy": 1} and gallery.trouble is None
+
+        engine.fail = RuntimeError("the model file is gone")
+        _photo(folder / "Dee" / "dee.png", (100, 100, 10))
+        gallery.refresh(force=True, wait=False)
+        with gallery._busy:  # (the worker is done)
+            pass
+        assert "cannot enrol" in gallery.trouble and "the model file is gone" in gallery.trouble
+        assert gallery.people() == {"Ada": 1, "Bob": 1, "Cy": 1}  # as before: Dee is tried again next time
+        engine.fail = None
+        assert gallery.refresh(force=True) and gallery.trouble is None and "Dee" in gallery.people()
+    finally:
+        engine.go.set()
+        safety.cancel()
 
 
 def test_adding_photos_copies_them_into_the_persons_folder(tmp_path):
@@ -299,6 +364,22 @@ def _settle(cast, scene, now):
     while any(not entry[-1].done() for entry in cast._painting.values()) and time.monotonic() < deadline:
         time.sleep(0.01)
     return messages + cast.update(scene, now=now)
+
+
+def test_the_face_cast_never_waits_for_enrolment_and_says_once_why_it_failed(cast_scene):
+    from bifold_demo.recognition.cast import FaceCast
+
+    calls = []
+    gallery = _People({"Ada": ["ada.jpg"]})
+    gallery.refresh = lambda *args, **kwargs: calls.append(kwargs) or False
+    gallery.trouble = "cannot enrol the new photos in faces: RuntimeError: the model file is gone"
+    cast = FaceCast(gallery)
+    try:
+        assert gallery.trouble in _settle(cast, cast_scene, now=0.0)
+        assert gallery.trouble not in _settle(cast, cast_scene, now=1.5)  # said once
+        assert calls and all(call.get("wait") is False for call in calls)
+    finally:
+        cast.close()
 
 
 def test_the_known_people_get_3d_people_in_front_of_the_camera_first(cast_scene):

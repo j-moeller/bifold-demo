@@ -82,10 +82,14 @@ class FaceCast:
         return messages
 
     def _cast(self) -> list[str]:
-        self.gallery.refresh()
+        self.gallery.refresh(wait=False)  # new photos are enrolled on a worker thread: the frames go on meanwhile
         known = self.gallery.people()
         self._forget_textures(known)
         messages = []
+        trouble = getattr(self.gallery, "trouble", None)
+        if trouble and trouble not in self._told:
+            self._told.add(trouble)
+            messages.append(trouble)
         for key, (character, name, photos, by_hand, _worn) in list(self._wearing.items()):
             now = tuple(self.gallery.photos(name)) if name in known else ()
             if not now or self._scene.get(character.name) is not character:
