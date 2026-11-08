@@ -23,9 +23,10 @@ import weakref
 import cv2
 import numpy as np
 
+from .detail import DetailCache, base_copy, eye_pixels, is_large
 from .frustum import Bounds, boxes_outside, frustum_planes, spheres_outside, world_boxes
 from .scene import Scene, SceneObject, SubCamera
-from .textures import Texture, VideoTexture, as_texture, color_to_linear, parse_color, upload_levels
+from .textures import Texture, VideoTexture, as_data_texture, as_texture, color_to_linear, parse_color, upload_levels
 from .transforms import crop_matrix, gl_bytes
 
 SRGB8_ALPHA8 = 0x8C43  # the internal format of sRGB textures and of the picture's colour buffers
@@ -67,7 +68,7 @@ void main() {
 
 # Linear-blend skinning. Joint j's skinning matrix (character space, column vectors) is stored in row j of an
 # RGBA32F texture that is 3 texels wide: texel (r, j) holds matrix row r (the last row is always 0 0 0 1).
-_SKINNED_VS = "#version 330 core\n" + _VS_EMIT + """
+_SKIN = """
 uniform sampler2D u_joints;
 in vec3 in_position;
 in vec3 in_normal;
@@ -80,23 +81,38 @@ vec4 skin_row(int r, ivec4 j) {
          + in_weights.z * texelFetch(u_joints, ivec2(r, j.z), 0)
          + in_weights.w * texelFetch(u_joints, ivec2(r, j.w), 0);
 }
+vec3 skin_direction(vec4 r0, vec4 r1, vec4 r2, vec3 d) {
+    return vec3(dot(r0.xyz, d), dot(r1.xyz, d), dot(r2.xyz, d));
+}
+"""
+
+_SKINNED_VS = "#version 330 core\n" + _VS_EMIT + _SKIN + """
 void main() {
     ivec4 j = ivec4(in_joints + 0.5);
     vec4 r0 = skin_row(0, j), r1 = skin_row(1, j), r2 = skin_row(2, j);
     vec4 p = vec4(in_position, 1.0);
-    vec3 n = in_normal;
-    vec3 normal = vec3(dot(r0.xyz, n), dot(r1.xyz, n), dot(r2.xyz, n));
-    emit(vec4(dot(r0, p), dot(r1, p), dot(r2, p), 1.0), normal, in_uv);
+    emit(vec4(dot(r0, p), dot(r1, p), dot(r2, p), 1.0), skin_direction(r0, r1, r2, in_normal), in_uv);
 }
 """
 
-_OBJECT_FS = "#version 330 core\n" + _FOG + """
-uniform sampler2D u_texture;
-uniform vec3 u_color;
+# The light shared by the lit programs: the key light (Lambert) and ambient light, which with u_hemisphere > 0 comes
+# more from above than from below (a hall's floor and walls bounce less light up than the ceiling's lamps send down;
+# 0 at the low quality setting).
+_LIGHT = """
 uniform bool u_lit;
 uniform vec3 u_light_dir;
 uniform vec3 u_light_color;
 uniform float u_ambient;
+uniform float u_hemisphere;
+vec3 diffuse_light(vec3 n, float occlusion) {
+    float ambient = u_ambient * (1.0 + u_hemisphere * n.y) * occlusion;
+    return vec3(ambient) + (1.0 - u_ambient) * max(dot(n, -u_light_dir), 0.0) * u_light_color;
+}
+"""
+
+_OBJECT_FS = "#version 330 core\n" + _FOG + _LIGHT + """
+uniform sampler2D u_texture;
+uniform vec3 u_color;
 in vec3 v_normal;
 in vec2 v_uv;
 in float v_depth;
@@ -108,11 +124,96 @@ void main() {
     if (u_lit) {
         vec3 n = normalize(v_normal);
         if (!gl_FrontFacing) n = -n;  // light both sides of thin objects
-        float diffuse = max(dot(n, -u_light_dir), 0.0);
-        rgb *= u_ambient + (1.0 - u_ambient) * diffuse * u_light_color;
+        rgb *= diffuse_light(n, 1.0);
     }
     rgb = mix(rgb, u_fog_color, fog_amount(v_depth));
     f_color = vec4(rgb.bgr, 1.0);  // BGR so OpenCV can use the pixels directly
+}
+"""
+
+# Mesh parts with a packed map (heads, see characters/tangents.py) at the high quality setting: the skinned tangent
+# frame turns the map's normal into the surface's, and a specular lobe (GGX with Schlick's Fresnel, F0 of skin) is
+# scaled by the map's specular level, sharper where the level is high (lips, the wet eyes).
+_MAPPED_VS = "#version 330 core\n" + _SKIN + """
+uniform mat4 u_mvp;
+uniform mat4 u_model;
+uniform mat3 u_normal_matrix;
+in vec4 in_tangent;
+out vec3 v_normal;
+out vec4 v_tangent;
+out vec3 v_world;
+out vec2 v_uv;
+out float v_depth;
+void main() {
+    ivec4 j = ivec4(in_joints + 0.5);
+    vec4 r0 = skin_row(0, j), r1 = skin_row(1, j), r2 = skin_row(2, j);
+    vec4 q = vec4(in_position, 1.0);
+    vec4 p = vec4(dot(r0, q), dot(r1, q), dot(r2, q), 1.0);
+    v_normal = u_normal_matrix * skin_direction(r0, r1, r2, in_normal);
+    v_tangent = vec4(u_normal_matrix * skin_direction(r0, r1, r2, in_tangent.xyz), in_tangent.w);
+    v_world = (u_model * p).xyz;
+    v_uv = in_uv;
+    gl_Position = u_mvp * p;
+    v_depth = gl_Position.w;
+}
+"""
+
+_MAPPED_FS = "#version 330 core\n" + _FOG + _LIGHT + """
+uniform sampler2D u_texture;
+uniform sampler2D u_maps;
+uniform vec3 u_color;
+uniform vec3 u_eye;
+uniform float u_specular;
+uniform float u_normal_strength;
+const float PI = 3.14159265;
+const float SKIN_LEVEL = 0.07;  // the specular maps' level on most of the skin
+const float SKIN_F0 = 0.028;  // Fresnel reflectance of skin head-on
+in vec3 v_normal;
+in vec4 v_tangent;
+in vec3 v_world;
+in vec2 v_uv;
+in float v_depth;
+out vec4 f_color;
+void main() {
+    vec4 texel = texture(u_texture, v_uv);
+    if (texel.a < 0.5) discard;
+    vec3 rgb = texel.rgb * u_color;
+    if (u_lit) {
+        vec4 maps = texture(u_maps, v_uv);
+        vec3 ng = normalize(v_normal);
+        if (!gl_FrontFacing) ng = -ng;
+        vec3 t = v_tangent.xyz - ng * dot(ng, v_tangent.xyz);
+        vec3 n = ng;
+        if (dot(t, t) > 1e-12) {
+            t = normalize(t);
+            vec3 b = cross(ng, t) * (v_tangent.w < 0.0 ? -1.0 : 1.0);
+            vec2 xy = (maps.rg * 2.0 - 1.0) * u_normal_strength;
+            n = normalize(t * xy.x + b * xy.y + ng * sqrt(max(1.0 - dot(xy, xy), 0.0)));
+        }
+        vec3 lit = rgb * diffuse_light(n, maps.a);
+        vec3 l = -u_light_dir;
+        float nl = max(dot(n, l), 0.0);
+        float level = maps.b;
+        if (nl > 0.0 && level > 0.0 && u_specular > 0.0) {
+            vec3 v = normalize(u_eye - v_world);
+            vec3 h = normalize(l + v);
+            float nv = max(dot(n, v), 1e-3);
+            float nh = max(dot(n, h), 0.0);
+            float vh = max(dot(v, h), 0.0);
+            float rough = mix(0.45, 0.2, smoothstep(0.15, 0.6, level));  // skin, then wetter: lips, eyes
+            float a2 = rough * rough * rough * rough;
+            float dd = nh * nh * (a2 - 1.0) + 1.0;
+            float k = (rough + 1.0) * (rough + 1.0) / 8.0;
+            float g = nl / (nl * (1.0 - k) + k) * nv / (nv * (1.0 - k) + k);
+            float fresnel = SKIN_F0 + (1.0 - SKIN_F0) * pow(1.0 - vh, 5.0);
+            float strength = min(level / SKIN_LEVEL, 3.0) * u_specular;
+            // GGX lobe (times pi: the diffuse term above leaves out Lambert's 1/pi too)
+            lit += (1.0 - u_ambient) * u_light_color * (a2 / (dd * dd) * g * fresnel * strength / (4.0 * nv));
+        }
+        rgb = lit;
+    }
+    rgb = mix(rgb, u_fog_color, fog_amount(v_depth));
+    f_color = vec4(rgb.bgr, 1.0);
 }
 """
 
@@ -218,12 +319,32 @@ class Renderer:
     :attr:`linear` (True): shade, filter and blend in linear light (see the module docs); False: on the stored sRGB
     values, as the renderer did before (textures uploaded again when it changes).
 
+    **Quality.** :attr:`quality` (the whole view) and :attr:`window_quality` (windows) are ``"high"`` or ``"low"``.
+    High: mesh parts with ``tangents`` and ``maps`` (the heads) are drawn with their normal and specular maps, and the
+    ambient light comes more from above than from below as much as the scene's ``hemisphere`` says. Low: the shading
+    of before (Lambert and a constant ambient light, in linear light), a little cheaper per pixel on a software
+    renderer. :attr:`specular` and :attr:`normal_strength` scale the specular lobe and the normal maps (1: as the maps
+    say).
+
+    **Detail.** A person whose eyes are at least :attr:`detail_from` pixels apart in the picture being drawn gets
+    their head's 2048-pixel ``detail`` textures there (and a texture larger than 1024 that they wear instead of the
+    model's is drawn at full size); everywhere else the 1024 ones. The detail textures of the last
+    :attr:`detail_heads` heads stay on the GPU; :attr:`detail_wait` False reads new ones in the background (see
+    :mod:`.detail`). :meth:`memory` says how much the textures take.
+
     The OpenGL context belongs to the thread that created the renderer; call
     :meth:`render` from that thread only. Every public method makes the renderer's own context current (with several
     renderers in one thread, the one made last is current otherwise).
     """
 
     linear = True  # the light model: linear light (False: the stored sRGB values, as before)
+    quality = "high"  # the shading of the whole view: "high" or "low" (see the class docs)
+    window_quality = "high"  # the shading of windows
+    specular = 1.0  # scale of the heads' specular lobe (0: none)
+    normal_strength = 1.0  # scale of the heads' normal maps' slopes (0: flat)
+    detail_from = 64.0  # pixels between the eyes from which a head is drawn with its 2048 textures (inf: never)
+    detail_heads = 6  # heads whose 2048 textures stay on the GPU (about 43 MiB each)
+    detail_wait = True  # read a head's 2048 textures when a picture first needs them (False: in the background)
 
     def __init__(self, width: int = 1280, height: int = 720, samples: int = 4):
         import moderngl
@@ -252,12 +373,18 @@ class Renderer:
         self._uniforms = {name: self._program[name] for name in ("u_mvp", "u_normal_matrix", "u_color", "u_lit")}
         self._bg_program["u_texture"].value = 0
         self._white = as_texture((255, 255, 255))
+        self._flat = Texture(np.array([[[128, 128, 0, 255]]], np.uint8), name="flat maps", srgb=False)  # no maps
         self._meshes: dict[int, tuple] = {}  # id(mesh) -> (weakref, vao, vbo, ibo)
         self._textures: dict[int, list] = {}  # texture.id -> [weakref, gl texture, version, mipmaps built]
         self._skinned_program = self._shadow_program = None  # compiled when the first character shows up
+        self._mapped_program = None  # compiled when the first mesh part with maps is drawn at the high quality
         self._shadow_vbo = self._shadow_vao = None
-        self._primitives: dict[int, list] = {}  # id(primitive) -> [weakref, vao, vbo, ibo, texture spec, Texture]
+        # id(primitive) -> [weakref, vao, vbo, ibo, texture spec, Texture, maps spec, maps Texture, mapped vao,
+        #                   tangent vbo]
+        self._primitives: dict[int, list] = {}
         self._joints: dict[int, tuple] = {}  # id(character) -> (weakref, joint-palette texture)
+        self._details = DetailCache()  # the 2048 textures of the heads drawn with them lately
+        self._head_bones = weakref.WeakKeyDictionary()  # skeleton -> its head bone (-1: none)
         self._probes = None  # (object program, skinned program, shadow program): see visible_pixels
         self._drawn = None  # (view-projection, camera position) of the last frame
         self._samples = samples  # MSAA samples per pixel (0: none), for windows too
@@ -340,7 +467,8 @@ class Renderer:
                     _vao, texture = self._skinned_primitive(primitive)
                     if overrides:
                         texture = overrides.get(primitive.name, texture)
-                    self._gl_texture(texture.at_time(t)).use(0)
+                    texture = texture.at_time(t)
+                    self._gl_texture(base_copy(texture) if is_large(texture) else texture).use(0)  # (its coverage)
                     self._probe_vao(primitive, skinned).render(mgl.TRIANGLES)
                 for prop in getattr(person, "props", ()):
                     if prop.current_visible:
@@ -441,7 +569,8 @@ class Renderer:
         ctx.enable(self._moderngl.DEPTH_TEST)
         ctx.disable(self._moderngl.CULL_FACE)
         eye = scene.camera.current_position
-        uniforms = _scene_uniforms(scene, self.linear)
+        high = _check_quality(self.window_quality if window else self.quality) == "high"
+        uniforms = _scene_uniforms(scene, high, self.linear)
         _set_uniforms(self._program, uniforms)
 
         objects, characters = [], []
@@ -464,7 +593,9 @@ class Renderer:
         for obj in objects:
             self._draw(obj, view_proj, eye)
         if characters or shadows:
-            self._draw_characters(characters, view_proj, eye, uniforms, scene.time, shadows, fbo, reuse=window)
+            right = np.asarray(scene.camera.view_matrix(), np.float64)[0, :3]  # the camera's right in the scene
+            self._draw_characters(characters, view_proj, eye, uniforms, scene.time, shadows, fbo, reuse=window,
+                                  mapped=high, picture=(size, right / max(np.linalg.norm(right), 1e-12)))
 
         if fbo is not resolve:
             ctx.copy_framebuffer(resolve, fbo)
@@ -544,27 +675,70 @@ class Renderer:
         return objects, characters, shadows
 
     def _draw_characters(self, characters, view_proj, camera_position, uniforms: dict, t: float, shadows=None,
-                         fbo=None, reuse: bool = False) -> None:
+                         fbo=None, reuse: bool = False, mapped: bool = False, picture=None) -> None:
         """GPU-skinned characters (opaque, alpha-tested), then blob shadows (those of ``characters`` that have one,
         or of ``shadows``) blended over the scene in ``fbo`` (the view's by default). ``reuse``: use the joint
-        palettes this frame uploaded where the characters were not posed again since (windows of the frame)."""
+        palettes this frame uploaded where the characters were not posed again since (windows of the frame).
+        ``mapped``: draw mesh parts with tangents and maps with them (the high quality). ``picture``: ``(size, the
+        camera's right)`` of the picture, for the heads' detail textures (``None``: never)."""
         prog = self._skinned()
         _set_uniforms(prog, uniforms)
         u, triangles = self._skinned_uniforms, self._moderngl.TRIANGLES
+        mapped_program = None
         for obj in characters:
             model, normal_matrix = obj.matrices(camera_position)
-            u["u_mvp"].write(gl_bytes(view_proj @ model))
+            mvp, colour = gl_bytes(view_proj @ model), self._colour(obj.current_color)
+            u["u_mvp"].write(mvp)
             u["u_normal_matrix"].write(gl_bytes(normal_matrix))
-            u["u_color"].value = self._colour(obj.current_color)
+            u["u_color"].value = colour
             u["u_lit"].value = bool(obj.lit)
             self._joint_texture(obj, reuse).use(1)
             overrides = getattr(obj, "texture_overrides", None)
+            near = None  # whether the picture wants this person's head in detail: worked out when it matters
+            later = []  # the parts drawn with their maps
             for primitive in (*obj.skinned_model.primitives, *getattr(obj, "worn", ())):
                 vao, texture = self._skinned_primitive(primitive)
-                if overrides:
-                    texture = overrides.get(primitive.name, texture)
+                override = overrides.get(primitive.name) if overrides else None
+                if override is not None:
+                    texture = override.at_time(t)
+                detail = None
+                prepared = override is None and primitive.detail is not None
+                if prepared or is_large(texture):  # a picture may draw it larger than 1024 or not
+                    if near is None:
+                        near = picture is not None and \
+                            self._eye_pixels(obj, view_proj, camera_position, picture) >= self.detail_from
+                    if near and prepared:
+                        detail = self._details.get(primitive, self.detail_wait)
+                        if detail is not None:
+                            texture = detail[0]
+                    elif not near and is_large(texture):
+                        texture = base_copy(texture)
+                if mapped and _has_maps(primitive):
+                    later.append((primitive, texture, detail[1] if detail is not None else None))
+                    continue
                 self._gl_texture(texture.at_time(t)).use(0)
                 vao.render(triangles)
+            if not later:
+                continue
+            if mapped_program is None:
+                mapped_program = self._mapped()
+                _set_uniforms(mapped_program, uniforms)
+                _set_uniforms(mapped_program, {"u_eye": tuple(float(v) for v in camera_position),
+                                               "u_specular": float(self.specular),
+                                               "u_normal_strength": float(self.normal_strength)})
+            m = self._mapped_uniforms
+            m["u_mvp"].write(mvp)
+            m["u_model"].write(gl_bytes(model))
+            m["u_normal_matrix"].write(gl_bytes(normal_matrix))
+            m["u_color"].value = colour
+            m["u_lit"].value = bool(obj.lit)
+            for primitive, texture, detail_maps in later:
+                vao, maps = self._mapped_primitive(primitive)
+                self._gl_texture(texture.at_time(t)).use(0)
+                self._gl_texture(detail_maps or maps).use(2)
+                vao.render(triangles)
+        for texture in self._details.trim(self.detail_heads):  # what is no longer kept leaves the GPU at once
+            self._forget_texture(texture)
         if shadows is None:
             shadows = [obj for obj in characters if getattr(obj, "shadow", False)]
         if shadows:
@@ -677,15 +851,25 @@ class Renderer:
     def _prepare_character(self, obj) -> bool:
         t = getattr(obj, "_time", 0.0)
         overrides = getattr(obj, "texture_overrides", None) or {}
+        mapped = "high" in (self.quality, self.window_quality)
         for primitive in (*obj.skinned_model.primitives, *getattr(obj, "worn", ())):
             entry = self._primitives.get(id(primitive))
             if entry is None or entry[0]() is not primitive or entry[4] is not primitive.texture:
                 self._skinned_primitive(primitive)
                 return False
             texture = overrides.get(primitive.name, entry[5]).at_time(t)
+            if is_large(texture):  # drawn at its 1024 level until a picture needs more
+                texture = base_copy(texture)
             if not self._uploaded(texture):
                 self._upload_step(texture)
                 return False
+            if mapped and _has_maps(primitive):
+                if entry[8] is None or entry[6] is not primitive.maps:
+                    self._mapped_primitive(primitive)
+                    return False
+                if not self._uploaded(entry[7]):
+                    self._upload_step(entry[7])
+                    return False
         for prop in getattr(obj, "props", ()):
             texture = as_texture(prop.texture) if not callable(prop.texture) else prop.current_texture
             texture = (texture or self._white).at_time(t)
@@ -764,9 +948,22 @@ class Renderer:
             self._skinned_program = prog
         return self._skinned_program
 
+    def _mapped(self):
+        """The program of mesh parts drawn with their maps (see ``_MAPPED_FS``), compiled when first needed."""
+        if self._mapped_program is None:
+            prog = self.ctx.program(vertex_shader=_MAPPED_VS, fragment_shader=_MAPPED_FS)
+            prog["u_texture"].value = 0
+            prog["u_joints"].value = 1
+            prog["u_maps"].value = 2
+            self._mapped_uniforms = {name: prog[name] for name in ("u_mvp", "u_model", "u_normal_matrix", "u_color",
+                                                                   "u_lit")}
+            self._mapped_program = prog
+        return self._mapped_program
+
     def _primitive_entry(self, primitive) -> list:
-        """``[weakref, vao, vbo, ibo, texture spec, Texture]`` of a character's mesh part: its buffers uploaded once
-        and shared by every character using it (the texture is resolved by :meth:`_skinned_primitive`)."""
+        """``[weakref, vao, vbo, ibo, texture spec, Texture, maps spec, maps Texture, mapped vao, tangent vbo]`` of a
+        character's mesh part: its buffers uploaded once and shared by every character using it (the texture is
+        resolved by :meth:`_skinned_primitive`, the maps and tangents by :meth:`_mapped_primitive`)."""
         key = id(primitive)
         entry = self._primitives.get(key)
         if entry is None or entry[0]() is not primitive:
@@ -779,9 +976,31 @@ class Renderer:
                 [(vbo, "3f 3f 2f 4f 4f", "in_position", "in_normal", "in_uv", "in_joints", "in_weights")],
                 index_buffer=ibo, skip_errors=True,
             )
-            entry = [weakref.ref(primitive), vao, vbo, ibo, _UNSET, None]
+            entry = [weakref.ref(primitive), vao, vbo, ibo, _UNSET, None, _UNSET, None, None, None]
             self._primitives[key] = entry
         return entry
+
+    def _mapped_primitive(self, primitive):
+        """``(vao, maps Texture)`` of a mesh part with tangents and maps, for the mapped program: the tangents in a
+        buffer of their own beside the shared vertex buffer, uploaded once."""
+        entry = self._primitive_entry(primitive)
+        if entry[8] is None:
+            tangents = self.ctx.buffer(np.ascontiguousarray(primitive.tangents, dtype="f4").tobytes())
+            entry[8] = self.ctx.vertex_array(
+                self._mapped(),
+                [(entry[2], "3f 3f 2f 4f 4f", "in_position", "in_normal", "in_uv", "in_joints", "in_weights"),
+                 (tangents, "4f", "in_tangent")],
+                index_buffer=entry[3], skip_errors=True,
+            )
+            entry[9] = tangents
+        if entry[6] is not primitive.maps:
+            try:
+                maps = as_data_texture(primitive.maps)
+            except (OSError, ValueError) as exc:  # a damaged file: flat
+                print(f"[renderer] cannot use a character's maps, drawing them flat: {exc}")
+                maps = None
+            entry[6], entry[7] = primitive.maps, maps or self._flat
+        return entry[8], entry[7]
 
     def _skinned_primitive(self, primitive):
         """``(vao, Texture)`` of a character's mesh part, uploaded once and shared by every character using it."""
@@ -795,6 +1014,39 @@ class Renderer:
                 texture = None
             entry[4], entry[5] = primitive.texture, texture or self._white
         return entry[1], entry[5]
+
+    def _eye_pixels(self, obj, view_proj, camera_position, picture) -> float:
+        """How many pixels apart ``obj``'s eyes are (a frontal face's) in the picture ``picture`` = (size, the camera's
+        right): from its head bone (else the top of its model)."""
+        skeleton = obj.skinned_model.skeleton
+        bone = self._head_bones.get(skeleton)
+        if bone is None:
+            found = skeleton.find("Head")
+            bone = self._head_bones[skeleton] = -1 if found is None else found
+        local = obj.pose[bone, :3, 3] if bone >= 0 else np.array([0.0, obj.skinned_model.height, 0.0])
+        model = obj.matrices(camera_position)[0]
+        return eye_pixels(model[:3, :3] @ local + model[:3, 3], view_proj, *picture)
+
+    def _forget_texture(self, texture: Texture) -> None:
+        """Free ``texture``'s GPU copy now (it is uploaded again if it is drawn again)."""
+        entry = self._textures.pop(texture.id, None)
+        if entry is not None:
+            entry[1].release()
+
+    def memory(self) -> dict:
+        """What the textures on the GPU take, in bytes (their mipmaps included): ``textures`` all of them,
+        ``detail`` the heads' 2048 textures among them (``detail_heads``: how many heads have them), and how many
+        detail texture pairs were read so far (``detail_loads``)."""
+        def size(entry) -> int:
+            gl_tex = entry[1]
+            pixels = gl_tex.width * gl_tex.height * 4
+            return pixels * 4 // 3 if entry[3] else pixels
+
+        detail_ids = {t.id for t in self._details.textures()}
+        total = sum(size(e) for e in self._textures.values())
+        detail = sum(size(e) for key, e in self._textures.items() if key in detail_ids)
+        return {"textures": total, "detail": detail, "detail_heads": len(self._details),
+                "detail_loads": self._details.loads}
 
     def _joint_texture(self, obj, reuse: bool = False):
         """The character's joint-palette texture (one per character, rewritten every frame). With ``reuse`` it is
@@ -919,9 +1171,10 @@ class Renderer:
             resource.release()
 
     def _release_primitive(self, key: int) -> None:
-        _ref, vao, vbo, ibo, _spec, _texture = self._primitives.pop(key)
-        for resource in (vao, vbo, ibo):
-            resource.release()
+        _ref, vao, vbo, ibo, _spec, _texture, _maps_spec, _maps, mapped_vao, tangents = self._primitives.pop(key)
+        for resource in (vao, vbo, ibo, mapped_vao, tangents):
+            if resource is not None:
+                resource.release()
 
     def release(self) -> None:
         """Free all GPU resources (the renderer cannot draw afterwards)."""
@@ -937,6 +1190,10 @@ class Renderer:
         for _ref, gl_tex, *_written in self._joints.values():
             gl_tex.release()
         self._joints.clear()
+        self._details = DetailCache()  # (their GPU copies are among the textures released below)
+        if self._mapped_program is not None:
+            self._mapped_program.release()
+            self._mapped_program = None
         if self._probes is not None:
             for _ref, vao in self._probe_vaos.values():
                 vao.release()
@@ -963,9 +1220,24 @@ class Renderer:
         self._last_window = None
 
 
-def _scene_uniforms(scene: Scene, linear: bool = True) -> dict:
+QUALITIES = ("high", "low")
+
+
+def _check_quality(quality: str) -> str:
+    if quality not in QUALITIES:
+        raise ValueError(f"unknown quality {quality!r}: choose one of {', '.join(QUALITIES)}")
+    return quality
+
+
+def _has_maps(primitive) -> bool:
+    """Whether a mesh part is drawn with its maps at the high quality: it has tangents and a packed map."""
+    return getattr(primitive, "tangents", None) is not None and getattr(primitive, "maps", None) is not None
+
+
+def _scene_uniforms(scene: Scene, high: bool = True, linear: bool = True) -> dict:
     """Light and fog uniform values shared by every surface program, in linear light (see the module docs), or as
-    stored (``linear`` False: the renderer's values before linear light)."""
+    stored (``linear`` False: the renderer's values before linear light); ``high``: the high quality's light (the
+    ambient light from above, as the scene's ``hemisphere`` says)."""
     light = np.asarray(scene.light_direction, dtype=np.float64)
     light = light / max(np.linalg.norm(light), 1e-9)
     fog = scene.fog
@@ -977,6 +1249,7 @@ def _scene_uniforms(scene: Scene, linear: bool = True) -> dict:
         "u_light_dir": tuple(light),
         "u_light_color": colour(scene.light_color),
         "u_ambient": ambient_light(scene.ambient) if linear else float(np.clip(scene.ambient, 0.0, 1.0)),
+        "u_hemisphere": float(np.clip(getattr(scene, "hemisphere", 0.0), 0.0, 1.0)) if high else 0.0,
         "u_fog_strength": float(np.clip(fog.strength, 0.0, 1.0)) if fog else 0.0,
         "u_shadow_gamma": 2.2 if linear else 1.0,
     }

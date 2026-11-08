@@ -14,7 +14,9 @@ class SceneSource(FrameSource):
 
     ``windows``: a :class:`bifold_demo.sensor.WindowService`; its windows are rendered right after each frame, of the
     same moment, and delivered on the frame (``frame.windows``). It can be set later too; setting it tells the
-    service the frames' size (and fails there when the service's sensor is for another view).
+    service the frames' size (and fails there when the service's sensor is for another view). ``quality``: the
+    renderer's shading of the frames (``"high"`` or ``"low"``, see :class:`~bifold_demo.scene.renderer.Renderer`);
+    windows are always drawn at the high quality.
     """
 
     @property
@@ -28,6 +30,7 @@ class SceneSource(FrameSource):
         self._windows = service
 
     name = "scene"
+    quality = "high"
 
     def __init__(self, scene: Scene, width: int = 1280, height: int = 720, fps: float = 30.0,
                  clock: SimulationClock | None = None, samples: int = 4, windows=None):
@@ -46,6 +49,10 @@ class SceneSource(FrameSource):
             from ..scene.renderer import Renderer
 
             self.renderer = Renderer(self.width, self.height, self.samples)
+            self.renderer.quality = self.quality
+            # live, a frame never waits for a head's 2048 textures (they are read in the background); a fixed-step
+            # run (a recording) gets each frame as it should be
+            self.renderer.detail_wait = isinstance(self.clock, FixedStepClock)
 
     def set_scene(self, scene: Scene) -> None:
         """Swap in a different scene (e.g. after editing the scene file); time restarts at 0."""

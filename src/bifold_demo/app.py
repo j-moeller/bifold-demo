@@ -60,6 +60,7 @@ class DemoConfig:
     sensor: tuple[int, int] | None = None  # the declared high-resolution sensor (None: six times the frame)
     camera_preset: str = "ideal"  # the camera model of the windows (sensor.camera_model.PRESETS)
     webcam_capture: tuple[int, int] | None = None  # capture the webcam at this size, windows cut from it
+    quality: str = "high"  # the view's shading: "high" (normal and specular maps on heads) or "low"; windows: high
     title: str = "bifold demo"
 
 
@@ -87,6 +88,7 @@ class DemoApp:
         self._prepare_scene(scene)
         clock = FixedStepClock(config.fps) if config.headless else SimulationClock()
         self.scene_source = SceneSource(scene, config.width, config.height, config.fps, clock)
+        self.scene_source.quality = config.quality
         self.window_service = None  # the virtual sensor's windows (W), made when first shown
         self.windows_on = False
         self._window_tags = None
@@ -659,6 +661,9 @@ def parse_args(argv=None) -> DemoConfig:
     g.add_argument("--uploads", default="uploads",
                    help="folder whose files replace textures of same-named objects ('' to disable)")
     g.add_argument("--no-reload", dest="reload", action="store_false", help="do not reload the scene file on save")
+    g.add_argument("--quality", choices=["high", "low"], default="high",
+                   help="the view's shading: high (heads with their normal and specular maps, light from above) or "
+                        "low (cheaper on a software renderer); windows are always high (default high)")
     g.add_argument("--faces", default="faces",
                    help="folder of photos of the people to recognise, a folder per person (default: faces)")
     g.add_argument("--face-profile", default=None, choices=("best", "licensed", "commercial"),
@@ -719,7 +724,7 @@ def parse_args(argv=None) -> DemoConfig:
         frames=a.frames, reload=a.reload, uploads=a.uploads or None, items=a.items or None, faces=a.faces,
         face_profile=a.face_profile, recognize=a.recognize, cast=a.cast, created=a.created or None,
         windows=a.windows, max_windows=a.max_windows, sensor=a.sensor, camera_preset=a.camera_preset,
-        webcam_capture=a.webcam_capture,
+        webcam_capture=a.webcam_capture, quality=a.quality,
     )
 
 

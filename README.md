@@ -1374,6 +1374,38 @@ photo enough to lower its quality by a tenth and the share of its face texels
 worth refining from 0.13 to 0.08; drawn on the stored values they are the same
 as before to the bit.
 
+**Shading.** At the renderer's high quality (the default) a head is drawn
+with its maps: the tangent frame, skinned like the normal, turns the map's
+normal into the surface's, so the folds of lips, nostrils, eyelids and the
+nasolabial folds and the pores react to the light; a specular lobe (GGX with
+Schlick's Fresnel and skin's reflectance of 0.028 head-on, roughness 0.45)
+is scaled by the specular map, which the Rocketbox artists painted higher on
+the forehead, nose and lips, and sharper where the level is high (lips and
+the wet eyes, roughness down to 0.2); and the ambient light comes more from
+above than from below, as much as the scene's `hemisphere` says (the fair:
+0.3, a floor-facing surface gets 0.7 of the ambient light, an upward one 1.3).
+`renderer.quality = "low"` draws everything as before (Lambert and a constant
+ambient light, in linear light), and `renderer.window_quality` sets the
+windows' own, so a software renderer can keep the whole view cheap while the
+windows get everything (`bifold-demo --quality low`). `renderer.specular` and
+`renderer.normal_strength` scale the lobe and the maps.
+
+**Detail levels.** The 2048 textures cost four times the memory of the 1024
+ones (21 MiB per texture with its mipmaps, 43 MiB per head with its maps)
+and add nothing to a face smaller than about 110 pixels between the eyes. So
+the renderer draws a person's head with them only in a picture where that
+person's eyes are at least `renderer.detail_from` (64) pixels apart: a
+window of the virtual sensor, or a camera close to someone; everywhere else
+the 1024 ones ([scene/detail.py](src/bifold_demo/scene/detail.py)). The
+detail textures of the last `renderer.detail_heads` (6) heads drawn that way
+stay on the GPU, the others are freed at once. A picture that needs them
+reads them first (`renderer.detail_wait`, for tests and measurements); the
+demo reads them in the background and draws the 1024 ones until they are
+there, so a frame never waits for a 2048 PNG. A texture larger than 1024
+that a person wears instead of the model's (a face made from photos) is drawn
+from its 1024 mipmap level the same way. `renderer.memory()` says what the
+textures take.
+
 **Older caches** (format 1, without maps) still load and draw as before;
 `bifold-characters list` names them, and `fetch` makes them again with the
 maps (it downloads their files again). To upgrade a library in place:

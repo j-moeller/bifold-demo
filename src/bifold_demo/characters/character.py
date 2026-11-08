@@ -14,7 +14,7 @@ import numpy as np
 from ..scene.animation import resolve
 from ..scene.geometry import Mesh
 from ..scene.scene import SceneObject
-from ..scene.textures import IMAGE_EXTENSIONS, as_texture, parse_color, prepare_upload
+from ..scene.textures import IMAGE_EXTENSIONS, as_data_texture, as_texture, parse_color, prepare_upload
 from ..scene.transforms import vec3
 from .model import AnimationClip, CharacterModel, CharacterState, Layer, Poser
 
@@ -185,14 +185,17 @@ def preload_textures(model: CharacterModel) -> list[Future]:
     The decoded textures land in the shared file cache of :func:`bifold_demo.scene.as_texture`, where the renderer
     finds them, laid out for the upload with their mipmaps (:func:`~bifold_demo.scene.textures.prepare_upload`), so
     the first frame that shows a character does not decode its PNGs or average its mipmaps on the render thread.
-    Textures given as arrays or :class:`~bifold_demo.scene.Texture` need no decoding. Returns one future per file.
+    Textures given as arrays or :class:`~bifold_demo.scene.Texture` need no decoding. A primitive's packed ``maps``
+    are decoded too (as data, not colours); its larger ``detail`` textures are left to the renderer, which reads them
+    when a picture needs them. Returns one future per file.
     """
     global _texture_queue
-    files = sorted({os.fspath(p.texture) for p in model.primitives if isinstance(p.texture, (str, os.PathLike))
-                    and Path(p.texture).suffix.lower() in IMAGE_EXTENSIONS})
+    specs = [(p.texture, True) for p in model.primitives] + [(p.maps, False) for p in model.primitives]
+    files = sorted({(os.fspath(spec), colour) for spec, colour in specs if isinstance(spec, (str, os.PathLike))
+                    and Path(spec).suffix.lower() in IMAGE_EXTENSIONS})
     jobs = []
     with _texture_lock:
-        for file in files:
+        for file, colour in files:
             job = _texture_jobs.get(file)
             if job is None:
                 if _texture_queue is None:
@@ -200,7 +203,7 @@ def preload_textures(model: CharacterModel) -> list[Future]:
                     threading.Thread(target=_decode_textures, args=(_texture_queue,), name="character-textures",
                                      daemon=True).start()
                 job = _texture_jobs[file] = Future()
-                _texture_queue.put((file, job))
+                _texture_queue.put((file, colour, job))
             jobs.append(job)
     return jobs
 
@@ -208,10 +211,10 @@ def preload_textures(model: CharacterModel) -> list[Future]:
 def _decode_textures(jobs: queue.SimpleQueue) -> None:
     """Background worker: one at a time, since the file cache decodes under its lock anyway."""
     while True:
-        file, job = jobs.get()
+        file, colour, job = jobs.get()
         if job.set_running_or_notify_cancel():
             try:
-                job.set_result(prepare_upload(as_texture(file)))
+                job.set_result(prepare_upload(as_texture(file) if colour else as_data_texture(file)))
             except Exception as exc:  # noqa: BLE001 - the renderer raises it again when it draws the character
                 job.set_exception(exc)
 

@@ -93,6 +93,9 @@ def test_cli_parsing():
     assert (cfg.source, cfg.width, cfg.height, cfg.classes, cfg.uploads) == ("webcam", 640, 480, ["person", "car"], None)
     with pytest.raises(SystemExit):
         parse_args(["--size", "big"])
+    assert cfg.quality == "high" and parse_args(["--quality", "low"]).quality == "low"
+    with pytest.raises(SystemExit):
+        parse_args(["--quality", "best"])
 
 
 def test_headless_run_records_annotated_video(gl, tmp_path, monkeypatch):

@@ -358,13 +358,18 @@ class Scene:
         light_color: ``(r, g, b)`` colour of the light.
         camera: a :class:`Camera`; a default one is created when omitted.
         fog: a :class:`Fog` for distance haze (useful in large rooms), or ``None``.
+        hemisphere: how much more of the ambient light comes from above than from below, 0-1: a surface facing up
+            gets ``1 + hemisphere`` times the ambient light, one facing down ``1 - hemisphere`` (drawn at the
+            renderer's high quality; 0: the same from everywhere).
     """
 
     def __init__(self, *, background=(28, 30, 36), ambient: float = 0.45, light_direction=(-0.4, -1.0, -0.5),
-                 light_color=(255, 255, 255), camera: Camera | None = None, fog: Fog | None = None):
+                 light_color=(255, 255, 255), camera: Camera | None = None, fog: Fog | None = None,
+                 hemisphere: float = 0.0):
         self.background = background
         self.fog = fog
         self.ambient = ambient
+        self.hemisphere = hemisphere
         self.light_direction = light_direction
         self.light_color = light_color
         self.camera = camera or Camera()
