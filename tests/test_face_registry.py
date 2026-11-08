@@ -129,6 +129,11 @@ def test_every_model_is_pinned_and_described():
         if spec.norm_output:
             assert spec.form == "onnxruntime" and spec.task == "embedder"
         assert (0.0 < spec.threshold < 1.0) == (spec.task == "embedder"), spec.id  # a provisional cut each
+    # review M4 and L3: the cuts counted on LFW's 3,000 non-mated pairs (AdaFace 0.210, the ResNet-50 0.216: 3 pairs
+    # reach 0.22), OpenCV's for SFace, and 0.22 borrowed by the ResNet-100s that could not be measured here
+    cuts = {spec.id: spec.threshold for spec in registry.MODELS.values() if spec.task == "embedder"}
+    assert cuts == {"adaface_ir101_wf12m": 0.22, "buffalo_l_r50": 0.22, "antelopev2_r100": 0.22,
+                    "sface_2021dec": 0.363, "auraface_v1": 0.22}
     assert len({spec.file.name for spec in registry.MODELS.values()}) == len(registry.MODELS)  # no clashes
     assert registry.MODELS["adaface_ir101_wf12m"].bgr and not registry.MODELS["buffalo_l_r50"].bgr
 

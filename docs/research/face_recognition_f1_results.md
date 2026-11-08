@@ -14,6 +14,8 @@ steps' (F2, E1).
   batch-independent.
 - The AdaFace IR-101 community export works: 99.87 % on a balanced 1,500-pair LFW subset (published 99.82 % on the
   full protocol), the best separation of all (d' 8.2), and BGR input as its exporter says. It stays the default.
+- The provisional thresholds are counted on all 3,000 LFW stranger pairs: 0.22 for AdaFace and the ResNet-50 (the
+  first ones, Gaussian estimates, let through 1.7 and 2 times the intended false matches; section 3).
 - The registered colour orders are right for every model, but the wrong order costs less than expected (d' about
   0.2-0.3 on renders, 1.3-1.5 on photos).
 - On avatar renders every model names every turned render (up to 60 degrees, down to 12 pixels between the eyes)
@@ -94,9 +96,10 @@ pairs, 3,000 crops), without mirrored crops; SFace also ran the full protocol, t
 full protocol, and CFP-FP and AgeDB-30, run on the Mac: `bifold-faces check --pack lfw.bin cfp_fp.bin
 agedb_30.bin`.
 
-10-fold protocol (the threshold chosen on nine folds, used on the tenth), cosine similarity. The thresholds at a
-false-match rate (FMR) of 1e-3 are the mean of the non-mated scores plus 3.09 standard deviations (a Gaussian
-tail); on SFace's full 3,000 non-mated pairs that gives 0.370 against 0.347 counted, so it errs on the strict side.
+10-fold protocol (the threshold chosen on nine folds, used on the tenth), cosine similarity. The last column, the
+threshold at a false-match rate (FMR) of 1e-3, is a Gaussian estimate (the mean of the non-mated scores plus 3.09
+standard deviations); the registry's thresholds are counted instead (below), because the estimate is not
+conservative: it erred on the strict side for SFace only.
 
 | Model | Accuracy (subset) | Published (with flip) | d' | EER | Mated / non-mated mean | Non-mated sd | FMR 1e-3 threshold |
 |---|---|---|---|---|---|---|---|
@@ -106,10 +109,27 @@ tail); on SFace's full 3,000 non-mated pairs that gives 0.370 against 0.347 coun
 
 **The AdaFace export reproduces the published accuracy** within what 1,500 pairs can tell (2 errors in 1,500, the
 same as the ResNet-50; the published 99.82 % is about 1 in 550), and it separates mated from non-mated pairs best
-(d' 8.2). It stays the best profile's recogniser; the ResNet-50 stays its fallback. The registry's provisional
-thresholds come from this table (rounded up: AdaFace 0.18, the ResNet-50 0.19; SFace keeps OpenCV's 0.363). The
-ResNet-100 of `antelopev2` was not measured: at 0.4-1.5 s per crop on this machine (more while other work ran
-beside) it was left for the Mac, like AuraFace.
+(d' 8.2). It stays the best profile's recogniser; the ResNet-50 stays its fallback. The ResNet-100 of
+`antelopev2` was not measured: at 0.4-1.5 s per crop on this machine (more while other work ran beside) it was left
+for the Mac, like AuraFace.
+
+**The thresholds, counted** (after the review). The first thresholds (AdaFace 0.18, the ResNet-50 0.19) were the
+Gaussian estimates above, rounded up, and this note called them strict. They are not: on all 3,000 non-mated pairs of
+LFW's protocol (single crops, as the live path embeds them; the ResNet-50's scored by the review, AdaFace's here, both
+agreeing exactly with the subset's scores) the tails are heavier than a Gaussian's:
+
+| Model | Gaussian estimate (3,000) | Counted cut at FMR 1e-3 | Pairs at or above 0.18 / 0.19 / 0.22 | Highest scores |
+|---|---|---|---|---|
+| AdaFace IR-101 | 0.172 | 0.210 | 5 / 5 / 3 | 0.2765, 0.2291, 0.2264, 0.2102 |
+| `buffalo_l` ResNet-50 | 0.183 | 0.216 | 8 / 6 / 3 | 0.2545, 0.2236, 0.2221, 0.2161 |
+| SFace | 0.370 | 0.347 | (OpenCV's 0.363 is used) | |
+
+The counted cut is just above the fourth highest score (3 pairs at or above it: an FMR of 1e-3); rounded up, both
+models get **0.22**, where the old cuts let 5 and 6 pairs through (1.7e-3 and 2.0e-3). On LFW's mated pairs the
+change costs nothing: 2 of the subset's 750 fall below 0.18 and 0.22 alike. Three pairs are a small count, so the
+rate at 0.22 is 1e-3 only roughly; and a person's score is the best over all their photos and templates, so false
+matches per face grow with the gallery's size. The ResNet-100s (`antelopev2`, AuraFace) borrow 0.22 until they are
+measured. F2 calibrates the decisions per model, face size and gallery.
 
 ## 4. Avatar renders
 

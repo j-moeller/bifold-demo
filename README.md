@@ -815,7 +815,8 @@ default):
 5. **Compare with the known people.** A face is the known person with the
    highest score, if it reaches the model's threshold (for now one per model,
    at about one false match in a thousand pairs of strangers on the LFW
-   benchmark; calibrated decisions per face size come next), else unknown.
+   benchmark, counted on its 3,000 stranger pairs: 0.22 for AdaFace and the
+   ResNet-50; calibrated decisions per face size come next), else unknown.
 
 In the demo `N` (or `--recognize`) turns it on: every face in the picture gets
 a box with the name of the person and the similarity under it, or `?` for a
