@@ -7,8 +7,8 @@ how it was made, the inputs and outputs its graph must have (checked by ``bifold
 authors published. Nothing is downloaded or run that is not listed here, with its checksum.
 
 A **profile** chooses one model per stage (:class:`Profile`): a face detector, an embedder (with fallbacks, tried in
-order) and a quality model. Three profiles stand behind one switch (``--face-profile`` or ``BIFOLD_FACE_PROFILE``;
-:func:`profile_name`):
+order) and a quality model. Three profiles stand behind one switch (``--face-profile``, which :func:`use_profile`
+makes the whole process's choice, or ``BIFOLD_FACE_PROFILE``; :func:`profile_name`):
 
 * ``best`` (the default): SCRFD-10G and AdaFace IR-101 trained on WebFace12M, the most accurate recogniser on
   low-quality faces whose weights we can run (a community ONNX export, checked against its published accuracy by
@@ -233,9 +233,20 @@ def model(model_id: str) -> ModelSpec:
         raise ValueError(f"unknown face model {model_id!r} (known: {', '.join(MODELS)})") from None
 
 
+_chosen: str | None = None  # the profile --face-profile chose for this process (use_profile)
+
+
+def use_profile(name: str | None) -> None:
+    """Make ``name`` the profile of everything in this process that does not name one (every ``FaceEngine()``: the
+    gallery's, the character creator's, the face painting's, the head textures' identity check). The demo and
+    ``bifold-faces`` call it with ``--face-profile``; ``None`` goes back to ``$BIFOLD_FACE_PROFILE``, else ``best``."""
+    global _chosen
+    _chosen = profile_name(name) if name else None
+
+
 def profile_name(name: str | None = None) -> str:
-    """``name``, else ``$BIFOLD_FACE_PROFILE``, else ``best``; checked."""
-    name = (name or os.environ.get(PROFILE_ENV) or DEFAULT_PROFILE).strip().lower()
+    """``name``, else the profile :func:`use_profile` chose, else ``$BIFOLD_FACE_PROFILE``, else ``best``; checked."""
+    name = (name or _chosen or os.environ.get(PROFILE_ENV) or DEFAULT_PROFILE).strip().lower()
     if name not in PROFILES:
         raise ValueError(f"unknown face profile {name!r} (choose from: {', '.join(PROFILES)})")
     return name

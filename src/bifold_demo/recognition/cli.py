@@ -234,6 +234,7 @@ def main(argv=None) -> int:
 
     add_commands(sub)
     args = parser.parse_args(argv)
+    registry.use_profile(args.face_profile)  # every engine of this run (the head textures' check too) uses it
     try:
         return args.run(args)
     except (OSError, ValueError, ImportError) as exc:  # ImportError: MediaPipe is missing (the message says how)

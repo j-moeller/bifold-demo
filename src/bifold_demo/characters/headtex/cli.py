@@ -188,7 +188,7 @@ def _full(args, model, result, photos) -> int:
     if args.check:
         from ...recognition.engine import FaceEngine
 
-        engine = FaceEngine(args.models)
+        engine = FaceEngine(args.models, profile=getattr(args, "face_profile", None))
     inpainter = FluxInpainter(args.generate) if args.generate else None
     person = finish(result, model, inpainter=inpainter, check=args.check, photos=photos, engine=engine)
     print(person.summary())

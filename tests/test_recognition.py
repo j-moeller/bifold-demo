@@ -189,14 +189,17 @@ def test_the_demo_names_the_faces_in_the_rendered_scene(gl, engine, zidane, tmp_
 
 def test_n_switches_the_face_recognition(gl, tmp_path, monkeypatch):
     from bifold_demo.app import DemoApp, DemoConfig
-    from bifold_demo.recognition import gallery, recognizer
+    from bifold_demo.recognition import gallery, recognizer, registry
     from bifold_demo.recognition.engine import FaceEngine
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(registry, "_chosen", None)  # (put back afterwards: the app sets it)
     monkeypatch.setattr(FaceEngine, "__init__", lambda self, *a, **k: setattr(self, "notes", []))
     monkeypatch.setattr(FaceEngine, "describe", lambda self: "no models (a test)")
     monkeypatch.setattr(FaceEngine, "faces", lambda self, image, min_size=0: [])
-    app = DemoApp(DemoConfig(headless=True, frames=1, width=160, height=90, detect=False, uploads=None))
+    app = DemoApp(DemoConfig(headless=True, frames=1, width=160, height=90, detect=False, uploads=None,
+                             face_profile="commercial"))
+    assert registry.profile_name() == "commercial"  # --face-profile reaches every engine (the creator's too)
     app.run()
     window = type("W", (), {"toggle_fullscreen": lambda self: None})()
     messages = []

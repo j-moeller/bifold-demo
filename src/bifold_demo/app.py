@@ -80,6 +80,10 @@ class _Rate:
 class DemoApp:
     def __init__(self, config: DemoConfig, scene: Scene | None = None):
         self.config = config
+        if config.face_profile:  # every face model of the demo follows it: the recognition, the creator's painting
+            from .recognition import registry
+
+            registry.use_profile(config.face_profile)
         self.reloader = None
         if scene is None:
             scene, path = load_scene(config.scene)

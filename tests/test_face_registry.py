@@ -227,3 +227,23 @@ def test_an_onnx_model_runs_with_extra_outputs_and_fixed_shapes(tmp_path, monkey
         runtime.OnnxModel(path, (2, 3), extra_outputs=("nothing",))
     with pytest.raises(ValueError, match="BIFOLD_FACE_PROVIDER"):
         runtime.provider_choice("gpu")
+
+
+@pytest.fixture
+def chosen():
+    yield
+    registry.use_profile(None)
+
+
+def test_the_chosen_profile_reaches_every_engine_made_without_one(chosen, monkeypatch, tmp_path):
+    from bifold_demo.recognition import cli
+
+    monkeypatch.setenv(registry.PROFILE_ENV, "best")
+    registry.use_profile("commercial")
+    assert registry.profile_name() == "commercial" and registry.profile_name("licensed") == "licensed"
+    registry.use_profile(None)
+    assert registry.profile_name() == "best"  # the environment again
+    cli.main(["--models", str(tmp_path), "--face-profile", "licensed", "list", "--only", "models"])
+    assert registry.profile_name() == "licensed"  # bifold-faces --face-profile: the creator, the head textures too
+    with pytest.raises(ValueError, match="unknown face profile"):
+        registry.use_profile("fastest")

@@ -824,7 +824,9 @@ thread beside the object detection. A face only 30 pixels tall gives a noisy
 fingerprint, so faces are followed from frame to frame and named from the
 average of their last eight fingerprints, and a named face keeps its name
 while that average stays near the threshold (no flickering names).
-`--face-profile` (or `BIFOLD_FACE_PROFILE`) chooses the models.
+`--face-profile` (or `BIFOLD_FACE_PROFILE`) chooses the models, for everything
+in the run that looks at faces: the recognition, the character creator's face
+painting and the head textures' identity check.
 
 The known people are the photos in [`faces/`](faces/README.md) (`--faces DIR`
 for another folder), a folder per person with as many photos as you like
