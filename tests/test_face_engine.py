@@ -159,6 +159,27 @@ def test_records_embed_all_faces_of_an_image_in_one_batch(tiny):
     assert plain.analyse(image)[0].quality.fiqa is None and plain.quality_spec is None
 
 
+def test_several_images_and_regions_are_analysed_in_one_batch(tiny):
+    """Review L11: the faces of several images (or of several regions of one frame) are embedded in one batch, and
+    every record names its model."""
+    engine = E.FaceEngine(tiny, download=False, progress=None)
+    faces = [_face(200.0), _face(400.0, eyes=30.0)]
+    engine.detector = Faces(faces)
+    rng = np.random.default_rng(2)
+    one, two = (rng.integers(0, 256, (480, 640, 3), dtype=np.uint8) for _ in range(2))
+    sent = []
+    embed = engine.embedder.embed
+    engine.embedder.embed = lambda crops, **kw: sent.append(len(crops)) or embed(crops, **kw)
+    many = engine.analyse_many([one, two, one], faces=[faces, faces[:1], None], regions=[None, None, None])
+    assert sent == [5] and [len(records) for records in many] == [2, 1, 2]  # (the third: found by the detector)
+    alone = engine.analyse(two, faces=faces[:1])
+    assert np.allclose(many[1][0].vector, alone[0].vector, atol=1e-5) and many[1][0].model == "buffalo_l_r50"
+    assert all(r.model == engine.model_id for records in many for r in records)
+    assert engine.analyse_many([one, two], faces=[[], []]) == [[], []] and engine.analyse_many([]) == []
+    with pytest.raises(ValueError, match="one each"):
+        engine.analyse_many([one, two], faces=[faces])
+
+
 def test_a_close_up_that_fills_the_photo_is_looked_for_on_smaller_canvases(tiny):
     """Review L2: SCRFD misses a face filling most of a 640 canvas (a tight close-up); when the image's own canvas
     finds nothing the engine tries 640, then 320 (each only if the image is much bigger)."""

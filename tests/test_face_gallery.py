@@ -196,6 +196,62 @@ def test_a_photo_replaced_under_its_name_is_enrolled_again_and_leaves_the_other_
         assert len(data["paths"]) == 0  # the replaced photo's embedding is gone
 
 
+def test_raw_scores_and_the_model_go_with_every_score(tmp_path):
+    """Review L11: every photo's and template's score (for cohort normalisation), each score with its model, and an
+    embedding of another model refused."""
+    ada, bo = _unit(1), _unit(2)
+    shots = {(10, 0, 0): Shot(ada), (11, 0, 0): Shot(_unit(11, base=ada, noise=0.9), yaw=35.0),
+             (20, 0, 0): Shot(bo)}
+    folder = tmp_path / "faces"
+    _photo(folder / "Ada" / "front.png", (10, 0, 0))
+    _photo(folder / "Ada" / "turned.png", (11, 0, 0))
+    _photo(folder / "Bo.png", (20, 0, 0))
+    gallery = G.Gallery(folder, ScriptedEngine(shots, "model_one"))
+    gallery.refresh(force=True)
+    raw = gallery.raw_scores(ada)
+    assert raw.model == "model_one" and raw.names == ("Ada", "Bo")
+    assert len(raw.photos) == 3 and sorted(raw.photo_poses) == ["frontal", "frontal", "left"]
+    assert raw.photo_paths[int(raw.photos.argmax())] == folder / "Ada" / "front.png"
+    assert raw.photos.max() == pytest.approx(1.0) and raw.photo_owners[int(raw.photos.argmax())] == 0
+    assert len(raw.templates) == 3 and list(raw.template_owners) == [0, 0, 1]  # Ada: frontal and left; Bo
+    best = gallery.scores(ada)[0]
+    assert best.name == "Ada" and best.model == "model_one" and gallery.match(ada).model == "model_one"
+    assert gallery.match(_unit(5)).model == "model_one"  # nobody: still says the model
+    assert gallery.scores(ada, model="model_one")[0].name == "Ada"
+    with pytest.raises(ValueError, match="model_two for a gallery of model_one"):
+        gallery.match(ada, model="model_two")
+    empty = G.Gallery(tmp_path / "nobody", ScriptedEngine(shots, "model_one")).raw_scores(ada)
+    assert empty.names == () and len(empty.photos) == 0 and len(empty.templates) == 0
+
+
+def test_a_cache_made_with_another_detector_or_model_file_is_not_used(tmp_path):
+    """Review L11: the caches record the detector (its landmarks align the faces) and the model file's SHA-256."""
+    from types import SimpleNamespace
+
+    shots = {(10, 0, 0): Shot(_unit(1))}
+    folder = tmp_path / "faces"
+    _photo(folder / "Ada.png", (10, 0, 0))
+
+    def engine(detector="det_a", sha="a" * 64):
+        made = ScriptedEngine(shots, "model_one")
+        made.detector_spec = SimpleNamespace(id=detector)
+        made.embedder_spec = SimpleNamespace(file=SimpleNamespace(sha256=sha))
+        return made
+
+    G.Gallery(folder, engine()).refresh(force=True)
+    with np.load(folder / G.cache_name("model_one")) as data:
+        assert str(data["detector"]) == "det_a" and str(data["sha256"]) == "a" * 64
+    for again, analysed in ((engine(), 0), (engine(detector="det_b"), 1), (engine(sha="b" * 64), 1)):
+        G.Gallery(folder, again).refresh(force=True)
+        assert again.analysed == analysed
+    old = dict(np.load(folder / G.cache_name("model_one")))  # a cache from before these were kept: still used
+    del old["detector"], old["sha256"]
+    np.savez(folder / G.cache_name("model_one"), **old)
+    plain = engine(detector="det_c")
+    G.Gallery(folder, plain).refresh(force=True)
+    assert plain.analysed == 0
+
+
 def test_a_photo_without_a_quality_record_is_still_enrolled():
     class Plain:  # an engine without analyse (the demo's old interface)
         def detect(self, image, min_size=0):

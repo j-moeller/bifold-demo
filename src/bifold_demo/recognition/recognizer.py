@@ -124,7 +124,7 @@ class FaceRecognizer:
         if match.name is None and track.name is not None:
             kept = self.gallery.score(mean, track.name)
             if kept >= self.gallery.threshold - KEEP_MARGIN:
-                return Match(track.name, kept, match.score)
+                return Match(track.name, kept, match.score, match.model)
         track.name = match.name
         return match
 

@@ -966,7 +966,9 @@ neither, offline too. When AdaFace is missing, damaged or does not load, the
 best profile takes the ResNet-50 and says why; when no model of a profile can
 be had, the error points to the commercial profile (YuNet and SFace).
 `analyse` embeds all the faces of an image in one batch and gives a record per
-face. The gallery embeds each photo with
+face; `analyse_many` does so for several images or head regions at once, in
+one batch for all. Every record, score and match names the model it is of.
+The gallery embeds each photo with
 exactly the engine's detector, alignment and model, checks it (one dominant
 face; at least 40 pixels between the eyes; blur, rejected under a sharpness of
 0.10 and warned under 0.30, where sharp test photos measure 1.2-4.8 and a
@@ -974,14 +976,17 @@ blur of 3 crop pixels brings them under 0.10; light; with eDifFIQA-T, a
 warning when it finds the face hard to recognise), and
 keeps, per person, every photo and a template per pose bin (the
 quality-weighted mean of the bin's embeddings); a person's score is the best of
-the two. The decision whom a face shows is a replaceable step
+the two (`gallery.raw_scores` gives every photo's and template's score, for
+cohort normalisation). The decision whom a face shows is a replaceable step
 (`gallery.decide(scores, quality)`), so that calibrated open-set decisions per
 model and face size can take its place. New photos are enrolled outside the
 gallery's lock (while the demo runs, on a worker thread), so neither the frames
 nor the lookups of who is known wait for the models (AdaFace takes seconds per
 photo here); the photos count once they are enrolled. Embeddings of different
 models cannot be compared, so the caches are per model, and a cache made by
-another ONNX Runtime provider (CoreML computes in 16-bit floats) is not used.
+another ONNX Runtime provider (CoreML computes in 16-bit floats), another
+detector (its landmarks align the faces) or another file of the model is not
+used.
 
 **Checking the models** ([`checks.py`](src/bifold_demo/recognition/checks.py)).
 No model is trusted before it is checked, the community exports above all:

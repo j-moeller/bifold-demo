@@ -9,10 +9,11 @@ needed, so code that only finds faces (painting a photo onto an avatar) needs ne
 * :meth:`FaceEngine.detect`, :meth:`~FaceEngine.embed` and :meth:`~FaceEngine.faces` are the demo's old interface
   (biggest face first; a unit embedding per face).
 * :meth:`FaceEngine.analyse` gives a :class:`FaceRecord` per face (the face, its aligned crop, its embedding, the
-  embedding's raw length and a :class:`~.quality.Quality`), embedding all faces of an image in one batch; this is
-  what the person tracks of the next step (F2) build on. With ``region`` it looks only inside a part of the frame (a
-  person's head, scaled to :data:`HEAD_CANVAS` pixels for the detector) and gives the faces in the frame's pixels,
-  aligned from the frame itself.
+  embedding's raw length, a :class:`~.quality.Quality` and the model's id), embedding all faces of an image in one
+  batch; this is what the person tracks of the next step (F2) build on. With ``region`` it looks only inside a part
+  of the frame (a person's head, scaled to :data:`HEAD_CANVAS` pixels for the detector) and gives the faces in the
+  frame's pixels, aligned from the frame itself. :meth:`FaceEngine.analyse_many` does the same for several images
+  or regions at once (the heads of several people, the windows of several sensors) with one batch for them all.
 
 Embeddings of different models cannot be compared: :attr:`FaceEngine.model_id` names the model, and everything made
 from the embeddings (the gallery's caches, thresholds, calibration) is kept per model. :attr:`FaceEngine.threshold`
@@ -45,13 +46,15 @@ __all__ = ["DETECT_SCORE", "MIN_FACE", "Face", "FaceEngine", "FaceRecord"]
 @dataclass(frozen=True)
 class FaceRecord:
     """One face in an image, analysed: the ``face``, its ``aligned`` crop, its unit ``vector`` (the embedding), the
-    embedding's raw ``norm`` and its ``quality``."""
+    embedding's raw ``norm``, its ``quality`` and the ``model`` that made the embedding (its id: embeddings of
+    different models cannot be compared)."""
 
     face: Face
     aligned: Aligned
     vector: np.ndarray
     norm: float
     quality: Quality
+    model: str = ""
 
 
 class FaceEngine:
@@ -265,15 +268,33 @@ class FaceEngine:
         """A :class:`FaceRecord` per face of ``image`` (``faces``, else every face found, in ``region`` if given:
         see :meth:`detect`), aligned from the image itself and embedded in one batch; ``quality``: also eDifFIQA's
         score where the profile has it (the geometric measures are always there)."""
-        found = list(faces) if faces is not None else self.detect(image, min_size, canvas, region)
-        if not found:
-            return []
-        aligned = [self.align(image, f) for f in found]
+        return self.analyse_many([image], [faces], [region], min_size, canvas, quality)[0]
+
+    def analyse_many(self, images, faces=None, regions=None, min_size: float = 0.0, canvas=None,
+                     quality: bool = True) -> list[list[FaceRecord]]:
+        """:meth:`analyse` for several ``images`` at once (the same frame may come several times, with a region
+        each): ``faces`` and ``regions``, if given, hold one entry per image (``None``: found as :meth:`analyse`
+        finds them). The faces of all the images are embedded, and scored by the quality model, in one batch. A list
+        of records per image."""
+        images = list(images)
+        faces = [None] * len(images) if faces is None else list(faces)
+        regions = [None] * len(images) if regions is None else list(regions)
+        if not len(faces) == len(regions) == len(images):
+            raise ValueError(f"{len(images)} images, {len(faces)} lists of faces, {len(regions)} regions: one each")
+        found = [list(f) if f is not None else self.detect(image, min_size, canvas, region)
+                 for image, f, region in zip(images, faces, regions)]
+        pairs = [(k, face) for k, mine in enumerate(found) for face in mine]
+        out: list[list[FaceRecord]] = [[] for _ in images]
+        if not pairs:
+            return out
+        aligned = [self.align(images[k], face) for k, face in pairs]
         stack = crops(aligned)
         embedded = self.embedder.embed(stack)
         fiqa = self.fiqa if quality else None
-        scores = fiqa.score(stack) if fiqa is not None else [None] * len(found)
-        use_norm = self.embedder_spec.norm_quality
-        return [FaceRecord(f, a, embedded.vectors[i], float(embedded.norms[i]),
-                           assess(f, a, scores[i], float(embedded.norms[i]) if use_norm else None))
-                for i, (f, a) in enumerate(zip(found, aligned))]
+        scores = fiqa.score(stack) if fiqa is not None else [None] * len(pairs)
+        spec = self.embedder_spec
+        for i, ((k, face), crop) in enumerate(zip(pairs, aligned)):
+            norm = float(embedded.norms[i])
+            measured = assess(face, crop, scores[i], norm if spec.norm_quality else None)
+            out[k].append(FaceRecord(face, crop, embedded.vectors[i], norm, measured, spec.id))
+        return out

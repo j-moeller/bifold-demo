@@ -34,14 +34,17 @@ checked (**enrolment**):
 
 A person is matched by every photo of theirs and by a **template per pose bin** (the quality-weighted mean of the
 bin's embeddings, made unit length again): :meth:`Gallery.scores` gives each person's score, the best of their
-templates and photos. :meth:`Gallery.match` turns the scores into a name with :attr:`Gallery.decide`, a callable
-``decide(scores, quality)`` (the face's :class:`~.quality.Quality` when the caller has it, else ``None``), by default
+templates and photos; :meth:`Gallery.raw_scores` gives every photo's and template's score (for cohort normalisation
+and calibration). Each takes the embedding's ``model`` too, when known, and refuses one of another model.
+:meth:`Gallery.match` turns the scores into a name with :attr:`Gallery.decide`, a callable ``decide(scores,
+quality)`` (the face's :class:`~.quality.Quality` when the caller has it, else ``None``), by default
 :class:`ThresholdDecision` (the best person, if their score reaches the threshold). The open-set decision with
-calibration per model and face size (step F2) plugs in there.
+calibration per model and face size (step F2) plugs in there. Every score and match names its ``model``.
 
 **Caches.** Embeddings of different models cannot be compared, so they are cached per model in
 ``faces/.embeddings.<model id>.npz``, with the execution provider that made them (CoreML's numbers differ slightly
-from the CPU's: a cache made by another provider is not used); only new or changed photos are looked at again. The
+from the CPU's), the detector whose landmarks aligned the faces and the model file's SHA-256: a cache made by another
+provider, detector or file is not used. Only new or changed photos are looked at again. The
 embeddings are biometric data like the photos: when a photo leaves the folder, or is replaced by another under the
 same name, its entry leaves every model's cache.
 """
@@ -84,24 +87,43 @@ def cache_name(model_id: str) -> str:
 @dataclass(frozen=True)
 class Match:
     """Who a face is: ``name`` (``None``: nobody known), the ``score`` of the closest photo of them and the score of
-    the closest other person (``runner_up``)."""
+    the closest other person (``runner_up``), with the ``model`` the scores are of."""
 
     name: str | None
     score: float
     runner_up: float = -1.0
+    model: str = ""
 
 
 @dataclass(frozen=True)
 class PersonScore:
     """How much a face looks like a known person: ``score``, the best of the person's ``template`` score (the best
     pose bin's) and ``photo`` score (the best single photo's; -1 where there is none), and the ``pose`` bin of the
-    template or photo that scored best."""
+    template or photo that scored best; ``model``: the model the scores are of."""
 
     name: str
     score: float
     template: float
     photo: float
     pose: str
+    model: str = ""
+
+
+@dataclass(frozen=True)
+class RawScores:
+    """Every score of one face against the gallery (:meth:`Gallery.raw_scores`): ``names`` are the known people;
+    per usable photo (duplicates left out) its score, its owner (an index into ``names``), its pose bin and path; per
+    template the same without a path. For cohort normalisation and calibration (step F2)."""
+
+    model: str
+    names: tuple[str, ...]
+    photos: np.ndarray
+    photo_owners: np.ndarray
+    photo_poses: tuple[str, ...]
+    photo_paths: tuple[Path, ...]
+    templates: np.ndarray
+    template_owners: np.ndarray
+    template_poses: tuple[str, ...]
 
 
 class ThresholdDecision:
@@ -112,10 +134,10 @@ class ThresholdDecision:
 
     def __call__(self, scores: list[PersonScore], quality=None) -> Match:
         if not scores:
-            return Match(None, -1.0)
+            return Match(None, -1.0, model=self.gallery.model_id)
         best = scores[0]
         runner_up = scores[1].score if len(scores) > 1 else -1.0
-        return Match(best.name if best.score >= self.gallery.threshold else None, best.score, runner_up)
+        return Match(best.name if best.score >= self.gallery.threshold else None, best.score, runner_up, best.model)
 
 
 @dataclass
@@ -239,6 +261,7 @@ class Gallery:
         self._matrix = np.zeros((0, 0))
         self._owners = np.zeros(0, int)
         self._poses: list[str] = []
+        self._paths: list[Path] = []
         self._templates = np.zeros((0, 0))
         self._template_owners = np.zeros(0, int)
         self._template_poses: list[str] = []
@@ -273,6 +296,14 @@ class Gallery:
 
     def _provider(self) -> str:
         return str(getattr(self.engine, "provider_name", ""))
+
+    def _made_by(self) -> dict[str, str]:
+        """What made the embeddings, kept with the cache: the provider, the detector (its landmarks align the faces)
+        and the model file's SHA-256 (empty for a stand-in engine that does not say)."""
+        engine = self.engine
+        detector = getattr(getattr(engine, "detector_spec", None), "id", "")
+        sha = getattr(getattr(getattr(engine, "embedder_spec", None), "file", None), "sha256", "")
+        return {"provider": self._provider(), "detector": str(detector or ""), "sha256": str(sha or "")}
 
     # -- the folder -------------------------------------------------------------------------------------------
 
@@ -377,6 +408,7 @@ class Gallery:
         self._matrix = np.array([p.vector for p in good]).reshape(len(good), dim)
         self._owners = np.array([index[p.name] for p in good], int)
         self._poses = [p.pose for p in good]
+        self._paths = [p.path for p in good]
         templates, owners, poses = [], [], []
         for name in self._names:
             mine = [p for p in good if p.name == name]
@@ -419,8 +451,11 @@ class Gallery:
         photos: dict[Path, Photo] = {}
         try:
             data = np.load(self._cache_path(), allow_pickle=False)
-            if int(data["version"]) != CACHE_VERSION or str(data["provider"]) != self._provider():
+            made = self._made_by()
+            if int(data["version"]) != CACHE_VERSION or str(data["provider"]) != made["provider"]:
                 return photos  # made differently: everything is looked at again
+            if any(key in data.files and str(data[key]) != made[key] for key in ("detector", "sha256")):
+                return photos  # another detector or another file of the model (caches before these were kept: used)
             rows = {key: data[key] for key in data.files}
         except (OSError, KeyError, ValueError):
             return photos
@@ -453,7 +488,7 @@ class Gallery:
             "faces": np.array([p.faces for p in photos], np.int64),
             "poses": np.array([p.pose for p in photos], str),
             **{key: np.array([getattr(p, key) for p in photos], np.float64) for key in _NUMBERS},
-            "model": np.array(self.model_id), "provider": np.array(self._provider()),
+            "model": np.array(self.model_id), **{key: np.array(value) for key, value in self._made_by().items()},
             "version": np.array(CACHE_VERSION),
         }
         _write(self._cache_path(), rows)
@@ -535,38 +570,51 @@ class Gallery:
                     counts[p.pose or "unknown"] = counts.get(p.pose or "unknown", 0) + 1
             return counts
 
-    def scores(self, vector: np.ndarray) -> list[PersonScore]:
-        """Every known person's score for the face with embedding ``vector``, best first (see the module docs)."""
+    def raw_scores(self, vector: np.ndarray, model: str | None = None) -> RawScores:
+        """Every usable photo's and every template's score for the face with embedding ``vector`` (see
+        :class:`RawScores`). ``model``: the model that made ``vector``, when known (another than the gallery's is a
+        ``ValueError``: embeddings of different models cannot be compared)."""
         with self._lock:
-            names, matrix, owners, poses = self._names, self._matrix, self._owners, self._poses
+            names, matrix, owners, poses, paths = (self._names, self._matrix, self._owners, self._poses,
+                                                   self._paths)
             templates, t_owners, t_poses = self._templates, self._template_owners, self._template_poses
-        if not names:
-            return []
+        mine = self.model_id
+        if model and model != mine:
+            raise ValueError(f"an embedding of {model} for a gallery of {mine}: different models cannot be compared")
         vector = np.asarray(vector, np.float64)
-        if matrix.shape[1] != len(vector):
+        if names and matrix.shape[1] != len(vector):
             raise ValueError(f"an embedding of length {len(vector)} for a gallery of {matrix.shape[1]}: another model?")
-        photo = matrix @ vector
+        photo = matrix @ vector if names else np.zeros(0)
         template = templates @ vector if len(templates) else np.zeros(0)
+        return RawScores(mine, tuple(names), photo, owners.copy(), tuple(poses), tuple(paths), template,
+                         t_owners.copy(), tuple(t_poses))
+
+    def scores(self, vector: np.ndarray, model: str | None = None) -> list[PersonScore]:
+        """Every known person's score for the face with embedding ``vector`` (made by ``model``, when known), best
+        first (see the module docs)."""
+        raw = self.raw_scores(vector, model)
         out = []
-        for k, name in enumerate(names):
-            mine, theirs = photo[owners == k], template[t_owners == k] if len(template) else np.zeros(0)
+        for k, name in enumerate(raw.names):
+            mine = raw.photos[raw.photo_owners == k]
+            theirs = raw.templates[raw.template_owners == k] if len(raw.templates) else np.zeros(0)
             best_photo = float(mine.max()) if len(mine) else -1.0
             best_template = float(theirs.max()) if len(theirs) else -1.0
             if best_template >= best_photo:
-                pose = t_poses[int(np.flatnonzero(t_owners == k)[int(theirs.argmax())])]
+                pose = raw.template_poses[int(np.flatnonzero(raw.template_owners == k)[int(theirs.argmax())])]
             else:
-                pose = poses[int(np.flatnonzero(owners == k)[int(mine.argmax())])]
-            out.append(PersonScore(name, max(best_photo, best_template), best_template, best_photo, pose))
+                pose = raw.photo_poses[int(np.flatnonzero(raw.photo_owners == k)[int(mine.argmax())])]
+            out.append(PersonScore(name, max(best_photo, best_template), best_template, best_photo, pose, raw.model))
         out.sort(key=lambda s: -s.score)
         return out
 
-    def match(self, vector: np.ndarray, quality=None) -> Match:
-        """Who the face with embedding ``vector`` (and ``quality``, when known) is, decided by :attr:`decide`."""
-        return self.decide(self.scores(vector), quality)
+    def match(self, vector: np.ndarray, quality=None, model: str | None = None) -> Match:
+        """Who the face with embedding ``vector`` (and ``quality``, when known) is, decided by :attr:`decide`;
+        ``model``: as for :meth:`scores`."""
+        return self.decide(self.scores(vector, model), quality)
 
-    def score(self, vector: np.ndarray, name: str) -> float:
+    def score(self, vector: np.ndarray, name: str, model: str | None = None) -> float:
         """How much the face with embedding ``vector`` looks like ``name`` (their score; -1: not known)."""
-        return next((s.score for s in self.scores(vector) if s.name == name), -1.0)
+        return next((s.score for s in self.scores(vector, model) if s.name == name), -1.0)
 
     # -- adding people ----------------------------------------------------------------------------------------
 
