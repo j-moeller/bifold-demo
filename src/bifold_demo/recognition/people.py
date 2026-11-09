@@ -184,6 +184,8 @@ class PeopleRecognizer:
         self.profile = getattr(getattr(self.engine, "profile", None), "name", "")
         self.tracks: dict[int, _Track] = {}
         self._source = None
+        self._last_time: float | None = None  # the last frame's time
+        self._reset_pending = False
         self._rate: list[float] = []  # times of the latest embeddings
         self._lock = threading.Lock()
 
@@ -208,15 +210,21 @@ class PeopleRecognizer:
             service.scheduler.priority = self.priority
 
     def reset(self) -> None:
-        """Forget every track (another source, or the scene was reset)."""
-        with self._lock:
-            self.tracker.reset()
-            self.tracks.clear()
-            self.policy.tracks.clear()
-            self._rate.clear()
-            service = self.windows
-            if service is not None:
-                service.request([])
+        """Forget every track and start the budget's clock again (the scene was reset, the recognition switched off).
+        It does not wait for a frame being analysed (the demo's view would stall): the next frame starts afresh. A
+        frame from another source, or whose time is before the last one's, starts afresh too."""
+        self._reset_pending = True
+        service = self.windows
+        if service is not None:
+            service.request([])
+
+    def _start_afresh(self) -> None:
+        self.tracker.reset()
+        self.tracks.clear()
+        self.policy.tracks.clear()
+        self.budget.reset()
+        self._rate.clear()
+        self._reset_pending = False
 
     # -- the windows' order -----------------------------------------------------------------------------------------
 
@@ -241,13 +249,11 @@ class PeopleRecognizer:
     def _process(self, frame, detections) -> PeopleResult:
         started = time.perf_counter()
         timings: dict[str, float] = {}
-        if frame.source != self._source:
-            if self._source is not None:
-                self.tracker.reset()
-                self.tracks.clear()
-                self.policy.tracks.clear()
-            self._source = frame.source
         now = float(frame.time if frame.time is not None else frame.timestamp)
+        went_back = self._last_time is not None and now < self._last_time - 1e-6
+        if self._reset_pending or went_back or (self._source is not None and frame.source != self._source):
+            self._start_afresh()  # (old tracks, names and the budget's clock belong to another time line)
+        self._source, self._last_time = frame.source, now
         refresh = getattr(self.gallery, "refresh", None)
         if refresh is not None:
             refresh(wait=False)  # new photos are enrolled on a worker thread meanwhile

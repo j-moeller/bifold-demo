@@ -341,6 +341,13 @@ class DemoApp:
             " (they follow the people found: D or N)"
         return f"windows on: up to {cfg.max_windows} a frame, {sensor} sensor, {preset.name} camera{need}"
 
+    def _ask_for_windows(self, frame: Frame, result: DetectionResult | None) -> None:
+        """The windows for the frames to come (with ``W`` on): with ``N`` on the tracks ask for them, from the
+        recognition's thread, and a result too old to show leaves their requests standing; else the heads of the
+        people detected (:meth:`_request_windows`)."""
+        if self.windows_on and not (self.recognize_enabled and self.people is not None):
+            self._request_windows(frame, result)
+
     def _request_windows(self, frame: Frame, result: DetectionResult | None) -> None:
         """Ask for windows on the heads of the people in ``result`` (the latest detections of ``frame``'s source); none
         without current detections (detection off, none yet for this source, or too old)."""
@@ -419,8 +426,7 @@ class DemoApp:
                             self.notify(note, 4.0, error=note.startswith("cannot"))
                     result = self._detections_for(frame)
                     people = self._people_for(frame)
-                    if self.windows_on and people is None:  # for the frames to come (with N, the tracks ask)
-                        self._request_windows(frame, result)
+                    self._ask_for_windows(frame, result)
                     self._last_canvas = self._compose(frame, result, people)
                     self.display_rate.tick(time.perf_counter())
                     if cfg.record:
@@ -691,6 +697,8 @@ class DemoApp:
         if scene is not None:
             self._prepare_scene(scene)
             self.scene_source.set_scene(scene)
+            if self.people is not None:
+                self.people.reset()  # (the scene's time starts again: old tracks and names belong to the old one)
             self._update_created(wait=True)  # the created characters again, from its first frame
             self.notify("scene reloaded", 1.5)
 

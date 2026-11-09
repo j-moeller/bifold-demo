@@ -99,8 +99,11 @@ class EmbeddingBudget:
         self.spent = 0
 
     def available(self, now: float) -> int:
-        """Whole embeddings that may be made at ``now`` (the bucket filled since the last call)."""
+        """Whole embeddings that may be made at ``now`` (the bucket filled since the last call). A clock that went back
+        (another source, a scene started again) is taken from where it is now."""
         now = float(now)
+        if self.time is not None and now < self.time:
+            self.time = now
         if self.time is not None and now > self.time:
             self.tokens = min(self.burst, self.tokens + (now - self.time) * self.rate)
         if self.time is None or now > self.time:
@@ -111,6 +114,10 @@ class EmbeddingBudget:
         """Spend ``count`` embeddings (call :meth:`available` first)."""
         self.tokens = max(0.0, self.tokens - count)
         self.spent += count
+
+    def reset(self) -> None:
+        """As new: one embedding at once, the clock not yet read."""
+        self.tokens, self.time = 1.0, None
 
 
 @dataclass(frozen=True)

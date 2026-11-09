@@ -630,6 +630,37 @@ def test_one_identity_per_track_and_one_track_per_identity(calibration):
     assert set(policy.tracks) == {3}
 
 
+def test_a_name_held_while_a_switch_waits_is_given_to_nobody_else(calibration):
+    """Track 1 is named Ada; its evidence then says Ben (to be sustained) while Ada stays above the keep threshold, and
+    track 2's says Ada: one of the two may show "Ada", never both (the review's counter-example)."""
+    policy, people = _policy(calibration, sustain=1.0)
+    first = policy.decide({1: _agg({"Ada": 0.5}, people, size=24.0)}, 0.0)[1]
+    assert (first.state, first.name) == (NAMED, "Ada")
+    for t in (1.0, 1.5):
+        both = policy.decide({1: _agg({"Ada": 0.2, "Ben": 0.5}, people, size=24.0),
+                              2: _agg({"Ada": 0.5}, people, size=24.0)}, t)
+        named = [d.name for d in both.values() if d.state == NAMED]
+        assert len(named) == len(set(named)), both
+        assert both[2].name == "Ada" and both[1].name != "Ada"
+    assert policy.decide({1: _agg({"Ada": 0.2, "Ben": 0.5}, people, size=24.0),
+                          2: _agg({"Ada": 0.5}, people, size=24.0)}, 2.0)[1].name == "Ben"  # (sustained)
+    # without a rival the old name stays shown while the switch waits
+    policy, people = _policy(calibration, sustain=1.0)
+    policy.decide({1: _agg({"Ada": 0.5}, people, size=24.0)}, 0.0)
+    waiting = policy.decide({1: _agg({"Ada": 0.2, "Ben": 0.5}, people, size=24.0)}, 1.0)[1]
+    assert (waiting.state, waiting.name) == (NAMED, "Ada") and waiting.reason.startswith("kept (Ben in")
+
+
+def test_from_unknown_a_name_has_to_be_sustained(calibration):
+    """"Unknown" to a name needs the name held for ``sustain``, also across the frames that wait for it."""
+    policy, people = _policy(calibration, sustain=1.0, sustain_unknown=1.0)
+    states = [policy.decide({1: _agg({"Ada": score}, people, size=16.0)}, t)[1]
+              for t, score in ((0.0, 0.1), (1.0, 0.1), (2.0, 0.5), (2.1, 0.5), (2.5, 0.5), (3.0, 0.5))]
+    assert states[1].state == UNKNOWN
+    assert [d.state for d in states[2:5]] == [UNDECIDED] * 3 and states[2].reason.startswith("waiting: Ada")
+    assert (states[5].state, states[5].name) == (NAMED, "Ada")  # one second after the jump
+
+
 def test_a_new_face_is_judged_against_its_track_only_where_the_calibration_can_tell(calibration):
     policy, _ = _policy(calibration)
     big = calibration.curve(40.0, 0.0)
@@ -832,6 +863,45 @@ def test_the_pipeline_names_known_people_says_unknown_for_strangers_and_waits_fo
     replay = _run(again, engine2, detector2)
     assert [[(p.id, p.state, p.name, p.decision.reason) for p in r.people] for r in results] == \
         [[(p.id, p.state, p.name, p.decision.reason) for p in r.people] for r in replay]
+
+
+def _run_scene(recognizer, engine, detector, times, who=("Ada",), index0=0, source="scene", at=None):
+    from bifold_demo.sources.base import Frame
+
+    out = []
+    for k, t in enumerate(times):
+        image, boxes, faces = _scene(t if at is None else at, who=who, turned=())
+        detector.boxes, engine.faces = boxes, faces
+        frame = _video_frame(image, index0 + k, t) if source == "scene" else Frame(image, index0 + k, t, source)
+        out.append(recognizer.process(frame))
+    return out
+
+
+def _first_named(results):
+    named = [r.time for r in results if any(p.name for p in r.people)]
+    return named[0] if named else None
+
+
+def test_the_recognition_starts_afresh_when_the_clock_goes_back(calibration):
+    """The demo's R (the scene's time from 0 again, the app resets the recognition), a trip to the webcam and back
+    (its clock reads thousands of seconds), and a reloaded scene (time from 0, nothing reset): the budget is not stuck
+    on the old clock, and old tracks do not keep their names on another time line."""
+    rec, engine, detector = _recognizer(calibration)
+    _run_scene(rec, engine, detector, [k / 10 for k in range(200)])
+    rec.reset()
+    again = _run_scene(rec, engine, detector, [k / 10 for k in range(30)], index0=1000)
+    assert _first_named(again) is not None and _first_named(again) <= 1.0
+    assert sum(p.embedded for r in again for p in r.people) >= 4  # (2 a second)
+    rec, engine, detector = _recognizer(calibration)
+    _run_scene(rec, engine, detector, [k / 10 for k in range(20)])
+    _run_scene(rec, engine, detector, [5000.0 + k / 10 for k in range(10)], index0=100, source="webcam", at=2.0)
+    back = _run_scene(rec, engine, detector, [2.0 + k / 10 for k in range(30)], index0=200)
+    assert _first_named(back) is not None and _first_named(back) <= 3.0
+    rec, engine, detector = _recognizer(calibration)  # a reload: Ada named, then a stranger where she stood, t from 0
+    assert _first_named(_run_scene(rec, engine, detector, [k / 10 for k in range(30)], at=0.0)) is not None
+    reload = _run_scene(rec, engine, detector, [k / 10 for k in range(40)], who=("Stranger",), index0=2000, at=0.0)
+    assert not any(p.name for r in reload for p in r.people)
+    assert rec.budget.time == pytest.approx(3.9)
 
 
 def test_a_track_that_turns_out_to_show_someone_else_loses_its_name(calibration):

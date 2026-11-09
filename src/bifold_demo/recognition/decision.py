@@ -328,7 +328,7 @@ class IdentityPolicy:
         memory = self.tracks.get(track)
         if memory is None:
             return
-        if memory.state == NAMED:
+        if memory.state in (NAMED, UNKNOWN):
             memory.dropped = (memory.name, now)
         memory.state, memory.name, memory.since, memory.pending = UNDECIDED, None, now, None
         memory.reset_at = now
@@ -352,11 +352,11 @@ class IdentityPolicy:
             else:
                 scored[track] = self.score(agg.vector, agg.size, agg.yaw, agg.model)
                 proposals[track] = self._propose(scored[track], agg)
-        self._exclusive(proposals, scored)
+        may_keep = self._exclusive(proposals, scored)
         out = {}
         for track, proposal in proposals.items():
             decision = self._settle(track, self.tracks[track], proposal, now, frame, scored.get(track),
-                                    aggregates.get(track), (evidence or {}).get(track, {}))
+                                    aggregates.get(track), (evidence or {}).get(track, {}), may_keep[track])
             out[track] = decision
             if self.log is not None:
                 self.log.add(decision)
@@ -391,39 +391,52 @@ class IdentityPolicy:
         got = scores.of(name) if scores is not None and name else None
         return got is not None and got[1] >= scores.keep
 
-    def _exclusive(self, proposals: dict, scored: dict) -> None:
-        """One identity per track, one track per identity: the claims (names proposed, and names held within their
-        keep threshold) are assigned at the highest summed rarity; a held name that wins is kept, every losing claim
-        becomes "contested" (in ``proposals``, in place)."""
-        claims = {}
+    def _exclusive(self, proposals: dict, scored: dict) -> dict[int, bool]:
+        """One identity per track, one track per identity. A track claims the name its evidence proposes and the name
+        it holds while that stays within its keep threshold (both, when they differ); the claims are assigned at the
+        highest summed rarity (a held name counts ``incumbent`` more). A track whose held name wins keeps it, a track
+        that wins nothing is "contested" (in ``proposals``, in place). Returns per track whether it may go on
+        showing the name it holds while a switch waits to be sustained: only when no other track won that name."""
+        claims: dict[int, list] = {}
         for t, (state, name, _reason, _progress) in proposals.items():
             memory = self.tracks[t]
-            if state == NAMED:
-                claims[t] = (name, False)
-            elif memory.state == NAMED and self._keeps(scored.get(t), memory.name):
-                claims[t] = (memory.name, True)
+            mine = [name] if state == NAMED else []
+            if memory.state == NAMED and memory.name not in mine and self._keeps(scored.get(t), memory.name):
+                mine.append(memory.name)
+            if mine:
+                claims[t] = mine
+        may_keep = {t: False for t in proposals}
         if not claims:
-            return
+            return may_keep
         tracks = sorted(claims)
-        names = sorted({name for name, _held in claims.values()})
+        names = sorted({name for mine in claims.values() for name in mine})
         cost = np.full((len(tracks), len(names)), math.inf)
         for i, t in enumerate(tracks):
-            name, _held = claims[t]
-            rarity = scored[t].of(name)[2]
             memory = self.tracks[t]
-            bonus = self.settings.incumbent if memory.state == NAMED and memory.name == name else 0.0
-            cost[i, names.index(name)] = -(max(rarity, 0.0) + bonus)
+            for name in claims[t]:
+                rarity = scored[t].of(name)[2]
+                bonus = self.settings.incumbent if memory.state == NAMED and memory.name == name else 0.0
+                cost[i, names.index(name)] = -(max(rarity, 0.0) + bonus)
         pairs, _, _ = match(cost, 1.0)  # every claim costs less than 1 (rarities are not negative)
         winners = {tracks[i]: names[j] for i, j in pairs}
-        for t, (name, held) in claims.items():
-            if winners.get(t) != name:
+        for t in tracks:
+            state, name, _reason, _progress = proposals[t]
+            memory = self.tracks[t]
+            held = memory.name if memory.state == NAMED else None
+            won = winners.get(t)
+            others = {n for u, n in winners.items() if u != t}
+            may_keep[t] = held is not None and (won == held or held not in others)
+            if won is None:
                 proposals[t] = (UNDECIDED, None, "contested", 1.0)
-            elif held:
-                proposals[t] = (NAMED, name, "kept", 1.0)
+            elif not (state == NAMED and won == name):  # it won the name it holds, not the one proposed
+                proposals[t] = (NAMED, held, "kept", 1.0)
+        return may_keep
 
-    def _settle(self, track, memory: _Track, proposal, now, frame, scores, agg, described) -> Decision:
+    def _settle(self, track, memory: _Track, proposal, now, frame, scores, agg, described,
+                may_keep: bool = True) -> Decision:
         """Apply hysteresis and sustained switches to ``proposal`` (see the module docs), remember the outcome and
-        make the :class:`Decision`."""
+        make the :class:`Decision`. ``may_keep``: whether the track may go on showing the name it holds (no other
+        track won that name, :meth:`_exclusive`)."""
         s = self.settings
         state, name, reason, progress = proposal
 
@@ -443,11 +456,11 @@ class IdentityPolicy:
             elif state in (NAMED, UNKNOWN):  # another name, or unknown: only when it holds
                 if sustained(state, name, s.sustain):
                     result = (state, name, reason, 1.0)
-                elif self._keeps(scores, held):
+                elif may_keep and self._keeps(scores, held):
                     result = (NAMED, held, f"kept ({waiting(state, name, s.sustain)}?)", 1.0)
                 else:
                     result = (UNDECIDED, None, f"waiting: {waiting(state, name, s.sustain)}", 1.0)
-            elif reason != "contested" and self._keeps(scores, held):
+            elif reason != "contested" and may_keep and self._keeps(scores, held):
                 result = (NAMED, held, "kept", 1.0)
             else:
                 result = (UNDECIDED, None, reason, progress)
@@ -474,8 +487,8 @@ class IdentityPolicy:
             result = (UNDECIDED, None, reason, progress)
         if state == UNDECIDED or result[:2] == (state, name):
             memory.pending = None  # nothing to wait for any more
-        if memory.state == NAMED and result[:2] != (NAMED, memory.name):
-            memory.dropped = (memory.name, now)
+        if memory.state in (NAMED, UNKNOWN) and result[:2] != (memory.state, memory.name):
+            memory.dropped = (memory.name, now)  # (None: it was "unknown"): a name from here has to be sustained
         changed = result[:2] != (memory.state, memory.name)
         if changed:
             memory.state, memory.name, memory.since = result[0], result[1], now

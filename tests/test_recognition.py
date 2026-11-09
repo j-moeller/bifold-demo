@@ -305,6 +305,33 @@ def test_the_demo_names_the_people_in_the_rendered_scene(gl, engine, zidane, tmp
     assert (canvas != frame.image).any()
 
 
+def test_with_n_on_the_tracks_own_the_window_requests_also_when_a_result_is_too_old():
+    """With N and W on, the tracks ask for windows from the recognition's thread; a frame whose result is too old to
+    show (the slow best profile) must not wipe their requests. With N off, the detected people's heads are asked for."""
+    from bifold_demo.app import DemoApp
+    from bifold_demo.sources.base import Frame
+
+    class Service:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, requests):
+            self.calls.append(list(requests))
+
+    app = object.__new__(DemoApp)
+    app.windows_on, app.window_service = True, Service()
+    app.recognize_enabled, app.people = True, object()
+    frame = Frame(np.zeros((48, 64, 3), np.uint8), 7, 1.0, "scene", 3.0)
+    app._ask_for_windows(frame, None)
+    assert app.window_service.calls == []
+    app.recognize_enabled = False
+    app._ask_for_windows(frame, None)
+    assert app.window_service.calls == [[]]  # (no people detected: no windows)
+    app.windows_on = False
+    app._ask_for_windows(frame, None)
+    assert len(app.window_service.calls) == 1
+
+
 def test_n_switches_the_recognition_of_people(gl, tmp_path, monkeypatch):
     from test_pipeline import FakeDetector
 
