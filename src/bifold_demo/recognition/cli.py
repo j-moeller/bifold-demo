@@ -8,6 +8,9 @@
     bifold-faces who photo.jpg                 who the faces in a photo are
     bifold-faces check [--profile P | --model ID ... | --all] [--speed] [--photos DIR] [--pack lfw.bin ...]
                                                check the models: files, graphs, speed, colour order, accuracy
+    bifold-faces calibrate [--profiles P ...] [--characters DIR] [--avatars NAME ...] [--refit]
+                                               calibrate the decisions of each profile's recogniser from renders of
+                                               avatars (writes models/calibration/<model>.json)
     bifold-faces landmarks [AVATAR ...]        MediaPipe's face landmarks on avatars' heads (head textures, stage 0)
     bifold-faces register PHOTO[:VIEW] ... --avatar NAME [--out DIR] [--segment]
                                                register photos of a head to an avatar's head (stage 1)
@@ -179,6 +182,99 @@ def cmd_check(args) -> int:
     return 1 if failed else 0
 
 
+def cmd_calibrate(args) -> int:
+    """Make each profile's recogniser's calibration from renders of avatars (see :mod:`.calibrate`)."""
+    import datetime
+
+    from ..characters.library import CharacterLibrary
+    from . import calibrate as cal
+    from .engine import FaceEngine
+    from .gallery import Gallery
+
+    folder = models.models_dir(args.models)
+    data = Path(args.data) if args.data else folder / "calibration" / "data"
+    engines: dict[str, FaceEngine] = {}
+    for name in args.profiles or list(registry.PROFILES):
+        engine = FaceEngine(args.models, download=not args.offline, profile=name)
+        for note in engine.notes:
+            print(f"[faces] {note}", file=sys.stderr)
+        engines.setdefault(engine.model_id, engine)
+    detectors = {engine.detector_spec.id: engine.detector for engine in engines.values()}
+    paths = {key: data / f"probes.{key}.npz" for key in detectors}
+    if args.refit and all(path.is_file() for path in paths.values()):
+        probes = {key: cal.Probes.load(path) for key, path in paths.items()}
+        print(f"[calibrate] the faces rendered before, from {data}")
+    else:
+        library = CharacterLibrary(args.characters) if args.characters else CharacterLibrary()
+        names = args.avatars or sorted(library.available())
+        if len(names) < 6:
+            raise ValueError(f"{len(names)} avatars are too few to calibrate (prepare more: bifold-characters fetch)")
+        print(f"[calibrate] {len(names)} avatars from {library.folder}: their gallery and "
+              f"{len(cal.EYE_PX) * len(cal.YAWS) * len(cal.PRESETS)} windows each")
+        probes = cal.render(library, names, detectors, data / "gallery", seed=args.seed)
+        for key, found in probes.items():
+            found.save(paths[key])
+    status = 0
+    for model_id, engine in engines.items():
+        found = probes[engine.detector_spec.id]
+        vectors, fiqa = _embedded(engine, found, data / f"embeddings.{model_id}.npz", args.refit)
+        faces = cal.faces(found, vectors, found.weights(fiqa))
+        gallery = Gallery(data / "gallery", engine)
+        gallery.refresh(force=True)
+        rows = cal.GalleryRows.of(gallery)
+        print(f"[calibrate] {model_id}: {int(faces.single.sum())} faces and {int((~faces.single).sum())} averages of "
+              f"{len(set(faces.people.tolist()))} avatars ({found.found.mean():.0%} of the windows' faces found); "
+              f"{len(rows.rows)} gallery photos and templates")
+        kinds = cal.KINDS if args.normalisation == "auto" else ("none", args.normalisation)
+        results = cal.check(model_id, faces, rows, kinds=tuple(dict.fromkeys(kinds)), splits=args.splits,
+                            seed=args.seed)
+        kind = cal.choose(results, kinds=tuple(dict.fromkeys(kinds))) if args.normalisation == "auto" \
+            else args.normalisation
+        for k, by_target in results.items():
+            cells = ", ".join(f"{float(t):.1%}: {e['fpir']:.2%} ({e['fpir_single']:.2%} single), named "
+                              f"{e['tpir']:.1%}" for t, e in by_target.items())
+            print(f"  held out, {k:>6}: target {cells}{'   <- kept' if k == kind else ''}")
+        made = {"by": "bifold-faces calibrate", "date": datetime.date.today().isoformat(),
+                "avatars": sorted(set(faces.people.tolist())), "detector": engine.detector_spec.id,
+                "sha256": engine.embedder_spec.file.sha256, "eye_px": list(cal.EYE_PX), "yaws": list(cal.YAWS),
+                "presets": list(cal.PRESETS), "gallery": {"yaws": list(cal.GALLERY_YAWS),
+                                                          "eye_px": cal.GALLERY_EYE_PX},
+                "faces": int(faces.single.sum()), "averages": int((~faces.single).sum()),
+                "check": {k: {t: {m: round(v, 5) if isinstance(v, float) else v for m, v in e.items()}
+                              for t, e in by_target.items()} for k, by_target in results.items()}}
+        cohort_set = cal.cohort_faces(faces, seed=args.seed) if kind != "none" else None
+        calibration = cal.fit(model_id, faces, rows, kind, cohort_set, made)
+        cohort = cal.cohort_of(model_id, cohort_set) if cohort_set is not None else None
+        for path in cal.write(model_id, calibration, cohort, args.models):
+            print(f"[calibrate] wrote {path}")
+        for line in cal.bins_table(calibration):
+            print(line)
+        cal.save_report(data / f"report.{model_id}.json", {"model": model_id, "normalisation": kind,
+                                                            "check": results})
+    return status
+
+
+def _embedded(engine, probes, path: Path, reuse: bool):
+    """``(unit embeddings, eDifFIQA-T scores or None)`` of ``probes``' faces (kept in ``path``)."""
+    import numpy as np
+
+    if reuse and path.is_file():
+        with np.load(path, allow_pickle=False) as data:
+            fiqa = data["fiqa"] if "fiqa" in data.files else None
+            return data["vectors"].astype(np.float64), fiqa
+    vectors = np.zeros((len(probes.crops), engine.dim), np.float32)
+    fiqa = np.zeros(len(probes.crops), np.float32) if engine.fiqa is not None else None
+    rows = np.flatnonzero(probes.found)
+    for start in range(0, len(rows), 32):
+        part = rows[start:start + 32]
+        vectors[part] = engine.embedder.embed(probes.crops[part]).vectors
+        if fiqa is not None:
+            fiqa[part] = engine.fiqa.score(probes.crops[part])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, vectors=vectors, **({"fiqa": fiqa} if fiqa is not None else {}))
+    return vectors.astype(np.float64), fiqa
+
+
 def cmd_who(args) -> int:
     gallery = _gallery(args)
     gallery.refresh(force=True)
@@ -243,6 +339,25 @@ def main(argv=None) -> int:
                        help="test packs (lfw.bin, cfp_fp.bin, agedb_30.bin) for the published-accuracy check")
     check.add_argument("--json", default=None, metavar="FILE", help="also write the results as JSON")
     check.set_defaults(run=cmd_check)
+    calibrate = sub.add_parser("calibrate", help="calibrate the decisions from renders of avatars")
+    calibrate.add_argument("--profiles", nargs="+", default=None, choices=tuple(registry.PROFILES), metavar="P",
+                           help="calibrate these profiles' recognisers (default: all three)")
+    calibrate.add_argument("--characters", default=None, metavar="DIR",
+                           help="the avatars (default: $BIFOLD_CHARACTERS); avatars not in the fair's library "
+                                "keep the fair a fair check")
+    calibrate.add_argument("--avatars", nargs="+", default=None, metavar="NAME", help="only these avatars")
+    calibrate.add_argument("--data", default=None, metavar="DIR",
+                           help="where the renders, faces and embeddings are kept (default: "
+                                "models/calibration/data)")
+    calibrate.add_argument("--refit", action="store_true",
+                           help="use the faces and embeddings made before (no rendering)")
+    calibrate.add_argument("--normalisation", choices=("auto", "none", "tnorm", "asnorm"), default="auto",
+                           help="score normalisation (default auto: kept only when the held-out check finds it "
+                                "names more at the same false-alarm rate)")
+    calibrate.add_argument("--splits", type=int, default=10, help="random halvings of the avatars for the check")
+    calibrate.add_argument("--seed", type=int, default=0, help="the seed of the places and the halvings")
+    calibrate.add_argument("--offline", action="store_true", help="do not download missing models")
+    calibrate.set_defaults(run=cmd_calibrate)
     from ..characters.headtex.cli import add_commands
 
     add_commands(sub)

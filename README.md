@@ -883,9 +883,13 @@ runner-up by a margin, and enough good evidence has been seen (at least two
 faces, together worth two frontal faces of 24 pixels between the eyes, or one
 of 40). They are **unknown** when enough good evidence has been seen and the
 best score stays (a second) below the *reject* threshold: the score a known
-person's face of that quality falls below only 2 % of the time. Everything else
-is **not decided yet**: a turned or tiny face (whose known and unknown scores
-cannot be told apart) is never called unknown, it waits. A named person keeps
+person's face of that quality falls below only 2 % of the time, and is one
+that strangers' best scores often reach. Everything else is **not decided
+yet**: a turned or tiny face (whose known and unknown scores cannot be told
+apart) is never called unknown, it waits; so does a face unlike everyone known
+and unlike strangers too (a known person's face from photos painted on an
+avatar scores lower against their photos than the renders the calibration was
+made from). A named person keeps
 their name while their score stays within a factor of ten of the accept
 threshold (hysteresis: names do not flicker); switching to another name, or to
 unknown, needs that name's threshold and margin held for a second. A name is
@@ -903,11 +907,39 @@ measured by the face's height, which a turned head does not shrink) and yaw: a
 score becomes a *rarity*, how rarely strangers reach it (`-log10` of their
 rate), the same currency for every model, so the same target gives the same
 behaviour in every profile. A calibration is kept per model in
-`models/calibration/<model>.json`; without one a model gets provisional
+`models/calibration/<model>.json` (else the package's own, in
+`recognition/calibrations/`), and without any a model gets provisional
 thresholds from its LFW threshold (one false match in a thousand pairs of
-strangers), which never say "unknown". Scores can be normalised against a
-*cohort* of faces that are not in the gallery (T-norm, AS-norm), when the
-calibration says so.
+strangers), which never say "unknown". Scores can be normalised
+against a *cohort* of faces that are not in the gallery (T-norm, AS-norm),
+when the calibration says so.
+
+**Making a calibration.** Calibrations are made only from data that may be
+shipped: renders of the Rocketbox avatars (MIT), never photos of people (those
+and LFW may only check one):
+
+```bash
+bifold-faces calibrate                         # every profile's recogniser, from every prepared avatar
+bifold-faces calibrate --profiles licensed --characters ~/avatars   # one profile, another character library
+bifold-faces calibrate --refit                 # again from the faces rendered before (no rendering)
+```
+
+Each avatar is one identity. Its "photos" for the gallery are windows of the
+virtual sensor on its head in the fair's hall (100 pixels between the eyes,
+the head turned -25, 0 and 25 degrees); its faces as the live pipeline sees
+them are windows with 8 to 64 pixels between the eyes, the head turned up to
+40 degrees, through an ideal camera and the `budget 1080p` preset, at a few
+places in the hall, found, aligned and embedded as live, singly and averaged
+in twos and threes as a track's evidence is. Every face is scored against every
+avatar's gallery: the same avatar gives the mated scores, the others the
+non-mated ones. The command also checks itself: the avatars are halved again
+and again, one half calibrates, the other is split into known people and
+strangers, and the false-alarm rate asked for is compared with the one
+measured, without normalisation and with T-norm and AS-norm (a normalisation
+is kept only when it names more people at the same rate). Calibrations made
+from avatars that are not in the fair's library (`--characters`) keep the
+fair a fair check of them. The renders and embeddings are kept in
+`models/calibration/data/` (about 300 MB) for `--refit`.
 
 **The budget per profile** (embeddings a second for everyone, on a four-core
 CPU like the development machine's; `--embed-rate` sets another): `best`

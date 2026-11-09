@@ -41,6 +41,7 @@ from bifold_demo.recognition.evidence import (
 from bifold_demo.recognition.gallery import RawScores
 from bifold_demo.recognition.heads import BOX_PER_EYES, FaceSighting, HeadModel, assign_faces, face_size, find_faces
 from bifold_demo.recognition.quality import Quality
+from bifold_demo.recognition.truth import Outcomes, PersonTruth
 
 
 def _face(middle, eyes, score=0.9):
@@ -505,6 +506,14 @@ def test_unknown_needs_good_evidence_held_below_the_reject_threshold(calibration
     # nor a turned face whose evidence is thin
     policy, people = _policy(calibration)
     assert policy.decide({1: _agg({}, people, weight=0.3)}, 0.0)[1].reason == "collecting"
+    # nor a face below the reject threshold whose best score strangers seldom reach (a known person's face from
+    # photos on an avatar scores lower against their photos than the renders the calibration comes from)
+    policy, people = _policy(calibration, sustain_unknown=0.0)
+    odd = policy.decide({1: _agg({"Ada": 0.2}, people, size=40.0)}, 0.0)[1]
+    assert odd.raw < odd.reject and odd.raw < odd.accept
+    assert (odd.state, odd.reason) == (UNDECIDED, "unlike strangers too")
+    usual = policy.decide({2: _agg({"Ada": 0.05}, people, size=40.0)}, 0.0)[2]
+    assert usual.state == UNKNOWN
 
 
 def test_a_named_track_keeps_its_name_down_to_the_keep_threshold(calibration):
@@ -581,6 +590,13 @@ def test_a_track_found_to_show_someone_else_loses_its_name_at_once(calibration):
     fresh = policy.decide({1: _agg({"Ben": 0.5}, people)}, 1.1)[1]
     assert fresh.state == UNDECIDED and fresh.reason.startswith("waiting: Ben")  # not straight to another name
     assert policy.decide({1: _agg({"Ben": 0.5}, people)}, 2.1)[1].name == "Ben"
+    # after a reset the old name is gone, even where the new evidence would have kept it (above keep, below accept)
+    policy, people = _policy(calibration)
+    assert policy.decide({1: _agg({"Ada": 0.5}, people, size=16.0)}, 0.0)[1].name == "Ada"
+    assert policy.decide({1: _agg({"Ada": 0.25}, people, size=16.0)}, 1.0)[1].name == "Ada"  # kept, normally
+    policy.reset(1, 1.5)
+    after = policy.decide({1: _agg({"Ada": 0.25}, people, size=16.0)}, 2.0)[1]
+    assert (after.state, after.changed) == (UNDECIDED, False)
 
 
 def test_decisions_are_logged_for_the_evaluation(calibration, tmp_path):
@@ -739,7 +755,7 @@ def test_the_pipeline_names_known_people_says_unknown_for_strangers_and_waits_fo
     ada, stranger, ben = (last[i] for i in sorted(last))
     assert (ada.state, ada.name) == (NAMED, "Ada")
     assert stranger.state == UNKNOWN
-    assert (ben.state, ben.decision.reason) == (UNDECIDED, "no face yet")  # turned away all along: never a guess
+    assert (ben.state, ben.decision.reason) == (UNDECIDED, "no face found")  # turned away all along: no guess
     assert ada.face is not None and ada.face.source == "frame" and ben.face is None
     # the budget: about 2 embeddings a second for everyone (one at once), decided tracks re-checked only now and then
     assert engine.embedded <= 2 * 4 + 1
@@ -802,3 +818,152 @@ def test_the_tracks_ask_for_windows_and_their_faces_come_from_the_windows(calibr
     low = WindowRequest(2, box=(0, 0, 10, 30), priority=1.0)
     assert recognizer.priority(high, 0) > recognizer.priority(low, 0)
     assert recognizer.priority(low, 41) > recognizer.priority(high, 0)
+
+
+def test_a_webcams_windows_are_cut_from_its_full_picture_and_serve_the_same_way(calibration):
+    """A real camera: the frame is a 1280x720 copy of a 2560x1440 picture, and the window service cuts the tracks'
+    windows from the full picture (``WindowService.for_image``, real window geometry): the faces found there map back
+    to the frame and are aligned from the full picture's pixels."""
+    from bifold_demo.sensor import WindowService
+    from bifold_demo.sources.base import Frame
+
+    service = WindowService(max_windows=4)
+    service.bind((1280, 720))
+    recognizer, engine, detector = _recognizer(calibration, service=service, rate=5.0)
+    image, boxes, faces = _scene(0.0, who=("Ada",), turned=())
+    full = cv2.resize(image, (2560, 1440), interpolation=cv2.INTER_CUBIC)
+    detector.boxes, engine.faces = boxes, faces
+    recognizer.process(_video_frame(image, 0, 0.0))  # the track asks for a window
+    assert [r.tag for r in service.requests] == [1]
+    frame = Frame(image, 1, 0.6, "webcam")  # (a camera: no scene time; the clock is its own)
+    frame.windows = service.for_image(full, frame)
+    [window] = frame.windows
+    assert window.window.scale == pytest.approx(2.0) and window.time is None
+    x0, y0 = window.view_rect[:2]
+    engine.windows[id(window.image)] = (np.array([x0, y0]), window.window.scale)
+    result = recognizer.process(frame)
+    ada = result.people[0]
+    assert ada.face.source == "window" and ada.embedded
+    assert np.allclose(ada.face.face.points, faces[0].points, atol=0.5)  # back in the frame's pixels
+    assert ada.face.size == pytest.approx(2.0 * face_size(faces[0]), rel=0.02)  # aligned from the full picture
+
+
+# -- scoring decisions against the truth ------------------------------------------------------------------------------
+
+
+def _truth(name, avatar, yaw=0.0, eyes=10.0, covered=False):
+    return PersonTruth(name, avatar, (0, 0, 10, 30), 4.0, ((0, 0), (1, 0)), eyes, abs(yaw), yaw, 0.0,
+                       eyes_covered=covered)
+
+
+class _D:
+    def __init__(self, state, name=None):
+        self.state, self.name = state, name
+
+
+def test_outcomes_count_names_per_segment_from_when_the_face_was_shown():
+    outcomes = Outcomes(known={"Ada", "Ben"})
+    timeline = [  # (time, Ada's yaw, Ada's decision, the stranger's decision)
+        (0.0, 80.0, _D("undecided"), _D("undecided")),  # Ada turned away: not shown yet
+        (0.5, 10.0, _D("undecided"), _D("undecided")),  # shown from here
+        (1.0, 10.0, _D("undecided"), _D("unknown")),
+        (2.0, 10.0, _D("named", "Ada"), _D("unknown")),  # named 1.5 s after the face was shown
+        (3.0, 10.0, _D("named", "Ada"), _D("named", "Ben")),  # the stranger wrongly named
+    ]
+    for t, yaw, ada, stranger in timeline:
+        truth = [_truth("p1", "Ada", yaw), _truth("p2", "Zoe")]
+        outcomes.update(t, truth, {"p1": 1, "p2": 2}, {1: ada, 2: stranger})
+    ada, zoe = outcomes.segments[("p1", 1)], outcomes.segments[("p2", 2)]
+    assert ada.first_shown == 0.5 and ada.shown == pytest.approx(2.5) and ada.correct_at == 2.0
+    assert ada.named_within(1.5) and not ada.named_within(1.0) and ada.known and not zoe.known  # (from 0.5 s)
+    assert zoe.wrong == ("Ben",) and zoe.unknown_at == 1.0 and zoe.named_at == 3.0
+    summary = outcomes.summary(shown=1.0)
+    assert summary["named_within"] == {"2.0": 1.0, "5.0": 1.0} and summary["time_to_name"]["median"] == 1.5
+    assert summary["fpir"] == 1.0 and summary["called_unknown"] == 1.0 and summary["confused"] == 0.0
+    # another track for Ada (a new segment); a face hidden behind someone does not count as shown
+    outcomes.update(4.0, [_truth("p1", "Ada", covered=True)], {"p1": 7}, {7: _D("undecided")})
+    outcomes.update(5.0, [_truth("p1", "Ada", covered=True)], {"p1": 7}, {7: _D("unknown")})
+    later = outcomes.segments[("p1", 7)]
+    assert later.first_shown is None and later.unknown_at == 5.0
+    assert outcomes.summary(shown=0.0)["unknown"] == 0.0  # (never shown: not eligible even at 0 s)
+    assert outcomes.summary(shown=10.0)["known_eligible"] == 0 and outcomes.summary(shown=10.0)["named"] is None
+
+
+# -- the calibration builder ------------------------------------------------------------------------------------------
+
+
+def _avatar_world(avatars=12, per=40, dim=32, seed=5, spread=0.55):
+    """Made-up faces of ``avatars`` identities (``per`` faces each at swept sizes), and a gallery of each: an
+    identity direction plus noise that grows as faces get smaller, and a part all faces share."""
+    from bifold_demo.recognition.calibrate import Faces, GalleryRows
+
+    rng = np.random.default_rng(seed)
+    common = rng.normal(size=dim)
+    common /= np.linalg.norm(common)
+    ids = rng.normal(size=(avatars, dim))
+    ids /= np.linalg.norm(ids, axis=1, keepdims=True)
+    names = [f"A{k:02d}" for k in range(avatars)]
+    vectors, people, sizes = [], [], []
+    for k, name in enumerate(names):
+        for j in range(per):
+            size = [9.0, 12.0, 16.0, 24.0, 34.0, 50.0, 70.0][j % 7]
+            noise = spread * 12.0 / size
+            v = ids[k] + 0.5 * common + noise * rng.normal(size=dim) / math.sqrt(dim)
+            vectors.append(v / np.linalg.norm(v))
+            people.append(name)
+            sizes.append(size)
+    rows = ids + 0.5 * common
+    rows /= np.linalg.norm(rows, axis=1, keepdims=True)
+    second = rows + 0.4 * rng.normal(size=rows.shape) / math.sqrt(dim)  # a second photo of each, a little off
+    second /= np.linalg.norm(second, axis=1, keepdims=True)
+    faces = Faces(np.array(vectors), np.array(people), np.array(sizes), np.zeros(len(sizes)),
+                  np.ones(len(sizes), bool), np.array(sizes))
+    return faces, GalleryRows(np.vstack([rows, second]), np.array(names + names))
+
+
+def test_the_calibration_builder_scores_faces_against_galleries_with_their_own_left_out_of_the_cohort():
+    from bifold_demo.recognition.calibrate import fit, scores
+
+    faces, gallery = _avatar_world()
+    raw, people = scores(faces, gallery)
+    assert people == sorted(set(gallery.owners.tolist())) and raw.shape == (len(faces.vectors), len(people))
+    both = faces.vectors @ gallery.rows.T  # a person's score is the best of their photos (two each here)
+    assert np.allclose(raw[:, 4], both[:, gallery.owners == people[4]].max(axis=1))
+    own = np.array([people.index(p) for p in faces.people])
+    assert (raw.argmax(axis=1) == own).mean() > 0.9  # the made-up faces are recognisable
+    t, _ = scores(faces, gallery, "tnorm", faces)
+    # T-norm with the face's own avatar and the gallery person left out of the cohort: by hand for one face and person
+    k, j = 3, 5
+    keep = (faces.people != faces.people[k]) & (faces.people != people[j])
+    cohort_scores = faces.vectors[keep] @ faces.vectors[k]
+    expected = (raw[k, j] - cohort_scores.mean()) / cohort_scores.std()
+    assert t[k, j] == pytest.approx(expected, rel=1e-6)
+    a, _ = scores(faces, gallery, "asnorm", faces)
+    assert np.isfinite(a).all() and (a.argmax(axis=1) == own).mean() > 0.9
+    calibration = fit("m", faces, gallery, made={"by": "a test"})
+    assert calibration.model == "m" and calibration.normalisation == "none"
+    big, small = calibration.curve(60.0, 0.0), calibration.curve(9.0, 0.0)
+    assert big.mated_quantile(0.5) > small.mated_quantile(0.5)  # bigger faces score higher against their own
+
+
+def test_the_held_out_check_measures_the_false_alarm_rate_asked_for(monkeypatch):
+    from bifold_demo.recognition import calibration as calibration_module
+    from bifold_demo.recognition.calibrate import check, choose
+
+    monkeypatch.setattr(calibration_module, "MIN_NONMATED", 50)  # (a small made-up world)
+    monkeypatch.setattr(calibration_module, "MIN_MATED", 10)
+    faces, gallery = _avatar_world(avatars=16, per=42)
+    results = check("m", faces, gallery, kinds=("none", "tnorm"), splits=4, targets=(0.1,))
+    for kind in ("none", "tnorm"):
+        entry = results[kind]["0.1"]
+        assert entry["strangers"] > 0 and entry["known"] > 0
+        assert entry["strangers"] + entry["known"] == 4 * 8 * 42  # only the held-out half's faces are searched
+        assert entry["fpir"] <= 0.3, (kind, entry)  # near the target (few identities: a coarse check)
+        assert entry["tpir"] > 0.3 and entry["wrong"] <= entry["named"]
+    assert choose(results, 0.1, kinds=("none", "tnorm")) in ("none", "tnorm")
+    worse = {"none": {"0.01": {"fpir": 0.01, "tpir": 0.8}}, "tnorm": {"0.01": {"fpir": 0.01, "tpir": 0.805}},
+             "asnorm": {"0.01": {"fpir": 0.05, "tpir": 0.95}}}
+    assert choose(worse) == "none"  # half a point more is no reason; a normalisation missing the target is out
+    better = {"none": {"0.01": {"fpir": 0.01, "tpir": 0.8}}, "tnorm": {"0.01": {"fpir": 0.012, "tpir": 0.85}},
+              "asnorm": {"0.01": {"fpir": 0.01, "tpir": 0.83}}}
+    assert choose(better) == "tnorm"

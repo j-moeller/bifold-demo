@@ -18,7 +18,10 @@ user's target false-alarm rate per decision ``fpir``, a name needs the rarity ``
   score a known person's face of that quality falls below only ``reject_miss`` of the time: the calibration's mated
   curve) for ``sustain_unknown`` seconds, in a bin where that threshold is *decisive*: above all but a tenth of
   strangers' scores (a rarity of ``decisive``). Where known and unknown faces cannot be told apart that well (turned
-  or tiny faces), nothing is called unknown;
+  or tiny faces), nothing is called unknown. The best score must also be one that strangers' best scores reach at
+  least ``stranger_like`` of the time (with the gallery's size): a face unlike everyone known *and* unlike strangers
+  (a known person's face from photos painted on an avatar, whose own scores are lower than the calibration's renders
+  give) is "not decided yet", not "unknown";
 * **not decided yet** otherwise, with how far along it is (the evidence gathered against what is needed) and why
   (no face yet, too little evidence, between the thresholds, contested by another track).
 
@@ -68,6 +71,7 @@ class DecisionSettings:
     ``keep``: decades of rarity; ``reject_miss``: how often a known person's face may score below the reject
     threshold; ``switch_miss``: how often a new face of the same person may score below the floor that says the track
     shows someone else; ``decisive``: the rarity the reject threshold (and that floor) needs among strangers' scores;
+    ``stranger_like``: how often strangers' best scores must reach a best score called unknown;
     ``min_weight``, ``min_frames``: enough good evidence (summed quality weights, :attr:`~.quality.Quality.weight`:
     two frontal faces of 24 pixels between the eyes, or one of 40, and at least two frames; the calibration's bins
     already count how good the faces are); ``sustain``: seconds a switch to another name or to
@@ -80,6 +84,7 @@ class DecisionSettings:
     reject_miss: float = 0.02
     switch_miss: float = 0.005
     decisive: float = 1.0
+    stranger_like: float = 0.25
     min_weight: float = 0.5
     min_frames: int = 2
     sustain: float = 1.0
@@ -372,7 +377,9 @@ class IdentityPolicy:
         if scores.reject is None or not scores.decisive:
             return UNDECIDED, None, "faces of this quality cannot be told apart", 1.0
         if scores.normalised[0] < scores.reject:
-            return UNKNOWN, None, "below reject", 1.0
+            if scores.rarity[0] <= -math.log10(per_person(s.stranger_like, len(scores.names))):
+                return UNKNOWN, None, "below reject", 1.0
+            return UNDECIDED, None, "unlike strangers too", 1.0
         return UNDECIDED, None, "between thresholds", 1.0
 
     def _keeps(self, scores: Scores | None, name: str | None) -> bool:

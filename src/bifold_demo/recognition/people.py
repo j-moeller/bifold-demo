@@ -56,6 +56,9 @@ from .heads import FaceSighting, HeadModel, assign_faces, face_size, find_faces
 from .quality import assess
 
 PERSON_SCORE = 0.1  # the person detector's lowest score the tracker sees (its second pass takes weak boxes)
+# ByteTrack's thresholds suit YOLOX on MOT17; YOLO26n scores the fair's people further away 0.1-0.5 (0.83-0.91 near
+# the camera), so tracks start from 0.45 and the first pass takes boxes from 0.35, the demo's own threshold
+PERSON_TRACKING = TrackerSettings(high=0.35, new=0.45)
 SEARCHES = 6  # head regions looked at in a frame's own pixels (each about 12 ms with SCRFD here, 3 ms with YuNet)
 MIN_FRAME_EYES = 3.0  # pixels between the eyes a face needs in the frame to be looked for there (else: a window)
 WINDOW_FACE_PX = 64.0  # pixels between the eyes asked of a window (the embedders' crops have 35)
@@ -169,7 +172,7 @@ class PeopleRecognizer:
         self.calibration = calibration
         log = DecisionLog(keep=2000) if log is None else log
         self.policy = IdentityPolicy(gallery, calibration, cohort, settings, log)
-        self.tracker = PersonTracker(tracker)
+        self.tracker = PersonTracker(tracker or PERSON_TRACKING)
         self.head = head or HeadModel()
         self.gate = gate or QualityGate()
         self.budget = EmbeddingBudget(rate or rate_for(self.model))
@@ -272,6 +275,9 @@ class PeopleRecognizer:
         windows = list(getattr(frame, "windows", None) or ())
         windowed = {w.tag for w in windows}
         regions = self._searches(active, windowed, now)
+        for track in active:  # looked at in this frame: what it waits for now (a face found says better below)
+            if track.id in regions or track.id in windowed:
+                self.tracks[track.id].waiting = "no face found"
         found = find_faces(self.engine, frame.image, regions, windows) if (regions or windows) else []
         sightings = assign_faces(found, boxes_now, self.head)
         mine = {s.track: s for s in sightings if s.track is not None}

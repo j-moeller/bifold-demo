@@ -42,6 +42,7 @@ where = ["src"]
 "bifold_demo.characters" = ["*.json"]
 "bifold_demo.characters.outfit" = ["*.json", "overrides/*.json"]
 "bifold_demo.characters.headshape" = ["*.json"]
+"bifold_demo.recognition" = ["calibrations/*.json", "calibrations/*.npz"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
