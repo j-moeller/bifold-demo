@@ -388,6 +388,30 @@ class PersonCache:
             shutil.rmtree(path, ignore_errors=True)
 
 
+def _head_texture_size(model) -> int | None:
+    """The side of ``model``'s largest head texture (what the head-texture stages work at: ``fuse.texture_size``),
+    read from an image file's header rather than decoded."""
+    from ..face_photo import head_layout
+
+    layout = head_layout(model)
+    if layout is None:
+        return None
+    prim = model.primitives[layout.primitive]
+    spec = getattr(prim, "full_texture", prim.texture)
+    if isinstance(spec, (str, os.PathLike)):
+        from PIL import Image
+
+        try:
+            with Image.open(spec) as image:
+                return int(max(image.size))
+        except OSError:
+            return None
+    shape = getattr(spec, "shape", None)
+    if shape is None and hasattr(spec, "width"):
+        shape = (spec.height, spec.width)
+    return int(max(shape[:2])) if shape is not None else None
+
+
 def person_textures(photos, model, *, views=None, focals=None, cache=None, inpainter=None, check: bool = False,
                     engine=None, renderer=None, **options) -> PersonTextures:
     """Stages 0 to 7: ``photos`` of a person (paths or BGR images) to the textures of ``model`` (see the module
@@ -401,9 +425,9 @@ def person_textures(photos, model, *, views=None, focals=None, cache=None, inpai
     store = PersonCache(cache) if cache is not None and not isinstance(cache, PersonCache) else cache
     photos = list(photos)
     key = None
-    if store is not None:
+    if store is not None:  # (the size the stages work at: after a library is prepared at 2048, made again at 2048)
         key = store.key(photos, model, views=views, inpainter=getattr(inpainter, "name", None),
-                        size=options.get("size"))
+                        size=options.get("size") or _head_texture_size(model))
         found = store.get(key)
         if found is not None:
             return found

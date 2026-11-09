@@ -256,6 +256,9 @@ def _add_3d_people_if_ready(scene: Scene) -> bool:
                           f"{fetch_command('--avatars --clips basic', library.folder)}); showing 2D cut-outs instead")
                 return False
             add_3d_people(scene, library, random.Random(CROWD_SEED))
+            hint = getattr(library, "upgrade_hint", lambda: None)()
+            if hint:
+                print(f"[fair] {hint}")
             return True
         except Exception as error:  # noqa: BLE001 - e.g. a damaged file in the character cache: the demo still runs
             if attempt == 1:  # the library leaves out an avatar whose files turn out to be damaged: try without it

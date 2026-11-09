@@ -1505,8 +1505,11 @@ times slower; the maps take 107 MiB for the 20 heads, the 2048 textures 43
 MiB per head drawn with them.
 
 **Older caches** (format 1, without maps) still load and draw as before;
-`bifold-characters list` names them, and `fetch` makes them again with the
-maps (it downloads their files again). To upgrade a library in place:
+`bifold-characters list` and the fair, when it starts, name them, and `fetch`
+makes them again with the maps (it downloads their files again). Faces from
+photos that the cast keeps (`faces/.headtex`) are made again at the new size
+after an upgrade: their key holds the size of the head's largest texture. To
+upgrade a library in place:
 
 ```bash
 bifold-characters fetch --avatars NAME ... --clips basic --delete-raw   # the avatars it names

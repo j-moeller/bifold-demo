@@ -323,6 +323,13 @@ def test_a_persons_textures_are_made_once_for_the_same_photos(tmp_path, monkeypa
         png.write_bytes(b"damaged")
     stages.person_textures(photos, model, cache=cache)
     assert len(calls) == 3
+    model.primitives[0].texture = np.zeros((128, 128, 4), np.uint8)  # the library prepared again, larger: made again
+    stages.person_textures(photos, model, cache=cache)
+    assert len(calls) == 4
+    path = tmp_path / "head.png"  # (a file's size is read from its header)
+    cv2.imwrite(str(path), np.zeros((32, 64, 3), np.uint8))
+    model.primitives[0].texture = str(path)
+    assert stages._head_texture_size(model) == 64
     store = stages.PersonCache(tmp_path / "small", keep=1)
     store.put("one", first)
     store.put("two", first)

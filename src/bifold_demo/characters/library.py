@@ -260,6 +260,19 @@ class CharacterLibrary:
         """
         return not self.missing()
 
+    def older(self) -> list[str]:
+        """The avatars prepared by an older version (cache format before ``rocketbox.FORMAT``: no head maps, no
+        2048-pixel heads); they load and draw as they did."""
+        return sorted(name for name, meta in self.available().items() if meta.get("format") != rocketbox.FORMAT)
+
+    def upgrade_hint(self) -> str | None:
+        """What to run to update the avatars an older version prepared, or ``None`` when there are none."""
+        older = self.older()
+        if not older:
+            return None
+        return (f"{len(older)} of the avatars were prepared by an older version (no head maps, no 2048-pixel heads); "
+                f"to update them: {fetch_command(_avatar_option(older), self.folder)}")
+
     def describe(self) -> str:
         """A short human-readable summary of what is prepared, what is damaged and what is missing."""
         avatars = self.available()
@@ -280,10 +293,9 @@ class CharacterLibrary:
             problems = self._problems(kind)
             if problems:
                 lines.append(f"  left out, damaged: {_summary(problems)}; to repair: {self._repair(kind, problems)}")
-        older = [name for name, meta in avatars.items() if meta.get("format") != rocketbox.FORMAT]
-        if older:
-            lines.append(f"  {len(older)} of the avatars were prepared by an older version (no head maps, no "
-                         f"2048-pixel heads); to update them: {fetch_command(_avatar_option(older), self.folder)}")
+        hint = self.upgrade_hint()
+        if hint:
+            lines.append(f"  {hint}")
         missing, optional = self.missing(), [r for r in empty if r not in READY_ROLES]
         if missing:
             hint = "--set small" if "avatars" in missing else "--avatars --clips basic"

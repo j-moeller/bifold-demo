@@ -738,6 +738,7 @@ def test_an_avatar_of_the_older_format_loads_and_fetch_makes_it_again(prepared, 
     assert head.full_texture == head.texture
     assert "1 of the avatars were prepared by an older version" in library.describe()
     assert "fetch --avatars Business_Male_02 --clips basic" in library.describe()
+    assert library.older() == ["Business_Male_02"] and library.upgrade_hint() in library.describe()  # (the fair's)
     assert not rocketbox.is_prepared(cache, "avatar", "Business_Male_02")  # fetch and prepare make it again
     assert rocketbox.is_prepared(cache, "avatar", "Female_Child_01")
     assert cli.main(["fetch", "--avatars", "Business_Male_02", "--clips", "basic", "--dest", str(cache),
@@ -746,7 +747,7 @@ def test_an_avatar_of_the_older_format_loads_and_fetch_makes_it_again(prepared, 
     report = rocketbox.prepare(raw, cache, clips=[])
     assert report.avatars == ["Business_Male_02"] and report.skipped == ["Female_Child_01"]
     assert library.load("Business_Male_02").primitives[2].maps is not None
-    assert "older version" not in library.describe()
+    assert "older version" not in library.describe() and library.upgrade_hint() is None
 
 
 def test_load_says_how_to_get_an_avatar_that_is_not_prepared(tmp_path, stub_convert):
