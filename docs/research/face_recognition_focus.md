@@ -303,7 +303,7 @@ branch and pushed; its results go into the progress log.
     - S4 needs the 2048 maps for photo faces.
   - **The S2 builder** is fixing all findings forward on top of the branch.
 - **9 November, 03:35 UTC: S2's review fixed; F1 and S2 are done.** The S2 builder fixed every finding forward except
-  painted hair's sheen (documented). Ten commits are on the branch:
+  painted hair's sheen (documented). Seven commits are on the branch:
   - **Faces from photos keep their identity.** Where a face from photos covers the head, it is drawn without the
     avatar's normal and specular maps and without the hemisphere light's variation; the face already carries the
     person's own relief and soft light from above. This covers the cast, the head-texture stages and created
