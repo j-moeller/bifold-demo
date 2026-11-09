@@ -253,8 +253,9 @@ class Calibration:
     @classmethod
     def provisional(cls, model: str, threshold: float, decade: float = 0.04) -> Calibration:
         """A stand-in from a model's registered ``threshold`` (one false match in a thousand LFW stranger pairs): a
-        non-mated curve one decade per ``decade`` of score around it, the same for every bin, and no mated curve (so
-        no "unknown")."""
+        non-mated curve one decade per ``decade`` of score around it, the same for every bin, and no mated curve. It
+        only puts the scores of the decision log on a scale: the decisions name nobody with it (on avatars that
+        threshold let a third of strangers through), until a calibration is made (``bifold-faces calibrate``)."""
         scores = tuple(threshold + decade * (k - 3) for k in range(7))
         curve = Curve(scores, tuple(-float(k) for k in range(7)), decade / math.log(10.0))
         rows = tuple(tuple(curve for _ in range(len(YAW_EDGES) - 1)) for _ in range(len(SIZE_EDGES) - 1))
@@ -294,6 +295,11 @@ def calibration_path(model_id: str, models_folder=None) -> Path:
     from .models import models_dir
 
     return models_dir(models_folder) / "calibration" / f"{model_id}.json"
+
+
+def has_calibration(model_id: str, models_folder=None) -> bool:
+    """Whether ``model_id`` has a calibration made for it (in the models folder, or the package's own)."""
+    return calibration_path(model_id, models_folder).is_file() or (PACKAGED / f"{model_id}.json").is_file()
 
 
 def find_calibration(model_id: str, models_folder=None, threshold: float | None = None) -> Calibration:

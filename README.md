@@ -881,8 +881,9 @@ commercial profile keeps the live view responsive.
 **Three states.** A person is **named** when the score of their averaged
 face against the best known person passes the *accept* threshold, beats the
 runner-up by a margin, and enough good evidence has been seen (at least two
-faces, together worth two frontal faces of 24 pixels between the eyes, or one
-of 40). They are **unknown** when enough good evidence has been seen and the
+faces, together worth a quality weight of 0.5: one sharp frontal face of 24
+pixels between the eyes is worth 0.5, of 40 or more 1, turned or blurred faces
+less). They are **unknown** when enough good evidence has been seen and the
 best score stays (a second) below the *reject* threshold: the score a known
 person's face of that quality falls below only 2 % of the time, and is one
 that strangers' best scores often reach. Everything else is **not decided

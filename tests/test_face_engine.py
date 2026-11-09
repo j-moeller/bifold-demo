@@ -116,7 +116,16 @@ def test_a_gated_model_is_used_only_once_a_recorded_check_shows_it_beats_its_gat
     checks.record(r50, tiny, [accuracy(r50, 99.80)])
     assert used().model_id == r50.id and "99.70 % against" in checks.gate(aura, tiny)
     checks.record(r50, tiny, [accuracy(r50, 99.60)])  # (a later check replaces the same report)
-    assert checks.gate(aura, tiny) is None and used().model_id == aura.id and used().notes == []
+    assert checks.gate(aura, tiny) is None
+    engine = used()  # it passed its check, but has no calibration: it would name nobody, so the next one is used
+    assert engine.model_id == r50.id and "no calibration made for it" in engine.notes[0]
+    assert "bifold-faces calibrate --profiles gated" in engine.notes[0]
+    from test_identity import _synthetic_calibration
+
+    from bifold_demo.recognition.calibration import calibration_path
+
+    _synthetic_calibration(aura.id).save(calibration_path(aura.id, tiny))
+    assert used().model_id == aura.id and used().notes == []
     checks.record(aura, tiny, [checks.Report(f"{aura.id}: colour order", ok=False)])  # added to the record
     assert "its recorded check failed (auraface_v1: colour order)" in checks.gate(aura, tiny)
     assert used().model_id == r50.id

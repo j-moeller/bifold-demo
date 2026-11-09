@@ -232,6 +232,15 @@ def test_undecided_tracks_and_better_faces_come_first():
     assert s.choose([Candidate(5, 0.4, median=0.5)], 1, now=10.0) == []  # worse than its median: not worth it
     assert s.choose([Candidate(5, 0.6, median=0.5)], 1, now=10.0)
     assert s.choose([Candidate(5, 0.5, median=0.5)], 1, now=10.0)  # (as good: a still face keeps its turn)
+    # a tight budget finishes one track before starting the next: a track with some evidence (embedded before, not
+    # yet enough for a decision) comes before tracks not embedded yet, even with a worse face
+    started = [Candidate(8, 0.9), Candidate(9, 0.5, last=9.0), Candidate(10, 0.95, decided=True, last=1.0)]
+    assert [c.track for c in s.choose(started, 3, now=10.0)] == [9, 8, 10]
+    # the recognizer may say when a decided track is due (a face big enough to tell a swap after small ones), or not
+    doubtful = [Candidate(11, 0.9, decided=True, last=8.5, due=True), Candidate(12, 0.95, decided=True, last=8.5)]
+    assert [c.track for c in s.choose(doubtful, 1, now=10.0)] == [11]
+    small = [Candidate(13, 0.95, decided=True, last=1.0, due=False), Candidate(14, 0.6, decided=True, last=1.0)]
+    assert [c.track for c in s.choose(small, 1, now=10.0)] == [14]
 
 
 def _frame(vector, weight=1.0, t=0.0, size=30.0, yaw=0.0, model="m"):
@@ -530,6 +539,18 @@ def test_a_track_is_named_only_with_a_rare_score_a_margin_and_enough_evidence(ca
     assert (one.state, one.progress) == (UNDECIDED, 0.5)  # a single frame is never enough
     waiting = policy.decide({1: None}, 0.2, waiting={1: "turned"})[1]
     assert (waiting.state, waiting.reason, waiting.raw) == (UNDECIDED, "turned", None)
+    assert waiting.label == "? turned"  # (no evidence yet: why, not "0%")
+
+
+def test_without_a_calibration_made_for_the_model_nobody_is_named(calibration):
+    """A provisional calibration (from the registered LFW threshold) only puts scores on a scale: on avatars it let a
+    third of strangers through, so a model without a calibration of its own names nobody and calls nobody unknown."""
+    provisional = Calibration.provisional("m", 0.3)
+    policy, people = _policy(provisional)
+    for score in (0.95, 0.5, 0.15):
+        d = policy.decide({1: _agg({"Ada": score}, people)}, 0.0)[1]
+        assert (d.state, d.reason, d.label) == (UNDECIDED, "no calibration", "? no calibration")
+        assert d.raw == pytest.approx(score)  # (the log still has the scores)
 
 
 def test_a_runner_up_too_close_leaves_the_track_undecided(calibration):
@@ -922,6 +943,52 @@ def test_a_track_that_turns_out_to_show_someone_else_loses_its_name(calibration)
     assert states[-1] == (NAMED, "Cleo")  # once Cleo's evidence held for the switch time
     switched = next(k for k, s in enumerate(states) if s == (NAMED, "Cleo"))
     assert switched >= 10  # (1 s at 10 frames a second)
+
+
+def _small_scene(t, who, height=380.0):
+    """One person farther away (14 pixels between the eyes in the frame), walking slowly."""
+    image = np.full((720, 1280, 3), 90, np.uint8)
+    boxes, faces = [], []
+    for k, name in enumerate(who):
+        x = 300 + 400 * k + 10 * t
+        box = (x, 200.0, x + height * 0.37, 200.0 + height)
+        boxes.append(box)
+        face = _head_face(box)
+        faces.append(face)
+        _paint(image, face, COLOURS[name], k)
+    return image, boxes, faces
+
+
+def _with_windows(recognizer, engine, detector, service, times, who, index0=0):
+    """Frames of ``_small_scene``; a track that asked for a window gets one (its head, 4 times larger) next frame."""
+    results = []
+    for k, t in enumerate(times):
+        image, boxes, faces = _small_scene(t, who)
+        detector.boxes, engine.faces = boxes, faces
+        windows = []
+        if service is not None and any(r.tag == 1 for r in service.asked):
+            x0, y0, x1, y1 = (round(v) for v in HEAD.square(boxes[0]))
+            picture = cv2.resize(image[y0:y1, x0:x1], None, fx=4.0, fy=4.0, interpolation=cv2.INTER_CUBIC)
+            windows = [_Window(picture, (x0, y0), 4.0, tag=1)]
+            engine.windows[id(picture)] = (np.array([x0, y0], float), 4.0)
+        results.append(recognizer.process(_video_frame(image, index0 + k, t, windows)))
+    return results
+
+
+def test_a_named_track_whose_faces_are_too_small_to_tell_a_swap_is_checked_with_a_window_soon(calibration):
+    """Ada's track is named from windows; then the person on it is Cleo (two people crossed, the tracker kept the
+    number), whose faces in the frame (14 pixels between the eyes) are too small for the switch check. The doubtful
+    track asks for a window again after a second (not five), whose face shows the swap: "Ada" goes."""
+    service = _Service()
+    recognizer, engine, detector = _recognizer(calibration, service=service, rate=5.0, sustain=1.0)
+    first = _with_windows(recognizer, engine, detector, service, [k / 10 for k in range(40)], ("Ada",))
+    assert first[-1].people[0].name == "Ada"
+    swapped = _with_windows(recognizer, engine, detector, service, [4.0 + k / 10 for k in range(40)], ("Cleo",),
+                            index0=40)
+    still_ada = [r.time for r in swapped if r.people[0].name == "Ada"]
+    assert recognizer.tracks[1].resets >= 1
+    assert not still_ada or still_ada[-1] - 4.0 <= 1.6, still_ada  # (5 s before the fix)
+    assert not any(r.time > 6.0 and r.people[0].name == "Ada" for r in swapped)
 
 
 def test_the_tracks_ask_for_windows_and_their_faces_come_from_the_windows(calibration):

@@ -122,6 +122,8 @@ class FaceEngine:
         with self._lock:
             if self._embedder is not None:
                 return
+            from .calibration import has_calibration
+
             errors = []
             for model_id in self.profile.embedders:
                 spec = registry.model(model_id)
@@ -129,6 +131,9 @@ class FaceEngine:
                     blocked = gate(spec, models_dir(self.models_folder)) if spec.gate else None
                     if blocked:  # (before fetching it: a model nobody checked is not downloaded either)
                         raise RuntimeError(blocked)
+                    if model_id != self.profile.embedders[-1] and not has_calibration(model_id, self.models_folder):
+                        raise RuntimeError(f"no calibration made for it, so it would name nobody (bifold-faces "
+                                           f"calibrate --profiles {self.profile.name})")
                     path = self._file(spec)
                     made = embedder(spec, path, self.provider)
                 except Exception as exc:  # noqa: BLE001 - missing, damaged or not loading: the next one

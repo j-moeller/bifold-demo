@@ -18,9 +18,10 @@ detect_frame` is what :class:`~bifold_demo.detection.worker.AsyncDetector` calls
    jumped to someone else).
 4. **Decisions** (:mod:`.decision`): a name, "unknown" or "not decided yet" per track, calibrated per model and face
    size against one target false-alarm rate (:mod:`.calibration`), one identity per track.
-5. **Windows for the frames to come.** Tracks not decided yet (or due for a check), not known to be turned away, whose
-   face is small in the frame, ask the :class:`~bifold_demo.sensor.WindowService` for a window on their head, tagged
-   with the track's number. Its scheduler's ``priority`` hook puts undecided, frontal and large faces first and lets
+5. **Windows for the frames to come.** Tracks not decided yet (or due for a check: :data:`RECHECK_WINDOW` seconds
+   after the last face big enough for the check to tell a swap, :data:`RECHECK_DOUBT` when their faces since have been
+   too small), not known to be turned away, whose face is small in the frame, ask the
+   :class:`~bifold_demo.sensor.WindowService` for a window on their head, tagged with the track's number. Its scheduler's ``priority`` hook puts undecided, frontal and large faces first and lets
    tracks take turns (:meth:`PeopleRecognizer.priority`). A webcam's windows are cut from its full-resolution picture;
    the code is the same.
 
@@ -65,6 +66,10 @@ WINDOW_FACE_PX = 64.0  # pixels between the eyes asked of a window (the embedder
 WINDOW_BELOW = 40.0  # a face this big in the frame needs no window
 FRONTAL_FOR_WINDOW = 45.0  # degrees: a track whose last face was turned further asks for no window
 RECHECK_WINDOW = 5.0  # seconds: a decided track asks for a window again after this
+# seconds: ... and after this, when its faces since have been too small (or turned) for the check to tell a swap (a
+# track that jumped to someone else would keep the old name until a bigger face is seen); a face big enough is then
+# embedded first
+RECHECK_DOUBT = 1.0
 TURN = 0.05  # the window priority a frame of waiting adds (tracks take turns)
 
 __all__ = ["PeopleRecognizer", "PeopleResult", "Person"]
@@ -137,6 +142,8 @@ class _Track:
     embedded: float | None = None  # when it was last embedded
     waiting: str = "no face yet"  # why it has no evidence yet
     resets: int = 0
+    checked: float | None = None  # when it was last embedded from a face big enough for the check to tell a swap
+    unchecked: float | None = None  # since when its faces have been too small (or turned) to tell one (None: not)
 
 
 class PeopleRecognizer:
@@ -175,7 +182,7 @@ class PeopleRecognizer:
         self.tracker = PersonTracker(tracker or PERSON_TRACKING)
         self.head = head or HeadModel()
         self.gate = gate or QualityGate()
-        self.budget = EmbeddingBudget(rate or rate_for(self.model))
+        self.budget = EmbeddingBudget(rate_for(self.model) if rate is None else rate)  # (0 or nan: an error)
         self.scheduler = scheduler or EmbeddingScheduler()
         self.searches = int(searches)
         self.window_face_px = float(window_face_px)
@@ -365,6 +372,8 @@ class PeopleRecognizer:
             quality = assess(sighting.local, aligned)
             info.face_time, info.yaw = now, quality.yaw
             info.eyes = face_size(sighting.face)
+            if info.unchecked is None and not self.policy.switch_decisive(sighting.size, quality.yaw):
+                info.unchecked = now
             out[track_id] = (sighting, quality, aligned, self.gate.check(quality, sighting.size, sighting.face.score))
         fiqa = getattr(self.engine, "fiqa", None)
         passed = [k for k, v in out.items() if v[3] is None]
@@ -384,7 +393,7 @@ class PeopleRecognizer:
     def _embed(self, measured: dict, now: float, frame: int) -> set:
         """Embed the faces the scheduler picks within the budget; returns the tracks embedded."""
         candidates = []
-        for track_id, (_sighting, quality, _aligned, why) in measured.items():
+        for track_id, (sighting, quality, _aligned, why) in measured.items():
             if why is not None:
                 continue
             info = self.tracks[track_id]
@@ -393,7 +402,12 @@ class PeopleRecognizer:
             enough = info.evidence.aggregate(now)
             enough = enough is not None and enough.weight >= self.policy.settings.min_weight
             median = info.evidence.median_weight(self.scheduler.median_after) if enough else None
-            candidates.append(Candidate(track_id, quality.weight, track_id, decided, info.embedded, median))
+            due = None
+            if decided:  # due for its check: a face that can tell a swap, the check's interval after the last one
+                recheck = self.scheduler.recheck if info.unchecked is None else RECHECK_DOUBT
+                due = self.policy.switch_decisive(sighting.size, quality.yaw) and (
+                    info.checked is None or now - info.checked >= recheck - 1e-9)
+            candidates.append(Candidate(track_id, quality.weight, track_id, decided, info.embedded, median, due))
         if not candidates:
             return set()
         chosen = self.scheduler.choose(candidates, self.budget.available(now), now)
@@ -424,6 +438,8 @@ class PeopleRecognizer:
                     info.resets += 1
             info.evidence.add(frame_evidence)
             info.embedded = now
+            if self.policy.switch_decisive(sighting.size, quality.yaw):
+                info.checked, info.unchecked = now, None
             info.waiting = ""
             self._rate.append(now)
             done.add(candidate.track)
@@ -447,8 +463,9 @@ class PeopleRecognizer:
             info = self.tracks[track.id]
             decision = decisions.get(track.id)
             decided = decision is not None and decision.state in (NAMED, UNKNOWN)
-            if decided and info.embedded is not None and decision.time - info.embedded < RECHECK_WINDOW:
-                continue
+            recheck = RECHECK_WINDOW if info.unchecked is None else RECHECK_DOUBT
+            if decided and info.checked is not None and decision.time - info.checked < recheck:
+                continue  # (checked a moment ago)
             if info.yaw is not None and abs(info.yaw) > FRONTAL_FOR_WINDOW and info.face_time is not None \
                     and decision.time - info.face_time < 2.0:
                 continue  # turned away a moment ago: a window would show the back of the head

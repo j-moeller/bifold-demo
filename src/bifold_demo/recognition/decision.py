@@ -73,8 +73,8 @@ class DecisionSettings:
     shows someone else; ``decisive``: the rarity the reject threshold (and that floor) needs among strangers' scores;
     ``stranger_like``: how often strangers' best scores must reach a best score called unknown;
     ``min_weight``, ``min_frames``: enough good evidence (summed quality weights, :attr:`~.quality.Quality.weight`:
-    two frontal faces of 24 pixels between the eyes, or one of 40, and at least two frames; the calibration's bins
-    already count how good the faces are); ``sustain``: seconds a switch to another name or to
+    one sharp frontal face of 24 pixels between the eyes is worth 0.5, of 40 or more 1; and at least two frames; the
+    calibration's bins already count how good the faces are); ``sustain``: seconds a switch to another name or to
     unknown must hold; ``sustain_unknown``: seconds the score must stay below the reject threshold (from not decided);
     ``incumbent``: decades a track holding a name counts more for it in the assignment."""
 
@@ -157,12 +157,13 @@ class Decision:
 
     @property
     def label(self) -> str:
-        """What the overlay shows: the name, ``unknown`` or ``?`` with how far along (``? 40%``)."""
+        """What the overlay shows: the name, ``unknown``, or ``?`` with how far along the evidence is (``? 40%``), or,
+        before any evidence and once there is enough, what it waits for (``? turned``, ``? too close to another``)."""
         if self.state == NAMED:
             return str(self.name)
         if self.state == UNKNOWN:
             return "unknown"
-        return f"? {round(100 * self.progress)}%" if self.progress < 1.0 else f"? {self.reason}"
+        return f"? {round(100 * self.progress)}%" if 0.0 < self.progress < 1.0 else f"? {self.reason}"
 
     def to_json(self) -> dict:
         return asdict(self)
@@ -311,11 +312,16 @@ class IdentityPolicy:
         person: not when that score is below what a known person's face of this quality reaches all but
         ``switch_miss`` of the time (see the module docs). Where the calibration cannot tell (no mated curve, or that
         floor is not decisive among strangers' scores), every face is."""
+        if not self.switch_decisive(size, yaw):
+            return True
+        return score >= self.calibration.curve(size, yaw).mated_quantile(self.settings.switch_miss)
+
+    def switch_decisive(self, size: float, yaw: float) -> bool:
+        """Whether :meth:`consistent` can tell a new face of this size and yaw from the track's own evidence: the
+        floor exists and is rare enough among strangers' scores (``decisive``)."""
         curve = self.calibration.curve(size, yaw)
         floor = curve.mated_quantile(self.settings.switch_miss)
-        if floor is None or curve.rarity(floor) < self.settings.decisive:
-            return True
-        return score >= floor
+        return floor is not None and curve.rarity(floor) >= self.settings.decisive
 
     # -- decisions -------------------------------------------------------------------------------------------------
 
@@ -372,6 +378,8 @@ class IdentityPolicy:
         progress = self._progress(agg)
         if progress < 1.0:
             return UNDECIDED, None, "collecting", progress
+        if self.calibration.is_provisional:  # no calibration made for this model: its thresholds mean nothing
+            return UNDECIDED, None, "no calibration", 1.0
         best_rarity = scores.rarity[0]
         runner = scores.rarity[1] if len(scores.names) > 1 else 0.0
         if best_rarity >= s.accept(len(scores.names)):

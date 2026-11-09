@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 from dataclasses import dataclass
@@ -572,10 +573,14 @@ class DemoApp:
             counts = people.counts()
             names = sorted(p.name for p in people.people if p.name)
             norm = {"tnorm": ", T-norm", "asnorm": ", AS-norm"}.get(recognizer.calibration.normalisation, "")
-            target = f"FPIR {self.config.fpir:.0%}{norm}" if people.calibrated else "provisional thresholds"
+            target = f"FPIR {self.config.fpir:.0%}{norm}" if people.calibrated else "no calibration"
             lines.append(f"{len(people.people)} tracks: {counts['named']} named ({', '.join(names) or '-'}), "
                          f"{counts['unknown']} unknown, {counts['undecided']} not decided; {target}; "
                          f"{people.inference_ms:.0f} ms")
+        if not recognizer.calibration.is_provisional:
+            return lines
+        lines.append(f"{recognizer.model} has no calibration: it names nobody until one is made (bifold-faces "
+                     f"calibrate --profiles {recognizer.profile or 'best'})")
         return lines
 
     def _handle_key(self, key: int, window: Window) -> None:
@@ -734,6 +739,16 @@ def _rate(text: str) -> float:
     return value
 
 
+def _per_second(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"embeddings a second must be a number, not {text!r}") from None
+    if not (math.isfinite(value) and value > 0.0):
+        raise argparse.ArgumentTypeError(f"embeddings a second must be a number above 0, not {value}")
+    return value
+
+
 def _preset(text: str) -> str:
     from .sensor import camera_preset
 
@@ -771,7 +786,7 @@ def parse_args(argv=None) -> DemoConfig:
                    help="start with the recognition of people on: person tracks, faces, names (N toggles it)")
     g.add_argument("--fpir", type=_rate, default=0.01, metavar="RATE",
                    help="the recognition's target false-alarm rate per decision, e.g. 0.01 for 1 %% (default 0.01)")
-    g.add_argument("--embed-rate", type=float, default=None, metavar="N",
+    g.add_argument("--embed-rate", type=_per_second, default=None, metavar="N",
                    help="face embeddings a second for everyone (default: the model's: 1 for AdaFace, 4 for the "
                         "ResNet-50, 20 for SFace, as a four-core CPU allows)")
     g.add_argument("--no-cast", dest="cast", action="store_false",

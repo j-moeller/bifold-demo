@@ -13,9 +13,13 @@ Embedding a face is the expensive step (on four CPU cores AdaFace IR-101 takes 0
   model's rate on a CPU like the development machine's (four shared cores); the Mac's CoreML is expected to allow ten
   times more.
 * :class:`EmbeddingScheduler`: which tracks' faces get the budget of a frame. Tracks not decided yet come before
-  decided ones, better faces first; a decided track is re-checked now and then (first when :attr:`~EmbeddingScheduler.
-  recheck` seconds have passed, else with what the budget has left), so that a wrong or outdated name does not
-  stand: a track that jumped to someone else is found out by the check (:mod:`.decision`). A track is embedded at most
+  decided ones, and among them those that already have some evidence first: a name needs two faces, so a tight budget
+  finishes one track before starting the next (the review measured the median time to a name in the fair going from
+  5.0 to 4.0 s at one AdaFace embedding a second); then better faces first. A decided track is re-checked now and
+  then (first when it is due: :attr:`~EmbeddingScheduler.recheck` seconds after its last embedding, or as the
+  recognizer says, a second after its last face big enough for the check when its faces are too small to tell a swap;
+  else with what the budget has left), so that a wrong or outdated name does not stand: a track that jumped to someone
+  else is found out by the check (:mod:`.decision`). A track is embedded at most
   :attr:`~EmbeddingScheduler.per_track` times a second, and once it has enough evidence for a decision only faces at
   least as good as its median so far (the research's "embed a track at most twice a second, and only frames better
   than its median"; before that every face that passes the gate counts).
@@ -90,7 +94,7 @@ class EmbeddingBudget:
     ``burst`` (default: one second's worth, at least one). Deterministic: it only reads the times it is given."""
 
     def __init__(self, rate: float, burst: float | None = None):
-        if rate <= 0:
+        if not (math.isfinite(rate) and rate > 0):
             raise ValueError(f"an embedding budget needs a rate above 0, not {rate}")
         self.rate = float(rate)
         self.burst = max(1.0, self.rate if burst is None else float(burst))
@@ -124,9 +128,11 @@ class EmbeddingBudget:
 class Candidate:
     """A face that passed the gate, waiting for an embedding: the ``track``'s id, the face's quality ``weight``, the
     ``key`` the caller finds it by (any object), whether the track is ``decided`` (named or unknown), when the track
-    was last embedded (``last``; ``None``: never) and its frames' median weight so far (``median``; ``None`` while
+    was last embedded (``last``; ``None``: never), its frames' median weight so far (``median``; ``None`` while
     the track has too few frames or too little evidence for a decision: then every face that passed the gate
-    counts)."""
+    counts) and whether a decided track is due for its check (``due``; ``None``: when the scheduler's ``recheck``
+    seconds have passed since ``last``; the recognizer says it itself, from when the track last showed a face big
+    enough for the check to tell a swap)."""
 
     track: int
     weight: float
@@ -134,6 +140,7 @@ class Candidate:
     decided: bool = False
     last: float | None = None
     median: float | None = None
+    due: bool | None = None
 
 
 @dataclass
@@ -155,16 +162,21 @@ class EmbeddingScheduler:
         return candidate.median is None or candidate.weight >= candidate.median
 
     def rank(self, candidate: Candidate, now: float) -> int:
-        """0: a track not decided yet; 1: a decided track due for its check (``recheck`` seconds after its last
-        embedding); 2: another decided track (only what the others leave of the budget)."""
+        """0: a track not decided yet that has some evidence but not enough (finish it first); 1: another track not
+        decided yet; 2: a decided track due for its check (:attr:`Candidate.due`, by default ``recheck`` seconds
+        after its last embedding); 3: another decided track (only what the others leave of the budget)."""
         if not candidate.decided:
-            return 0
-        return 1 if candidate.last is None or now - candidate.last >= self.recheck - 1e-9 else 2
+            return 0 if candidate.last is not None and candidate.median is None else 1
+        due = candidate.due
+        if due is None:
+            due = candidate.last is None or now - candidate.last >= self.recheck - 1e-9
+        return 2 if due else 3
 
     def choose(self, candidates, count: int, now: float) -> list[Candidate]:
-        """At most ``count`` of ``candidates`` (one per track), in the order they should be embedded: undecided
-        tracks first, then decided ones due for a check, then other decided ones; within each, better faces first
-        (by :attr:`band` of weight, so that faces about as good take turns), then the track waiting longest."""
+        """At most ``count`` of ``candidates`` (one per track), in the order they should be embedded (:meth:`rank`:
+        undecided tracks with some evidence, other undecided tracks, decided ones due for a check, other decided
+        ones); within each, better faces first (by :attr:`band` of weight, so that faces about as good take turns),
+        then the track waiting longest."""
         best: dict[int, Candidate] = {}
         for c in candidates:
             if self.eligible(c, now) and (c.track not in best or c.weight > best[c.track].weight):
