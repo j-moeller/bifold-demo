@@ -399,3 +399,26 @@ branch and pushed; its results go into the progress log.
       3.18 → 2.29 mm. Fitted with the space alone, without the outlines and the free-form correction, a head barely
       improves: the landmarks carry little of the nose, cheeks and profile.
   - Both builders are measuring and finishing. Their independent reviews follow.
+- **9 November, 13:10 UTC: F2 built and measured; its independent review started.**
+  - **All ten parts are on the branch;** the last is the results note
+    [face_recognition_f2_results.md](face_recognition_f2_results.md) and a preview of the overlay.
+  - **The builder's full suite:** 983 passed, 8 skipped.
+  - **No wrong names.** In the fair runs (30 s, two crowds, half the avatars known, windows on) no stranger was named
+    in any profile, and nobody was named as someone else.
+
+    | Profile | Known people named within 2 s | Median time to a name |
+    |---|---|---|
+    | commercial (SFace) | 8 of 8 | 0.8 s |
+    | licensed (ResNet-50) | 7 of 8 | 1.0 s |
+    | best (AdaFace) | 1 of 8 | 5.0 s |
+
+    The best profile is held back by this CPU's budget of one AdaFace embedding a second; with 10 a second it named
+    3 of 3 in 0.8 s.
+  - **The windows matter:** without them the faces are 11-19 px, and the commercial profile named 2 of 8 within 2 s.
+  - **The calibration's held-out check** (avatars not used to make it), at a 1 % false-alarm rate asked:
+    - measured with T-norm: AdaFace 0.66 %, the ResNet-50 1.72 %, SFace 0.32 %;
+    - without normalisation: 2.29 %, 3.48 % and 0.88 %.
+  - **Main open issue, on real faces:** the calibrations are made from avatars. Checked on LFW, T-norm against the
+    avatar cohort lets 3-6 times more real strangers through than asked at 1 in 1,000, and the raw avatar thresholds
+    are far too strict. E1 must measure the asked rate against the measured one on real people. For now the README
+    advises a lower `--fpir` for real faces.
