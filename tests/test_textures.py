@@ -135,3 +135,37 @@ def test_mip_chains_go_down_to_one_pixel_in_linear_light():
     assert len(mip_chain(np.zeros((1, 1, 4), np.uint8))) == 0
     odd = mip_chain(np.full((5, 3, 4), 255, np.uint8))
     assert [lv.shape[:2] for lv in odd] == [(2, 1), (1, 1)] and (odd[-1] == 255).all()
+
+
+def test_data_are_averaged_channel_by_channel_whatever_their_alpha():
+    """A packed map's alpha is data (occlusion), not coverage: its other channels are not weighted by it."""
+    from bifold_demo.scene.textures import downsample, mip_chain
+
+    packed = np.zeros((2, 2, 4), np.uint8)
+    packed[..., 0] = [[255, 0], [0, 0]]  # one texel's slope
+    packed[..., 3] = [[255, 0], [0, 0]]  # occluded but there
+    for level in (downsample(packed, (1, 1), srgb=False), mip_chain(packed, srgb=False)[0]):
+        assert level[0, 0].tolist() == [64, 0, 0, 64]  # the plain means (as colour it would keep 255 in red)
+
+
+def test_large_textures_made_on_a_worker_get_their_1024_level_there():
+    """prepare_upload (on the thread that made a texture) also lays out the 1024 level the renderer draws a worn
+    texture larger than that at where a picture does not need more (detail.base_copy), from the same mipmaps; data
+    are averaged as data (a checker of 0 and 255: 128, not the 188 of half the light)."""
+    from bifold_demo.scene.detail import base_copy
+    from bifold_demo.scene.textures import as_data_texture, mip_chain, prepare_upload
+
+    rgb = np.random.default_rng(1).integers(0, 256, (1200, 1100, 3), np.uint8)
+    texture = prepare_upload(Texture.from_array(rgb, order="rgb"))
+    kept = texture.__dict__["_base_copy"][1]
+    assert base_copy(texture) is kept and (kept.width, kept.height) == (550, 600)
+    assert np.array_equal(kept.rgba, mip_chain(texture.rgba)[0])
+    assert len(kept.__dict__["_upload"][2]) == len(mip_chain(kept.rgba))  # its own mipmaps, laid out too
+    checker = np.zeros((1100, 1100, 4), np.uint8)
+    checker[..., 3] = 255
+    checker[(np.add.outer(np.arange(1100), np.arange(1100)) % 2) == 0, :3] = 255
+    for prepared in (False, True):
+        data = as_data_texture(checker)
+        if prepared:
+            prepare_upload(data)
+        assert (base_copy(data).rgba[..., :3] == 128).all(), prepared

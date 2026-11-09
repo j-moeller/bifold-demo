@@ -37,6 +37,7 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff", "
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
 
 _ids = itertools.count(1)
+BASE_SIZE = 1024  # pixels: the largest side of the textures every picture draws (see scene.detail)
 
 
 class Texture:
@@ -121,7 +122,7 @@ class VideoTexture(Texture):
             raise ValueError(f"video {self.path} has no frames")
         self._next_index = 1  # index of the frame the next read() returns
         self._shown = 0  # index of the frame currently in `rgba`
-        super().__init__(_fit(_array_to_rgba(frame, "bgr"), max_size), name=self.path.name)
+        super().__init__(_fit(_array_to_rgba(frame, "bgr"), max_size, linear=False), name=self.path.name)
 
     def at_time(self, t: float) -> "Texture":
         index = max(0, int(t * self.fps * self.speed))
@@ -144,7 +145,7 @@ class VideoTexture(Texture):
                 index = 0
             self._next_index += 1
         if frame is not None:
-            self._set_rgba(_fit(_array_to_rgba(frame, "bgr"), self.max_size))
+            self._set_rgba(_fit(_array_to_rgba(frame, "bgr"), self.max_size, linear=False))
             self._shown = index
         return self
 
@@ -186,12 +187,31 @@ def prepare_upload(texture: Texture) -> Texture:
     """Lay out the pixels of ``texture`` the way the renderer uploads them (rows bottom first, for OpenGL), with its
     mipmap levels (:func:`mip_chain`), now, on the calling thread, so that the thread that draws does not have to:
     for a texture made or read on a worker thread. The renderer uses (and drops) them on the upload, unless the
-    pixels changed meanwhile; when a renderer uploaded these pixels already, nothing is kept. Returns ``texture``."""
+    pixels changed meanwhile; when a renderer uploaded these pixels already, nothing is kept. A texture larger than
+    :data:`BASE_SIZE` that a person wears (a face from photos at 2048) also gets the level the renderer draws where a
+    picture does not need more (:func:`~.detail.base_copy`), laid out too. Returns ``texture``."""
     rgba, version = texture.rgba, texture.version
-    levels = [np.ascontiguousarray(level[::-1]).tobytes() for level in mip_chain(rgba, texture.srgb)]
+    chain = mip_chain(rgba, texture.srgb)
+    levels = [np.ascontiguousarray(level[::-1]).tobytes() for level in chain]
     if texture.__dict__.get("_on_gpu") != version:  # (else they would never be used)
         texture._upload = (version, np.ascontiguousarray(rgba[::-1]).tobytes(), levels)
+    if max(texture.width, texture.height) > BASE_SIZE and not isinstance(texture, VideoTexture) \
+            and not texture.__dict__.get("drop_after_upload"):  # (a head's own detail texture never needs one)
+        k = next(i for i, level in enumerate(chain) if max(level.shape[:2]) <= BASE_SIZE)
+        copy = Texture(np.ascontiguousarray(chain[k]), name=f"{texture.name} (base)", srgb=texture.srgb)
+        copy._upload = (copy.version, levels[k], levels[k + 1:])  # (its mipmaps are the texture's own below it)
+        texture._base_copy = (version, copy)
     return texture
+
+
+def drop_pixels(texture: Texture) -> None:
+    """Give up the memory of ``texture``'s pixels once a renderer holds them on the GPU for good (a head's detail
+    textures, which are read again when they are needed again): ``rgba`` keeps its shape but takes no memory, and the
+    texture cannot be uploaded again (``pixels_dropped``)."""
+    texture.__dict__.pop("_upload", None)
+    texture.__dict__.pop("_base_copy", None)
+    texture.rgba = np.broadcast_to(np.zeros(4, np.uint8), texture.rgba.shape)
+    texture.pixels_dropped = True
 
 
 def upload_levels(texture: Texture) -> list[bytes]:
@@ -342,9 +362,10 @@ def color_to_linear(color) -> tuple[float, float, float]:
 
 
 def _premultiplied(rgba: np.ndarray, srgb: bool) -> tuple[np.ndarray, bool]:
-    """``(HxWx4 float32, opaque)``: colour in linear light (``srgb``) or as it is, times alpha; alpha 0-1."""
+    """``(HxWx4 float32, opaque)``: colour in linear light (``srgb``) or as it is, times alpha; alpha 0-1. Data (not
+    ``srgb``) are not weighted: their alpha is data too (a packed map's occlusion), not how much of a texel is there."""
     out = cv2.LUT(np.ascontiguousarray(rgba), _RGBA_TABLES[bool(srgb)]).reshape(rgba.shape)
-    opaque = bool(rgba[..., 3].min(initial=255) == 255)
+    opaque = not srgb or bool(rgba[..., 3].min(initial=255) == 255)
     if not opaque:
         out[..., :3] *= out[..., 3:]
     return out, opaque
@@ -373,8 +394,9 @@ def _shrink(values: np.ndarray, size: tuple[int, int]) -> np.ndarray:
 
 def downsample(rgba: np.ndarray, size: tuple[int, int], srgb: bool = True) -> np.ndarray:
     """``rgba`` (HxWx4 ``uint8``) made smaller, to ``size`` = ``(width, height)``, by averaging over each new
-    pixel's area: in linear light for colours (``srgb``; data such as normal maps are averaged as they are), the
-    colour weighted by alpha, so that transparent texels lend no colour to the edges of cut-outs (hair)."""
+    pixel's area: in linear light for colours (``srgb``; data such as normal maps are averaged as they are, channel by
+    channel), the colour weighted by alpha, so that transparent texels lend no colour to the edges of cut-outs
+    (hair)."""
     rgba = np.asarray(rgba, np.uint8)
     if (rgba.shape[1], rgba.shape[0]) == tuple(size):
         return rgba.copy()
@@ -436,12 +458,17 @@ def _array_to_rgba(image: np.ndarray, order: str) -> np.ndarray:
     return np.ascontiguousarray(np.dstack([rgb, alpha]))
 
 
-def _fit(rgba: np.ndarray, max_size: int) -> np.ndarray:
+def _fit(rgba: np.ndarray, max_size: int, linear: bool = True) -> np.ndarray:
+    """``rgba`` at most ``max_size`` pixels wide and high: made smaller in linear light (:func:`downsample`, as a
+    colour image), or (``linear`` False: video frames, every frame) by averaging the stored values, which is faster."""
     h, w = rgba.shape[:2]
     scale = max_size / max(h, w)
     if scale >= 1:
         return rgba
-    return cv2.resize(rgba, (max(1, round(w * scale)), max(1, round(h * scale))), interpolation=cv2.INTER_AREA)
+    size = (max(1, round(w * scale)), max(1, round(h * scale)))
+    if linear:
+        return downsample(rgba, size)
+    return cv2.resize(rgba, size, interpolation=cv2.INTER_AREA)
 
 
 def _read_image(path: Path, max_size: int) -> np.ndarray:

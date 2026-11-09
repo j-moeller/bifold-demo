@@ -23,6 +23,11 @@ the ratios are steadier. The scratch scripts are not in the repository.
   (112 texels between the eyes) already holds what reaches them: from 1024 to 2048 the embeddings move to a cosine of
   0.998, and the separation does not change. The 2048 textures show where a picture shows the face larger than about
   110 pixels between the eyes: the close portrait of the preview, S4's close-ups, crops for other models.
+- **Faces from photos keep their identity.** Drawn with the avatar's maps and the hemisphere light (as the first
+  version did), real people's faces painted on avatars looked less like their other photos to every recogniser
+  (AdaFace's genuine score 0.363 at the low quality, 0.275 at the high one; a face from the head-texture stages 0.245
+  and 0.188). Since the review fix they are drawn without the avatar's maps and without the hemisphere light's
+  variation where the face is: 0.359 and 0.245, the low quality's (section 4.1). The avatars' own faces keep both.
 - **Detection and separation stay perfect** on this synthetic set (20 avatars facing the camera at 2-5 m, turned up
   to 25 degrees, ideal camera): YuNet and SCRFD find 60 of 60 faces per distance in every configuration, the equal
   error rate is 0 and rank-1 100 % for AdaFace IR-101, ArcFace R50 and SFace.
@@ -116,6 +121,46 @@ between the eyes. The synthetic set saturates the separation (no errors anywhere
 change, not how much recognition improves; that needs harder conditions (the camera presets, turned and lowered
 heads, many more identities: E1).
 
+### 4.1 Faces from photos: galleries of real photos
+
+The measurement above compares renders with renders (a gallery of each avatar's own frontal window). A known person's
+face is a face from photos on an avatar's head (the cast's, the head-texture stages', a created character's), and
+its gallery is the person's other photos. Four people of the photo test set (real portraits, used for checks only;
+only aggregate numbers here), one photo made into the face and another as the gallery, measured with the review's
+scripts:
+
+- **painted on** (the cast's simple painting, `face_photo.put_face`): three avatars each, S1 windows (8K, ideal
+  camera) in the fair's hall at 2 and 3.5 m (eyes 138 and 78 pixels apart), turned 0 and 25 degrees: 48 windows;
+- **from the head-texture stages** (`person_textures`, as the cast makes them when MediaPipe is there): two
+  avatars each, the same windows: 32;
+- **the stages' identity check** (`person.identity`: renders of 480 pixels, front and turned 30 degrees, in its own
+  light without the hemisphere term): one avatar each, 8 renders.
+
+Genuine score (cosine to the person's other photo), mean, and in brackets how many windows fall below the
+recogniser's threshold (AdaFace and ArcFace R50 0.22, SFace 0.363); impostor scores did not change:
+
+| | AdaFace | R50 | SFace |
+|---|---|---|---|
+| Painted on: low quality | 0.363 (0 of 48) | 0.346 (0) | 0.397 (13) |
+| Painted on: high, with the avatar's maps and the hemisphere (before) | 0.275 (12) | 0.265 (14) | 0.356 (29) |
+| Painted on: high, without the avatar's maps, with the hemisphere | 0.329 (2) | 0.317 (1) | 0.379 (20) |
+| Painted on: high, without both (the fix) | 0.359 (0) | 0.346 (0) | 0.397 (13) |
+| From the stages: low quality | 0.245 (10 of 32) | 0.225 (13) | 0.380 (15) |
+| From the stages: high, before | 0.188 (22) | 0.179 (27) | 0.327 (24) |
+| From the stages: high, without the avatar's maps, with the hemisphere | 0.227 (16) | 0.213 (18) | 0.360 (19) |
+| From the stages: high, without both (the fix) | 0.245 (11) | 0.225 (13) | 0.371 (17) |
+| Identity check: low quality | 0.279 | 0.269 | 0.407 |
+| Identity check: high, before | 0.234 | 0.236 | 0.375 |
+| Identity check: high, the fix | 0.274 | 0.271 | 0.407 |
+
+The avatar's maps cost most (their folds and painted shine on another person's face), the hemisphere light the rest:
+both kinds of face already hold soft light from above, the photo's own or, from the head-texture stages, the
+avatar's painted light put back ("lit as the old one was"), and the hemisphere term adds it a second time. A uniform
+skin shine instead of the avatar's specular map cost 0.01 more (AdaFace), and the photos hold their own highlights,
+so the face gets none. With galleries of renders the maps help the avatars' own faces, more under harder conditions
+(the review: AdaFace d' +0.5 to +0.65 with the "good 4K" and "budget 1080p" camera presets, turned 40 degrees and
+lowered 20); the fix leaves their pictures as they were, to the bit.
+
 ## 5. Faces from photos at 2048
 
 On a head prepared at 2048 the head-texture stages make the face at 2048 (`fuse.texture_size`), and a created
@@ -150,7 +195,9 @@ the confidence within 0.0001, the trimap's shares within 0.001).
   differ from its face normal by 15 degrees, the median) it comes out in patches. There is no hair shading model (an
   anisotropic lobe along the strands); S4's subdivided heads smooth the normals.
 - **Detail levels in the live demo**: the first windows of a head that newly needs its 2048 textures show the 1024
-  ones for about half a second, while they are read in the background.
+  ones for about half a second, while they are read in the background. With more heads near the camera than
+  `detail_heads`, the largest faces keep theirs and the others stay at 1024 (since the review fix; before, each
+  window read its head's textures again).
 - **The yoga clip caches** are made again once: their key covers the character model's source, which changed.
 - **Ambient occlusion**: the packed map's alpha is 255, room for a baked occlusion map (the Rocketbox heads have
   none).

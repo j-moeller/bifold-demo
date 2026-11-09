@@ -26,7 +26,16 @@ import numpy as np
 from .detail import DetailCache, base_copy, eye_pixels, is_large
 from .frustum import Bounds, boxes_outside, frustum_planes, spheres_outside, world_boxes
 from .scene import Scene, SceneObject, SubCamera
-from .textures import Texture, VideoTexture, as_data_texture, as_texture, color_to_linear, parse_color, upload_levels
+from .textures import (
+    Texture,
+    VideoTexture,
+    as_data_texture,
+    as_texture,
+    color_to_linear,
+    drop_pixels,
+    parse_color,
+    upload_levels,
+)
 from .transforms import crop_matrix, gl_bytes
 
 SRGB8_ALPHA8 = 0x8C43  # the internal format of sRGB textures and of the picture's colour buffers
@@ -104,9 +113,12 @@ uniform vec3 u_light_dir;
 uniform vec3 u_light_color;
 uniform float u_ambient;
 uniform float u_hemisphere;
-vec3 diffuse_light(vec3 n, float occlusion) {
-    float ambient = u_ambient * (1.0 + u_hemisphere * n.y) * occlusion;
+vec3 hemisphere_light(vec3 n, float occlusion, float hemisphere) {
+    float ambient = u_ambient * (1.0 + hemisphere * n.y) * occlusion;
     return vec3(ambient) + (1.0 - u_ambient) * max(dot(n, -u_light_dir), 0.0) * u_light_color;
+}
+vec3 diffuse_light(vec3 n, float occlusion) {
+    return hemisphere_light(n, occlusion, u_hemisphere);
 }
 """
 
@@ -161,10 +173,13 @@ void main() {
 _MAPPED_FS = "#version 330 core\n" + _FOG + _LIGHT + """
 uniform sampler2D u_texture;
 uniform sampler2D u_maps;
+uniform sampler2D u_photo;  // red: how much of a texel is a face from photos (0 on the avatar's own texture)
 uniform vec3 u_color;
 uniform vec3 u_eye;
 uniform float u_specular;
 uniform float u_normal_strength;
+uniform float u_photo_hemisphere;  // the share of the hemisphere light's variation a face from photos gets
+uniform float u_photo_level;  // the specular level a face from photos gets instead of the map's
 const float PI = 3.14159265;
 const float SKIN_LEVEL = 0.07;  // the specular maps' level on most of the skin
 const float SKIN_F0 = 0.028;  // Fresnel reflectance of skin head-on
@@ -180,6 +195,9 @@ void main() {
     vec3 rgb = texel.rgb * u_color;
     if (u_lit) {
         vec4 maps = texture(u_maps, v_uv);
+        // the maps hold the avatar's own relief and shine: a face from photos brings the person's own instead
+        float photo = texture(u_photo, v_uv).r;
+        float own = 1.0 - photo;
         vec3 ng = normalize(v_normal);
         if (!gl_FrontFacing) ng = -ng;
         vec3 t = v_tangent.xyz - ng * dot(ng, v_tangent.xyz);
@@ -187,13 +205,13 @@ void main() {
         if (dot(t, t) > 1e-12) {
             t = normalize(t);
             vec3 b = cross(ng, t) * (v_tangent.w < 0.0 ? -1.0 : 1.0);
-            vec2 xy = (maps.rg * 2.0 - 1.0) * u_normal_strength;
+            vec2 xy = (maps.rg * 2.0 - 1.0) * (u_normal_strength * own);
             n = normalize(t * xy.x + b * xy.y + ng * sqrt(max(1.0 - dot(xy, xy), 0.0)));
         }
-        vec3 lit = rgb * diffuse_light(n, maps.a);
+        vec3 lit = rgb * hemisphere_light(n, maps.a, u_hemisphere * mix(1.0, u_photo_hemisphere, photo));
         vec3 l = -u_light_dir;
         float nl = max(dot(n, l), 0.0);
-        float level = maps.b;
+        float level = maps.b * own + u_photo_level * photo;
         if (nl > 0.0 && level > 0.0 && u_specular > 0.0) {
             vec3 v = normalize(u_eye - v_world);
             vec3 h = normalize(l + v);
@@ -245,6 +263,14 @@ void main() {
 }
 """
 
+# A face from photos (a head's colour texture of a person's own, Character.photo_mask) carries the person's own
+# relief and shine, and soft light from above: the photo's, or, from the head-texture stages, the avatar's painted
+# light put back. So where it covers the head it is drawn without the avatar's normal and specular maps (they put
+# the avatar's folds and shine on another face) and without the hemisphere light's variation (it would add that
+# light a second time): measured with real people's photos against their other photos, the recognisers' genuine
+# scores then are those of the low quality, and 0.04-0.09 lower with the maps and the hemisphere (see the README).
+PHOTO_HEMISPHERE = 0.0  # the share of the hemisphere light's variation a face from photos gets
+PHOTO_LEVEL = 0.0  # the specular level a face from photos gets instead of the avatar's map's
 SHADOW_STRENGTH = 0.45  # darkening at the centre of a blob shadow (0-1)
 SHADOW_LIFT = 0.015  # metres above the feet: above the floor and flat floor decals (carpets) up to 1 cm high
 _SHADOW_CORNERS = np.array([(-1, -1), (1, -1), (1, 1), (-1, -1), (1, 1), (-1, 1)], dtype=np.float64)
@@ -374,6 +400,7 @@ class Renderer:
         self._bg_program["u_texture"].value = 0
         self._white = as_texture((255, 255, 255))
         self._flat = Texture(np.array([[[128, 128, 0, 255]]], np.uint8), name="flat maps", srgb=False)  # no maps
+        self._no_photo = Texture(np.array([[[0, 0, 0, 255]]], np.uint8), name="no photo", srgb=False)
         self._meshes: dict[int, tuple] = {}  # id(mesh) -> (weakref, vao, vbo, ibo)
         self._textures: dict[int, list] = {}  # texture.id -> [weakref, gl texture, version, mipmaps built]
         self._skinned_program = self._shadow_program = None  # compiled when the first character shows up
@@ -383,7 +410,8 @@ class Renderer:
         #                   tangent vbo]
         self._primitives: dict[int, list] = {}
         self._joints: dict[int, tuple] = {}  # id(character) -> (weakref, joint-palette texture)
-        self._details = DetailCache()  # the 2048 textures of the heads drawn with them lately
+        self._details = DetailCache()  # the 2048 textures of the heads that need them most
+        self._details_linear = None  # the light model the detail textures were uploaded for
         self._head_bones = weakref.WeakKeyDictionary()  # skeleton -> its head bone (-1: none)
         self._probes = None  # (object program, skinned program, shadow program): see visible_pixels
         self._drawn = None  # (view-projection, camera position) of the last frame
@@ -496,6 +524,7 @@ class Renderer:
 
     def _render(self, scene: Scene) -> np.ndarray:
         self._frame_id += 1
+        self._details.next_frame()  # (the windows drawn after it belong to its frame)
         camera = scene.camera
         view_proj = camera.projection_matrix(self.aspect) @ camera.view_matrix()
         part = (camera.aspect, camera.ndc) if isinstance(camera, SubCamera) else (None, None)  # a window's background
@@ -681,6 +710,10 @@ class Renderer:
         palettes this frame uploaded where the characters were not posed again since (windows of the frame).
         ``mapped``: draw mesh parts with tangents and maps with them (the high quality). ``picture``: ``(size, the
         camera's right)`` of the picture, for the heads' detail textures (``None``: never)."""
+        if self._details_linear != self.linear:  # detail textures give their pixels up once on the GPU: read anew
+            for texture in self._details.clear():
+                self._forget_texture(texture)
+            self._details_linear = self.linear
         prog = self._skinned()
         _set_uniforms(prog, uniforms)
         u, triangles = self._skinned_uniforms, self._moderngl.TRIANGLES
@@ -694,7 +727,8 @@ class Renderer:
             u["u_lit"].value = bool(obj.lit)
             self._joint_texture(obj, reuse).use(1)
             overrides = getattr(obj, "texture_overrides", None)
-            near = None  # whether the picture wants this person's head in detail: worked out when it matters
+            own_maps = getattr(obj, "maps_overrides", None)  # this person's own packed maps, by part
+            eye = None  # pixels between this person's eyes in the picture: worked out when it matters
             later = []  # the parts drawn with their maps
             for primitive in (*obj.skinned_model.primitives, *getattr(obj, "worn", ())):
                 vao, texture = self._skinned_primitive(primitive)
@@ -704,19 +738,32 @@ class Renderer:
                 detail = None
                 prepared = override is None and primitive.detail is not None
                 if prepared or is_large(texture):  # a picture may draw it larger than 1024 or not
-                    if near is None:
-                        near = picture is not None and \
-                            self._eye_pixels(obj, view_proj, camera_position, picture) >= self.detail_from
+                    if eye is None:
+                        eye = 0.0 if picture is None else self._eye_pixels(obj, view_proj, camera_position,
+                                                                           picture)
+                    near = eye >= self.detail_from
                     if near and prepared:
-                        detail = self._details.get(primitive, self.detail_wait)
+                        detail = self._details.get(primitive, eye, self.detail_wait, self.detail_heads)
                         if detail is not None:
                             texture = detail[0]
                     elif not near and is_large(texture):
                         texture = base_copy(texture)
                 if mapped and _has_maps(primitive):
-                    later.append((primitive, texture, detail[1] if detail is not None else None))
+                    maps = own_maps.get(primitive.name) if own_maps else None
+                    if maps is None and detail is not None:
+                        maps = detail[1]
+                    photo = None  # a face from photos without maps of its own: where it is
+                    if override is not None and hasattr(obj, "photo_mask"):
+                        photo = obj.photo_mask(primitive)
+                    later.append((primitive, texture, maps, photo))
                     continue
                 self._gl_texture(texture.at_time(t)).use(0)
+                if override is not None and uniforms["u_hemisphere"] and hasattr(obj, "photo_mask") and \
+                        obj.photo_mask(primitive) is not None:  # a face from photos on a head without maps
+                    prog["u_hemisphere"].value = uniforms["u_hemisphere"] * PHOTO_HEMISPHERE
+                    vao.render(triangles)
+                    prog["u_hemisphere"].value = uniforms["u_hemisphere"]
+                    continue
                 vao.render(triangles)
             if not later:
                 continue
@@ -725,17 +772,20 @@ class Renderer:
                 _set_uniforms(mapped_program, uniforms)
                 _set_uniforms(mapped_program, {"u_eye": tuple(float(v) for v in camera_position),
                                                "u_specular": float(self.specular),
-                                               "u_normal_strength": float(self.normal_strength)})
+                                               "u_normal_strength": float(self.normal_strength),
+                                               "u_photo_hemisphere": float(PHOTO_HEMISPHERE),
+                                               "u_photo_level": float(PHOTO_LEVEL)})
             m = self._mapped_uniforms
             m["u_mvp"].write(mvp)
             m["u_model"].write(gl_bytes(model))
             m["u_normal_matrix"].write(gl_bytes(normal_matrix))
             m["u_color"].value = colour
             m["u_lit"].value = bool(obj.lit)
-            for primitive, texture, detail_maps in later:
+            for primitive, texture, these_maps, photo in later:
                 vao, maps = self._mapped_primitive(primitive)
                 self._gl_texture(texture.at_time(t)).use(0)
-                self._gl_texture(detail_maps or maps).use(2)
+                self._gl_texture(these_maps or maps).use(2)  # (the detail maps, or the person's own)
+                self._gl_texture(photo or self._no_photo).use(3)
                 vao.render(triangles)
         for texture in self._details.trim(self.detail_heads):  # what is no longer kept leaves the GPU at once
             self._forget_texture(texture)
@@ -955,6 +1005,7 @@ class Renderer:
             prog["u_texture"].value = 0
             prog["u_joints"].value = 1
             prog["u_maps"].value = 2
+            prog["u_photo"].value = 3
             self._mapped_uniforms = {name: prog[name] for name in ("u_mvp", "u_model", "u_normal_matrix", "u_color",
                                                                    "u_lit")}
             self._mapped_program = prog
@@ -1036,7 +1087,9 @@ class Renderer:
     def memory(self) -> dict:
         """What the textures on the GPU take, in bytes (their mipmaps included): ``textures`` all of them,
         ``detail`` the heads' 2048 textures among them (``detail_heads``: how many heads have them), and how many
-        detail texture pairs were read so far (``detail_loads``)."""
+        detail texture pairs were read so far (``detail_loads``) and refused to a picture because the heads that hold
+        them need them more (``detail_refused``); ``detail_cpu`` what the detail textures take in memory besides
+        (their pixels until they are on the GPU)."""
         def size(entry) -> int:
             gl_tex = entry[1]
             pixels = gl_tex.width * gl_tex.height * 4
@@ -1046,7 +1099,8 @@ class Renderer:
         total = sum(size(e) for e in self._textures.values())
         detail = sum(size(e) for key, e in self._textures.items() if key in detail_ids)
         return {"textures": total, "detail": detail, "detail_heads": len(self._details),
-                "detail_loads": self._details.loads}
+                "detail_loads": self._details.loads, "detail_refused": self._details.refused,
+                "detail_cpu": self._details.cpu_bytes()}
 
     def _joint_texture(self, obj, reuse: bool = False):
         """The character's joint-palette texture (one per character, rewritten every frame). With ``reuse`` it is
@@ -1089,6 +1143,8 @@ class Renderer:
             if mipmaps and not entry[3]:
                 self._build_mipmaps(entry)
             return entry[1]
+        if texture.__dict__.get("pixels_dropped"):
+            raise RuntimeError(f"{texture.name}: its pixels were given up once on the GPU (drop_after_upload)")
         prepared = texture.__dict__.get("_upload")  # laid out already (textures.prepare_upload)
         if prepared is not None and prepared[0] == texture.version:
             pixels = prepared[1]
@@ -1130,6 +1186,9 @@ class Renderer:
                     gl_tex.write(pixels, level=level)
             gl_tex.filter = (self._moderngl.LINEAR_MIPMAP_LINEAR, self._moderngl.LINEAR)
         entry[3] = True
+        texture = entry[0]()
+        if texture is not None and texture.__dict__.get("drop_after_upload") and texture.version == entry[2]:
+            drop_pixels(texture)  # (a head's detail texture: read again if it is needed again)
 
     def _upload_step(self, texture: Texture) -> None:
         """One step of putting ``texture`` on the GPU (for :meth:`prepare`): its pixels, then (the next time) its

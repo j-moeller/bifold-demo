@@ -1422,21 +1422,52 @@ windows' own, so a software renderer can keep the whole view cheap while the
 windows get everything (`bifold-demo --quality low`). `renderer.specular` and
 `renderer.normal_strength` scale the lobe and the maps.
 
+**Faces from photos** (the cast's, the head-texture stages', a created
+character's: a head's `texture_overrides`) are drawn without the avatar's
+maps where the face is (`Character.photo_mask`, the oval
+`face_photo.face_mask` paints), and without the hemisphere light's variation
+there. The maps hold the avatar's folds and shine, which do not belong on
+another person's face, and a face from photos already holds the person's own
+relief and shine and soft light from above: the photo's own, or the avatar's
+painted light, which the head-texture stages put back. With them, real
+people's faces looked less like their other photos to every recogniser
+(AdaFace's genuine score 0.363 → 0.275 for faces painted on, 0.245 → 0.188 for
+faces from the head-texture stages, in the fair's windows); without them they
+score as at the low quality (0.359 and 0.245), while the avatars' own faces
+keep their maps and the hemisphere light, which help them
+([docs/research/high_res_heads_results.md](docs/research/high_res_heads_results.md)).
+The identity check of the head-texture stages renders the face the same way.
+`Character.maps_overrides` gives a person packed maps of their own for a part
+(a head fitted to the person, S3): those are drawn, in the scene's whole light.
+
 **Detail levels.** The 2048 textures cost four times the memory of the 1024
 ones (21 MiB per texture with its mipmaps, 43 MiB per head with its maps)
 and add nothing to a face smaller than about 110 pixels between the eyes. So
 the renderer draws a person's head with them only in a picture where that
 person's eyes are at least `renderer.detail_from` (64) pixels apart: a
 window of the virtual sensor, or a camera close to someone; everywhere else
-the 1024 ones ([scene/detail.py](src/bifold_demo/scene/detail.py)). The
-detail textures of the last `renderer.detail_heads` (6) heads drawn that way
-stay on the GPU, the others are freed at once. A picture that needs them
-reads them first (`renderer.detail_wait`, for tests and measurements); the
+the 1024 ones ([scene/detail.py](src/bifold_demo/scene/detail.py)); a head
+outside the picture does not count. At most `renderer.detail_heads` (6) heads
+hold their detail textures, those that need them most: a head's claim is the
+largest eye distance a picture drew it with, fading each frame no picture
+draws it, and a head takes the place of a held one only when its eyes are
+1.25 times further apart than that one's claim and no picture of the frame
+drew that one yet (whose textures then leave the GPU at once). So with more
+heads near the camera than are kept, the largest faces keep theirs and the
+others are drawn at 1024, instead of each window reading its head's 2048 PNGs
+again (8 people near, 4 windows a frame round robin: 6 reads instead of 96,
+and a frame with its windows in 0.55 s instead of 2.6; read in the background,
+295 of 480 windows at 2048 instead of none). A picture that needs them
+reads them first (`renderer.detail_wait`, for tests and measurements; set
+`detail_heads` to at least the number of near heads a frame draws there); the
 demo reads them in the background and draws the 1024 ones until they are
-there, so a frame never waits for a 2048 PNG. A texture larger than 1024
-that a person wears instead of the model's (a face made from photos) is drawn
-from its 1024 mipmap level the same way. `renderer.memory()` says what the
-textures take.
+there, so a frame never waits for a 2048 PNG. Once on the GPU, their pixels
+are given up. A texture larger than 1024 that a person wears instead of the
+model's (a face made from photos) is drawn from its 1024 mipmap level the same
+way, made where the texture is made (`prepare_upload`, on a worker thread).
+`renderer.memory()` says what the textures take on the GPU, what the detail
+textures still hold in memory (`detail_cpu`) and how many pictures were
+refused a head's detail textures (`detail_refused`).
 
 **Faces from photos at 2048.** The head-texture stages work at the size of
 the head's largest texture (`fuse.texture_size`: the detail texture's), so

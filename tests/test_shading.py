@@ -6,7 +6,7 @@ import pytest
 from bifold_demo.characters.character import Character
 from bifold_demo.characters.model import CharacterModel, Skeleton, SkinnedPrimitive
 from bifold_demo.characters.tangents import vertex_tangents
-from bifold_demo.scene import Camera, Plane, Scene
+from bifold_demo.scene import Camera, Plane, Scene, Texture
 
 pytestmark = pytest.mark.gl
 
@@ -146,6 +146,78 @@ def test_ambient_light_comes_more_from_above_with_the_hemisphere(gl):
     assert floor(0.5, "low") == floor(0.0, "high")  # the low quality keeps the ambient light the same everywhere
 
 
+# -- faces from photos: the person's own relief, shine and light -----------------------------------------------------
+
+
+def _mapped_head():
+    """The synthetic head of test_headtex (a sphere with a nose and a Rocketbox avatar's face bones), skin-coloured,
+    with tangents and a packed map that tilts every normal 30 degrees towards +u and gives it a shine."""
+    from test_headtex import synthetic_head_model
+
+    model = synthetic_head_model()
+    head = model.primitives[0]
+    head.texture = np.full((64, 64, 4), (200, 160, 140, 255), np.uint8)
+    head.tangents = vertex_tangents(head.positions, head.normals, head.uvs, head.indices)
+    packed = np.full((64, 64, 4), 255, np.uint8)
+    packed[..., 0], packed[..., 1], packed[..., 2] = round((np.sin(TILT) + 1) * 127.5), 128, 60
+    head.maps = packed
+    return model
+
+
+def _face_pixel(person, quality="high"):
+    """The middle of ``person``'s face (the synthetic head's) from the front, in light from above to the side and
+    an ambient light that comes from above (hemisphere 0.5)."""
+    from test_headtex import CENTRE
+
+    from bifold_demo.characters.headtex.camera import PhotoCamera
+
+    scene = Scene(background=(0, 0, 0), ambient=0.4, light_direction=(-0.6, -0.5, -0.6), hemisphere=0.5)
+    scene.add(person, name="p")
+    scene.update(0.0, 0.0)
+    scene.camera = PhotoCamera.around(CENTRE, 0.5, 0.0, fov=30.0, size=(64, 64)).scene_camera()
+    return _render_scene(scene, quality)[30:34, 30:34].astype(float).mean(axis=(0, 1))
+
+
+def _render_scene(scene, quality):
+    from bifold_demo.scene.renderer import Renderer
+
+    renderer = Renderer(64, 64, samples=0)
+    try:
+        renderer.quality = quality
+        return renderer.render(scene)
+    finally:
+        renderer.release()
+
+
+def test_a_face_from_photos_is_drawn_without_the_avatars_maps_and_hemisphere_light(gl):
+    """A head wearing a texture of its own (a face from photos) is drawn, where the face is, as at the low quality:
+    the avatar's normal and specular maps would put the avatar's folds and shine on the person's face, and the
+    hemisphere light would add soft light from above to a face that has it already. Given maps of its own
+    (``maps_overrides``), it is drawn with them and the scene's light."""
+    from bifold_demo.scene.textures import as_data_texture
+
+    model = _mapped_head()
+    own = _face_pixel(Character(model, shadow=False))
+    low = _face_pixel(Character(model, shadow=False), quality="low")
+    assert np.abs(own - low).max() > 10  # (the maps and the hemisphere light show on the avatar's own face)
+    photo = Character(model, shadow=False)
+    name = model.primitives[0].name
+    photo.texture_overrides[name] = Texture(model.primitives[0].texture.copy())  # (the same colours)
+    assert photo.photo_mask(model.primitives[0]) is not None
+    assert np.abs(_face_pixel(photo) - low).max() <= 1.5
+    flat = as_data_texture(np.full((8, 8, 4), (128, 128, 0, 255), np.uint8))
+    photo.maps_overrides[name] = flat
+    assert photo.photo_mask(model.primitives[0]) is None
+    plain = Character(_mapped_head(), shadow=False)
+    plain.skinned_model.primitives[0].maps = flat.rgba
+    assert np.abs(_face_pixel(photo) - _face_pixel(plain)).max() <= 1.5  # its own maps, in the scene's light
+    older = _mapped_head()  # a head of a cache without maps: the hemisphere light is left off the whole head
+    older.primitives[0].maps = older.primitives[0].tangents = None
+    photo = Character(older, shadow=False)
+    photo.texture_overrides[name] = Texture(older.primitives[0].texture.copy())
+    assert np.abs(_face_pixel(photo) - low).max() <= 1.5
+
+
 # -- detail levels: the 2048 textures only where a picture needs them ------------------------------------------------
 
 
@@ -186,6 +258,9 @@ def test_heads_get_their_detail_textures_only_where_their_eyes_are_far_enough_ap
         assert renderer.render(far)[32, 32].tolist() == [0, 0, 200]  # BGR: the 1024 texture
         assert renderer.memory()["detail_heads"] == 0
         assert renderer.render(near)[32, 32].tolist() == [0, 200, 0]  # the detail texture
+        renderer.detail_from = 2.0  # (the eyes are 2.5 pixels apart: still near)
+        assert renderer.render(near)[32, 32].tolist() == [0, 200, 0]
+        renderer.detail_from = 1.0
         memory = renderer.memory()
         assert memory["detail_heads"] == 1 and memory["detail_loads"] == 1 and 0 < memory["detail"] < memory["textures"]
         renderer.detail_from = float("inf")  # never
@@ -216,6 +291,109 @@ def test_detail_textures_can_be_read_in_the_background(gl):
             time.sleep(0.02)
             shown.append(renderer.render(near)[32, 32].tolist())
         assert shown[0] in ([0, 0, 200], [0, 200, 0]) and shown[-1] == [0, 200, 0]  # the 1024 until it is there
+    finally:
+        renderer.release()
+
+
+def test_a_near_head_is_drawn_with_its_detail_maps(gl):
+    """Near, a head is drawn with its detail maps too (here tilted the other way than its 1024 maps, under a light
+    from the side the 1024 maps' slopes face)."""
+    from bifold_demo.characters.model import Detail
+    from bifold_demo.scene.renderer import Renderer
+
+    model = _wall(tilt=(TILT, 0.0)).skinned_model
+    model.skeleton = Skeleton(["Head"], [-1], np.eye(4)[None])
+    part = model.primitives[0]
+    part.positions = part.positions - np.array([0, 1, 0], np.float32)  # the wall round the head bone
+    part.detail = Detail(part.texture, _wall(tilt=(-TILT, 0.0)).skinned_model.primitives[0].maps)
+    scene = Scene(background=(0, 0, 0), ambient=0.0, light_direction=(-1.0, 0.0, -1.0))
+    scene.camera = Camera(position=(0, 0, 2), target=(0, 0, 0), fov=40)
+    scene.add(Character(model, shadow=False), name="p")
+    scene.update(0.0, 0.0)
+    renderer = Renderer(64, 64, samples=0)
+    try:
+        renderer.detail_from = float("inf")
+        with_1024 = int(renderer.render(scene)[32, 32, 1])
+        renderer.detail_from = 1.0
+        with_detail = int(renderer.render(scene)[32, 32, 1])
+    finally:
+        renderer.release()
+    assert with_detail < with_1024 - 15
+
+
+def _crowd(xs, detail=(0, 200, 0)):
+    """People at ``xs`` = [(x, z)] (metres) in front of a camera at (0, 0, 4) looking at the origin, each a wall
+    centred on its "Head" bone with a red 1024 texture and a detail texture of ``detail``."""
+    from bifold_demo.characters.model import CharacterState
+
+    scene = Scene(background=(0, 0, 0), ambient=1.0)
+    scene.camera = Camera(position=(0, 0, 4), target=(0, 0, 0), fov=40)
+    people = []
+    for k, (x, z) in enumerate(xs):
+        person = _headed((200, 0, 0), detail=detail)
+        part = person.skinned_model.primitives[0]
+        part.positions = part.positions - np.array([0, 1, 0], np.float32)  # the wall round the head bone
+        person.behaviour = (lambda _t, p=(x, 0.0, z): CharacterState(p, 0.0, []))
+        scene.add(person, name=f"p{k}")
+        people.append(person)
+    scene.update(0.0, 0.0)
+    return scene, people
+
+
+def _window_on(renderer, scene, person, half=0.15):
+    """A 64x64 window round ``person``'s head bone (the middle pixel's BGR)."""
+    p = scene.camera.projection_matrix(1.0) @ scene.camera.view_matrix() @ np.append(person.current_position, 1.0)
+    x, y = p[:2] / p[3]
+    return renderer.render_window(scene, (x - half, y - half, x + half, y + half), (64, 64))[32, 32].tolist()
+
+
+def test_more_heads_near_than_are_kept_keep_their_places(gl):
+    """Three people near the camera, room for two heads' detail textures, a window on each head every frame (the
+    sensor's windows, round robin): the two read first keep theirs and are read once, the third is drawn at 1024
+    without being read; a head that comes much nearer takes the place of the weakest one no picture of the frame drew
+    yet, whose textures leave the GPU at once."""
+    from bifold_demo.characters.model import CharacterState
+    from bifold_demo.scene.renderer import Renderer
+
+    scene, people = _crowd([(-1.2, -0.5), (0.0, 0.0), (1.2, 0.0)])  # the first a little further away
+    renderer = Renderer(64, 64, samples=0)
+    renderer.detail_heads, renderer.detail_from = 2, 3.0  # (the view's faces are 1.4 pixels: the windows' 9)
+    green, red = [0, 200, 0], [0, 0, 200]
+    try:
+        for _frame in range(5):
+            renderer.render(scene)
+            assert [_window_on(renderer, scene, p) for p in people] == [green, green, red]
+        memory = renderer.memory()
+        assert memory["detail_loads"] == 2 and memory["detail_heads"] == 2 and memory["detail_refused"] == 5
+        assert memory["detail_cpu"] == 0  # the pixels given up once on the GPU
+        textures = memory["textures"]
+        # the third comes nearer (twice the eye distance) and is drawn first: it takes the first one's place
+        people[2].behaviour = (lambda _t: CharacterState((1.0, 0.0, 2.0), 0.0, []))
+        scene.update(0.0, 0.0)
+        for _frame in range(3):
+            renderer.render(scene)
+            assert [_window_on(renderer, scene, p) for p in people[::-1]] == [green, green, red]
+        memory = renderer.memory()
+        assert memory["detail_loads"] == 3 and memory["detail_heads"] == 2
+        assert memory["textures"] == textures  # the first's detail textures left the GPU
+    finally:
+        renderer.release()
+
+
+def test_a_head_outside_the_picture_is_not_read(gl):
+    from bifold_demo.scene.detail import eye_pixels
+    from bifold_demo.scene.renderer import Renderer
+
+    view_proj = np.eye(4)  # (normalised device coordinates are the scene's)
+    assert eye_pixels((0.0, 0.0, 0.5), view_proj, (100, 100), (1.0, 0.0, 0.0)) == pytest.approx(3.15)
+    assert eye_pixels((1.05, 0.0, 0.5), view_proj, (100, 100), (1.0, 0.0, 0.0)) > 0  # its face may reach in
+    assert eye_pixels((1.5, 0.0, 0.5), view_proj, (100, 100), (1.0, 0.0, 0.0)) == 0.0
+    scene, _people = _crowd([(-1.5, 3.0)])  # beside the camera, outside its 40-degree picture
+    renderer = Renderer(64, 64, samples=0)
+    renderer.detail_from = 1.0
+    try:
+        renderer.render(scene)
+        assert renderer.memory()["detail_loads"] == 0
     finally:
         renderer.release()
 

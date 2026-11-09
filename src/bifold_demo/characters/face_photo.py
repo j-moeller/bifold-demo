@@ -44,6 +44,8 @@ class HeadLayout:
 
 
 _layouts: dict[int, tuple] = {}
+_masks: dict[int, tuple] = {}
+MASK_SIZE = 256  # pixels: the face mask (face_mask) of a head texture; it is smooth
 
 
 def _head_primitive(model) -> int | None:
@@ -133,6 +135,28 @@ def paint_face(model, photo: np.ndarray, landmarks, box=None, base_texture=None)
     photo_points = layout.front @ to_photo[:, :2].T + to_photo[:, 2]  # every head vertex's photo pixel
 
     # where each painted texture pixel looks in the photo, and how much of the photo it takes
+    map_x, map_y, weight = _coverage(layout, head, (tw, th), photo_points)
+    if not weight.any():
+        raise ValueError("the face does not reach the head texture")
+    sampled = cv2.remap(photo, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    if box is not None:
+        weight *= cv2.remap(_face_mask(photo.shape[:2], box), map_x, map_y, cv2.INTER_LINEAR,
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+    sampled = cv2.cvtColor(sampled, cv2.COLOR_BGR2RGB).astype(np.float32)
+    inside = weight > 0.5
+    if inside.sum() > 50:  # move the photo's skin tone towards the avatar's
+        own, theirs = atlas[..., :3][inside].mean(axis=0), sampled[inside].mean(axis=0)
+        sampled = np.clip(sampled + TONE * (own - theirs), 0.0, 255.0)
+    w = weight[..., None]
+    atlas[..., :3] = atlas[..., :3] * (1.0 - w) + sampled * w
+    return atlas.clip(0, 255).astype(np.uint8)
+
+
+def _coverage(layout: HeadLayout, head, size, photo_points: np.ndarray):
+    """``(map_x, map_y, weight)`` at ``size`` = (width, height) of the head texture: for each texture pixel of the
+    painted oval, its point in the photo (``photo_points``: each head vertex's) and how much of the photo it takes (the
+    oval's feathered edge, faded where the surface turns sideways); -1 and 0 elsewhere."""
+    tw, th = size
     eyes, mouth = layout.landmarks[:2].mean(axis=0), layout.landmarks[3:].mean(axis=0)
     centre = 0.5 * (eyes + mouth)
     radii = np.array(OVAL) * layout.eye_distance
@@ -150,20 +174,31 @@ def paint_face(model, photo: np.ndarray, landmarks, box=None, base_texture=None)
         if fade[tri].max() <= 0.0:
             continue
         _fill(pixels[tri], photo_points[tri], fade[tri], map_x, map_y, weight)
-    if not weight.any():
-        raise ValueError("the face does not reach the head texture")
-    sampled = cv2.remap(photo, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-    if box is not None:
-        weight *= cv2.remap(_face_mask(photo.shape[:2], box), map_x, map_y, cv2.INTER_LINEAR,
-                            borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
-    sampled = cv2.cvtColor(sampled, cv2.COLOR_BGR2RGB).astype(np.float32)
-    inside = weight > 0.5
-    if inside.sum() > 50:  # move the photo's skin tone towards the avatar's
-        own, theirs = atlas[..., :3][inside].mean(axis=0), sampled[inside].mean(axis=0)
-        sampled = np.clip(sampled + TONE * (own - theirs), 0.0, 255.0)
-    w = weight[..., None]
-    atlas[..., :3] = atlas[..., :3] * (1.0 - w) + sampled * w
-    return atlas.clip(0, 255).astype(np.uint8)
+    return map_x, map_y, weight
+
+
+def face_mask(model) -> Texture | None:
+    """Where a face from photos goes on ``model``'s head texture: the oval :func:`paint_face` paints, with its
+    feathered edge and fading where the head turns sideways (the head-texture stages fill much the same face, see
+    :mod:`.headtex`), as a data texture of :data:`MASK_SIZE` pixels (red: 0-1, the head texture's layout) for the
+    renderer, made once per model; ``None`` without a head to paint on. There a face from photos is drawn without the
+    avatar's normal and specular maps, which hold the avatar's own relief and shine, and without the hemisphere light's
+    variation: the photos hold the person's own relief and shine, and soft light from above (see
+    :data:`~bifold_demo.scene.renderer.PHOTO_HEMISPHERE`)."""
+    cached = _masks.get(id(model))
+    if cached is not None and cached[0] is model:
+        return cached[1]
+    layout = head_layout(model)
+    texture = None
+    if layout is not None:
+        head = model.primitives[layout.primitive]
+        _x, _y, weight = _coverage(layout, head, (MASK_SIZE, MASK_SIZE), layout.front)
+        rgba = np.zeros((MASK_SIZE, MASK_SIZE, 4), np.uint8)
+        rgba[..., 0] = np.clip(weight * 255.0 + 0.5, 0, 255).astype(np.uint8)
+        rgba[..., 3] = 255
+        texture = Texture(rgba, name=f"{model.name} face from photos", srgb=False)
+    _masks[id(model)] = (model, texture)
+    return texture
 
 
 def _face_mask(shape, box) -> np.ndarray:

@@ -44,7 +44,12 @@ class Character(SceneObject):
     ``props`` (rigid scene objects that follow bones; updated after the pose and drawn with the character), and
     ``pose_adjusters``: ``fn(local, character, t)`` that edit the local bone transforms of the clips before the
     skeleton is posed (an arm holding a sign). ``texture_overrides`` maps a primitive's name to a texture this person
-    has instead of the model's (a real face painted on the head, see :mod:`.face_photo`).
+    has instead of the model's (a real face painted on the head, see :mod:`.face_photo`), and ``maps_overrides`` to a
+    packed normal and specular map (a data :class:`~bifold_demo.scene.textures.Texture`, as
+    :func:`~bifold_demo.scene.textures.as_data_texture` makes them; see :mod:`.tangents`) drawn instead of the model's
+    at the renderer's high quality: maps made for this person's own texture of the part (a head fitted to a person).
+    A head that wears a face from photos without maps of its own is drawn without the avatar's maps where the face
+    is (:meth:`photo_mask`).
     Creating a character starts decoding its texture files, visible or not (``texture_jobs``: the futures
     from :func:`preload_textures`).
 
@@ -83,8 +88,25 @@ class Character(SceneObject):
         self.props: list = []
         self.pose_adjusters: list = []
         self.texture_overrides: dict[str, object] = {}  # primitive name -> this person's own texture (a face)
+        self.maps_overrides: dict[str, object] = {}  # primitive name -> this person's own packed map (a Texture)
         self._time = 0.0
         self.update(0.0)
+
+    def photo_mask(self, primitive):
+        """Where this person's own texture of ``primitive`` (``texture_overrides``) is a face from photos, for the
+        renderer: a data texture (red 0-1, :func:`.face_photo.face_mask`) when the part is the head and wears a
+        texture of its own without maps of its own (``maps_overrides``; the textures heads are given are faces from
+        photos: :mod:`.face_photo`, :mod:`.headtex`, the character creator), else ``None``. The renderer draws that
+        face without the avatar's normal and specular maps, which hold the avatar's own relief and shine, and without
+        the hemisphere light's variation (:data:`~bifold_demo.scene.renderer.PHOTO_HEMISPHERE`)."""
+        if primitive.name not in self.texture_overrides or primitive.name in self.maps_overrides:
+            return None  # the model's texture, or maps made for this person's own
+        from .face_photo import face_mask, head_layout
+
+        layout = head_layout(self.skinned_model)
+        if layout is None or self.skinned_model.primitives[layout.primitive] is not primitive:
+            return None
+        return face_mask(self.skinned_model)
 
     def _build_mesh(self) -> Mesh:
         prims = self.skinned_model.primitives
