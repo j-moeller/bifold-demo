@@ -454,3 +454,34 @@ branch and pushed; its results go into the progress log.
     - each fitted head: about 0.2 MB of GPU buffers.
   - **On the Mac,** the identity space is fetched once with `bifold-characters identity-space` (395 MB of OBJ
     files, kept as a 21 MB file).
+- **9 November, 14:20 UTC: F2's review finished.**
+  - **Verdict:** not ready for E1 until the high findings are fixed. 4 high, 9 medium and 6 low findings. Every number
+    the builder reported reproduced exactly.
+  - **Found sound:** the tracker, the assignment solver (against brute force on 3,000 random matrices), YOLOX (against
+    the official code), T-norm's leave-out, the calibration tooling, and the shipped files (avatars only).
+  - **High:**
+    - the same name on two tracks after a track swap;
+    - recognition stalls after `R` or a trip to the webcam, because the clock went back. A reload can also keep an old
+      name on a stranger for up to 3 s.
+    - the shipped calibrations deliver about 1.6-1.9 times the asked false-alarm rate per decision on unseen avatars,
+      per track about twice that, and on real faces 3-6 times at 1 in 1,000. With 37 identities the check cannot
+      support 0.1 %.
+    - a model without its own calibration, such as AuraFace on the Mac, would name over a third of strangers.
+  - **Medium:**
+    - faces of people the detector missed feed their neighbours' tracks;
+    - "unknown" turns into a name too fast;
+    - a swapped track keeps its name for 5 s with small faces;
+    - stale results wipe the window requests;
+    - the docs overstate the checks;
+    - 11 of 50 mutations survive;
+    - gaps in the API E1 needs;
+    - one calibration avatar shares a face with one of the fair's;
+    - the best profile spends its budget round-robin. At one AdaFace embedding a second no order meets the 2 s target
+      for a crowd.
+  - **The builder fixes them forward:**
+    - calibrations from about 95 avatars;
+    - `--fpir` per track, with a margin for the uncertainty;
+    - no names from uncalibrated models;
+    - finish-first scheduling;
+    - and the rest.
+  - **E1** starts after these fixes.
