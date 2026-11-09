@@ -428,6 +428,20 @@ def cmd_yoga(args) -> int:
     return 1 if failed else 0
 
 
+def cmd_identity(args) -> int:
+    """Download ICT-FaceKit Light's identity space for fitting heads to people's photos (``identity/`` in the
+    characters folder)."""
+    from .headshape import space
+
+    target = Path(args.dest).expanduser() / "identity" if args.dest else None
+    try:
+        path = space.fetch(target, jobs=args.jobs, keep_raw=args.keep_raw, force=args.force)
+    except OSError as exc:  # (a DownloadError is one)
+        return _error(str(exc), 1)
+    print(f"[identity] ready: {path} (with ICT-FaceKit's licence, {space.LICENSE_FILE}, beside it)")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bifold-characters", description="Download and prepare 3D people "
                                      "(Microsoft Rocketbox avatars and animations, MIT licence).")
@@ -503,6 +517,12 @@ def build_parser() -> argparse.ArgumentParser:
     fb.add_argument("--scale", type=float, help="metres per repeat (default: by the kind of fabric)")
     fb.add_argument("--texture", help="write the avatar's new body texture here (PNG; needs --avatar)")
     fb.add_argument("--views", help="write the avatar from the front and the back here (needs --avatar and OpenGL)")
+
+    ident = add("identity-space", cmd_identity, "download ICT-FaceKit Light's identity space (MIT licence; 395 MB of "
+                "OBJ files, kept as a 21 MB file) for fitting the heads of people from photos to their shapes")
+    ident.add_argument("--jobs", type=int, default=8, help="parallel downloads (default 8)")
+    ident.add_argument("--keep-raw", action="store_true", help="keep the downloaded OBJ files")
+    ident.add_argument("--force", action="store_true", help="download and convert again even if it is there")
 
     i = add("info", cmd_info, "show the details of an avatar or animation clip")
     i.add_argument("name", help="avatar or clip name, e.g. Business_Female_01 or m_walk_neutral_01")

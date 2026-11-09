@@ -914,21 +914,25 @@ def register_photo(photo, head, model, *, view: str | None = None, landmarker=No
     return _finish(p, _by_landmarks(p, faces, head, model), head, model, reference, segmenter)
 
 
-def register_photos(photos, head, model, *, views=None, focals=None, landmarker=None, segmenter=None) -> list[View]:
+def register_photos(photos, head, model, *, views=None, focals=None, landmarker=None, segmenter=None, faces=None,
+                    masks=None) -> list[View]:
     """Register several photos of one person (one session, one camera). A focal length given for one photo (or read
     from its EXIF data) holds for the others of the same picture shape (turned or scaled: the same camera; cropped:
     not). The most frontal photo registered by its face is the reference: the photos still without a focal length
     take its estimated one (a turned face tells the focal length poorly), and the photos without a usable face are
     placed by their outline at its distance from the head. ``views``: a view name (or ``None``) per photo;
-    ``focals``: a focal length in pixels (or ``None``) per photo."""
+    ``focals``: a focal length in pixels (or ``None``) per photo; ``faces`` and ``masks``: what the landmarker and the
+    segmenter found in each photo already (then they are not run again for it; a photo registered to several heads
+    is looked at once)."""
     views = list(views) if views is not None else [None] * len(photos)
     focals = list(focals) if focals is not None else [None] * len(photos)
-    if landmarker is None:
+    given_masks = list(masks) if masks is not None else [None] * len(photos)
+    if landmarker is None and faces is None:
         from .detect import Landmarker
 
         landmarker = Landmarker()
-    prepared = [_prepare(photo, v, f, None, segmenter) for photo, v, f in zip(photos, views, focals)]
-    faces = [landmarker.detect(p.image) for p in prepared]
+    prepared = [_prepare(photo, v, f, m, segmenter) for photo, v, f, m in zip(photos, views, focals, given_masks)]
+    faces = list(faces) if faces is not None else [landmarker.detect(p.image) for p in prepared]
     # by the landmarks alone first (the reference comes from these, and the outline fits need the reference); the
     # photos with a focal length of their own before the others, which take it
     own = [p.focal_known for p in prepared]

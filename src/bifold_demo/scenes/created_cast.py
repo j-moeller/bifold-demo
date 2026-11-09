@@ -68,7 +68,7 @@ from .. import pacing
 from ..characters import camera_play
 from ..characters.behaviour import fits_period
 from ..characters.character import Character
-from ..characters.created import CharacterBook, CreatedCharacter, apply_looks, prepare_looks
+from ..characters.created import CharacterBook, CreatedCharacter, apply_looks, prepare_looks, wearing
 from ..characters.crowd import Recipe, age_group, avatar_style, same_style, sex
 from ..characters.performer import Performer
 from . import fair
@@ -128,7 +128,9 @@ def stand_in(original, created: CreatedCharacter, library, people=(), *, wardrob
     see :mod:`bifold_demo.pacing`); raises ``KeyError`` or ``ValueError`` when the avatar is not available."""
     pause = pacing.pause
     pause()
-    model = library.load(created.avatar)
+    model, note = wearing(created, library.load(created.avatar))  # (the head fitted to the person, if it was)
+    if note:
+        print(f"[created] {note}")
     pause()
     recipe = original.recipe
     style = avatar_style(library.available().get(created.avatar, {}), model, recipe.library)
@@ -227,6 +229,19 @@ def _held(obj) -> bool:
 def _hold(obj) -> None:
     obj.visible = False
     obj.current_visible = False
+
+
+def _head(created) -> tuple | None:
+    """What tells two head shapes of characters apart (``None``: the avatar's own head): another shape needs a new 3D
+    person, like another avatar."""
+    shape = getattr(created, "shape", None)
+    if shape is None:
+        return None
+    import hashlib
+
+    import numpy as np
+
+    return shape.avatar, hashlib.blake2b(np.ascontiguousarray(shape.offsets).tobytes(), digest_size=8).hexdigest()
 
 
 def _version(created) -> tuple:
@@ -457,7 +472,8 @@ class CreatedCast:
                 continue
             created = wanted[name]
             if (place.looks[1] if place.looks is not None else place.version) != _version(created):
-                self._submit(created, place, looks=place.created is not None and created.avatar == place.avatar)
+                self._submit(created, place, looks=place.created is not None and created.avatar == place.avatar
+                             and _head(created) == _head(place.created))
         self.waiting = []
         catalog = None
         for name, created in wanted.items():  # new ones, oldest first: the next free place

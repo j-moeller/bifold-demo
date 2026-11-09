@@ -92,6 +92,25 @@ class Character(SceneObject):
         self._time = 0.0
         self.update(0.0)
 
+    def use_model(self, model: CharacterModel) -> None:
+        """Wear ``model`` instead of the current one: a version of the same avatar with the same bones (the avatar
+        with its head fitted to a person, :func:`~.headshape.rig.apply_shape`, or the avatar again). The behaviour,
+        the clips, the textures and what the person wears stay; the rest pose, the skinning and the head's bones are
+        the new model's from the next :meth:`update` on (the current pose is made again at once)."""
+        if [n for n in model.skeleton.names] != [n for n in self.skinned_model.skeleton.names]:
+            raise ValueError(f"{model.name}'s skeleton is not {self.skinned_model.name}'s")
+        self.skinned_model = model
+        self.texture_jobs = preload_textures(model)
+        self.poser = _FastPoser(model)
+        skeleton = model.skeleton
+        self._rest_pose = skeleton.rest_global.copy()
+        self._rest_palette = model.skinning_matrices(skeleton.rest_global).astype(np.float32)
+        self._rest_pose.flags.writeable = self._rest_palette.flags.writeable = False
+        self._mesh = None
+        self.pose, self.skin_palette = self._rest_pose, self._rest_palette
+        if self.current_visible:
+            self._pose(self.state)
+
     def photo_mask(self, primitive):
         """Where this person's own texture of ``primitive`` (``texture_overrides``) is a face from photos, for the
         renderer: a data texture (red 0-1, :func:`.face_photo.face_mask`) when the part is the head and wears a

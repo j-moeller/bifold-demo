@@ -1935,6 +1935,90 @@ about 1.5 s, the checks about 1 s (the identity check 0.5-1.5 s more).
 
 Photos of people and textures made from them are personal data: keep them in
 git-ignored folders (like `faces/`) and never commit them.
+
+## Head shapes from photos
+
+A face from photos used to be a texture on the avatar's own head: the eyes,
+brows, nose and mouth warped onto the avatar's, the head keeping the avatar's
+proportions, profile and outline.
+[`characters/headshape/`](src/bifold_demo/characters/headshape) gives the
+head the person's own shape, as far as their photos tell, on the avatar's
+own mesh and rig (the approach:
+[docs/research/high_res_faces.md](docs/research/high_res_faces.md), section
+3.2). It needs MediaPipe (as the head textures do) and, for the best results,
+ICT-FaceKit Light's identity space (USC ICT, MIT licence: a neutral head with
+100 identity modes and 53 ARKit-named expressions, from light-stage scans):
+
+```bash
+bifold-characters identity-space   # 395 MB of OBJ files, each checked by its SHA-256, kept as a 21 MB file
+```
+
+It goes into `identity/` in the characters folder (`BIFOLD_IDENTITY_SPACE`
+puts it elsewhere), with ICT-FaceKit's licence beside it; the OBJ files are
+deleted. Without it the fit falls back to a free-form correction of the
+avatar's head (proportions where the photos agree, nothing where they do not).
+
+- **The space on each avatar's head** (once per head model, about 10 s,
+  cached in `headtex/` like the landmarks): the head's parts (skin, eyeballs,
+  the mouth's inside, the neck's edge, and the lashes, hair cards, glasses or
+  keffiyeh that move with it); ICT's head lined up with it by MediaPipe's
+  landmarks on both (those on ICT's head ship with the code) and laid onto it
+  by a non-rigid registration that keeps the lips and lids on their own side;
+  the 100 modes and 53 expressions as offsets of the avatar's vertices; the
+  avatar's own coefficients (the rest is the artist's detail, which a fit
+  keeps). The closed lips are tied so that they stay closed.
+- **The fit** (`fit_person`, about 5 s for six photos): all of a person's
+  photos at once, by Levenberg-Marquardt: the coefficients, per photo the
+  camera and, only where MediaPipe scores one, the expression (ICT's shapes,
+  started from MediaPipe's blendshape scores), the focal length (EXIF data,
+  else free with a prior), the head's size from the irises (11.7 mm across;
+  else the avatar's own size; the summary says which). MediaPipe's landmarks
+  count by their reliability on the mesh, by how squarely the camera sees them
+  and by how faithfully they follow a head's shape (measured: well for the
+  eyes, brows and mouth, poorly for the nose, cheeks and outline); the jaw
+  line counts as the head's outline in each photo; a prior keeps the
+  coefficients near the avatar's where the photos say nothing. One photo, no
+  face, or a fit no better than the avatar's own head keep the avatar's head,
+  with the reason.
+- **On the rig** (`apply_shape`): a copy of the avatar that shares everything
+  but the head, the parts that move with it and the skeleton; the eyeballs
+  move rigidly with their lids, the teeth, gums and tongue with the lips and
+  the jaw, the face bones by the skin around them (inverse binds follow),
+  normals turn with the surface and tangents are made again, so the
+  textures, the normal maps, the face rig and the animations apply as before.
+  Checks in each of the 12 funny faces (the tongue among them), seen from the
+  front and the side: no eyeball through a lid, no more teeth or tongue
+  through the lips than the avatar shows, the neck's edge where it was,
+  nothing folded or exploded; a shape that fails is tried at 75 % and 50 %,
+  then dropped.
+- **The texture on the fitted head** (`fitted_person`): the head-texture
+  stages run on the fitted model, the stage-0 landmarks and the head's
+  regions carried over, the registration with the fit's focal lengths.
+- **Kept** as a `shape.npz` of about 25 KB (offsets, bones, coefficients,
+  scale, residuals; no pickles, no photos): beside a created character's
+  `character.json`, and for a known face of the fair in its folder under
+  `faces/.headtex/`. The known faces of the fair and created characters wear
+  their fitted heads; characters saved before keep the avatar's head.
+
+```python
+from bifold_demo.characters.headshape import fitted_person
+
+person = fitted_person(["front.jpg", "left.jpg", "right.jpg"], model, cache="textures/")
+print(person.summary())            # the fit (scale from the irises?), the checks, the textures' stages
+person.wear(character)             # the fitted head and the textures on a scene Character of that model
+```
+
+How well it works is measured with avatars as people (renders of one avatar
+fitted onto another's head and compared with it, as the NoW benchmark aligns
+and measures; `characters/headshape/evaluate.py`) and with random identities
+of the space: [docs/research/head_shape_results.md](docs/research/head_shape_results.md).
+On eight pairs of the tuning avatars (six renders up to 60° turned, focal
+length unknown), the median landmark error went from 2.8 mm (the avatar's own
+head) to 2.3 mm and the surface error over the face from 1.3 to 1.1 mm.
+
+A fitted face shape is biometric data like the photos it comes from: it is
+kept only in git-ignored folders and deleted with the person or character.
+
 ## Character creator
 
 `C` opens the character creator (in selection mode: for the selected person,
@@ -2402,6 +2486,9 @@ src/bifold_demo/
                headtex/ (head textures from photos: landmarks on the mesh, photos registered,
                          projected, fused, de-lit; the skin tone; completed, the body's
                          skin and the hair matched, checked),
+               headshape/ (head shapes from photos: ICT-FaceKit's identity space on each
+                           head, the multi-photo fit, the fitted head on the rig, checks,
+                           shape.npz, the texture on the fitted head, the evaluation),
                created.py (characters from the character creator, saved),
                rocketbox.py + library.py + cli.py (bifold-characters),
                rocketbox_catalog.json (avatar labels)                   ← 3D people

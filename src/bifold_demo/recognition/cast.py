@@ -6,11 +6,14 @@ gives newly added people a 3D person a second later. A face can also be put on s
 from selection mode. Characters made in the character creator (``person.created``, see ``scenes.created_cast``) have
 faces of their own: they never get a known person's.
 
-The face comes from all the person's photos: the head textures from photos (``characters.headtex``, stages 0 to 7:
-the photos projected onto the avatar's head, completed, the body's skin and the hair matched to the face) give the 3D
-person a new head texture, a body texture with the person's skin and recoloured hair. That takes a few seconds (the
-first time for an avatar some more), so it runs on a worker thread, and the result is kept by the photos' contents
-in the faces folder (``.headtex/<name>/``), so the next start reuses it. Textures made from the photos are personal
+The face comes from all the person's photos: the head's shape fitted to them (``characters.headshape``: the
+avatar's head given the person's proportions, profile and outline as far as the photos tell, on the avatar's rig) and
+the head textures from photos made on that head (``characters.headtex``, stages 0 to 7: the photos projected onto the
+head, completed, the body's skin and the hair matched to the face) give the 3D person their head, a new head texture,
+a body texture with the person's skin and recoloured hair. With one photo, or when the fit does not help, the avatar's
+own head is kept. That takes a few seconds (the first time for an avatar some more), so it runs on a worker thread,
+and the result is kept by the photos' contents in the faces folder (``.headtex/<name>/``, the shape as a
+``shape.npz`` beside the textures), so the next start reuses it. Textures and shapes made from the photos are personal
 data like the photos: a person's are deleted when the person leaves the folder. Without MediaPipe, or when the photos
 cannot be used (no face MediaPipe accepts, say), the face is painted from the first photo onto the avatar's head
 texture (``characters.face_photo``), as before, with a message saying why. The face appears when it is ready.
@@ -42,6 +45,7 @@ class FaceCast:
         self._wearing: dict[int, tuple] = {}  # id(character) -> (character, name, photos, by hand, textures worn)
         self._painting: dict[int, tuple] = {}  # id(character) -> (character, name, photos, by hand, future)
         self._pool: ThreadPoolExecutor | None = None
+        self._own: dict[int, object] = {}  # id(character) -> its own model, while it wears a fitted head
         self._checked = -1e9
         self._told: set[str] = set()  # the fallback's reasons said once
 
@@ -68,12 +72,15 @@ class FaceCast:
                 continue
             del self._painting[key]
             try:
-                textures, note = future.result()
+                textures, note, head = future.result()
             except Exception as exc:  # noqa: BLE001 - a photo that cannot be used: say so, keep going
                 messages.append(f"cannot put {name}'s face on {character.name}: {exc}")
                 continue
             self._take_off(character)
             worn = _wear(character, textures)
+            if head is not None:  # the head fitted to the person
+                self._own.setdefault(id(character), character.skinned_model)
+                character.use_model(head)
             self._wearing[key] = (character, name, photos, by_hand, worn)
             messages.append(f"{character.name} has {name}'s face")
             if note and note not in self._told:  # (a reason once: MediaPipe's is the same for everyone)
@@ -158,7 +165,8 @@ class FaceCast:
         engine = self.gallery.engine
         root = self._cache_root()
         cache = root / name if root is not None and _folder_name(name) else None
-        future: Future = self._pool.submit(_made, character, list(photos), engine, cache)
+        own = self._own.get(id(character))  # the avatar, when the character wears someone's fitted head
+        future: Future = self._pool.submit(_made, character, list(photos), engine, cache, own)
         self._cancel(character)
         self._painting[id(character)] = (character, name, photos, by_hand, future)
 
@@ -188,6 +196,9 @@ class FaceCast:
         entry = self._wearing.pop(id(character), None)
         if entry is not None:
             _take_off(character, entry[-1])
+        own = self._own.pop(id(character), None)
+        if own is not None:  # its own head again
+            character.use_model(own)
 
     def _forget(self) -> None:
         """A new scene: the people of the old one are gone."""
@@ -195,6 +206,7 @@ class FaceCast:
             entry[-1].cancel()
         self._painting.clear()
         self._wearing.clear()
+        self._own.clear()
         self._checked = -1e9
 
     def close(self) -> None:
@@ -209,31 +221,36 @@ def _folder_name(name: str) -> bool:
     return bool(name) and not name.startswith(".") and "/" not in name and "\\" not in name
 
 
-def _made(character, photos, engine, cache) -> tuple[dict, str | None]:
-    """``(textures, note)`` for ``character`` from ``photos`` (on the worker thread): the head textures from the
-    photos (:func:`_from_photos`), else the face painted from the first photo (:func:`_painted`) and ``note`` says
-    why."""
+def _made(character, photos, engine, cache, model=None) -> tuple[dict, str | None, object]:
+    """``(textures, note, head)`` for ``character`` (of the avatar ``model``, default its own) from ``photos`` (on the
+    worker thread): the fitted head and the head textures from the photos (:func:`_from_photos`; ``head`` is the
+    avatar with the fitted head, or ``None`` for its own), else the face painted from the first photo
+    (:func:`_painted`) and ``note`` says why."""
     from ..scene.textures import Texture, prepare_upload
 
     try:
-        made = _from_photos(character, photos, cache)
+        made = _from_photos(character, photos, cache) if model is None else _from_photos(character, photos, cache,
+                                                                                          model)
+        made, head = made if isinstance(made, tuple) else (made, None)
         return {name: prepare_upload(Texture(rgba, name=f"{character.name} {name}")) for name, rgba in made.items()}, \
-            None
+            None, head
     except ImportError:  # MediaPipe is not installed (the message says how to get it)
         why = "MediaPipe is not installed, see the README"
     except Exception as exc:  # noqa: BLE001 - photos the head textures cannot use: the simple painting
         why = f"the head texture from the photos failed: {exc}"
     texture = _painted(character, photos[0], engine)
     head = character.skinned_model.primitives[face_photo.head_layout(character.skinned_model).primitive]
-    return {head.name: prepare_upload(texture)}, f"painted from one photo: {why}"
+    return {head.name: prepare_upload(texture)}, f"painted from one photo: {why}", None
 
 
-def _from_photos(character, photos, cache) -> dict:
-    """The head textures from photos (stages 0 to 7, kept in ``cache``) for ``character``'s avatar: RGBA images by
-    primitive name (the head, the body's skin, the hair)."""
-    from ..characters.headtex.person import person_textures
+def _from_photos(character, photos, cache, model=None) -> tuple[dict, object]:
+    """The head fitted to the photos and the head textures from them (kept in ``cache``) for ``character``'s avatar
+    (``model``, default its own): RGBA images by primitive name (the head, the body's skin, the hair), and the avatar
+    with the fitted head (``None``: its own head)."""
+    from ..characters.headshape import fitted_person
 
-    return person_textures(photos, character.skinned_model, cache=cache).textures
+    person = fitted_person(photos, model if model is not None else character.skinned_model, cache=cache)
+    return person.textures, (person.model if person.shape is not None else None)
 
 
 def _painted(character, photo, engine):

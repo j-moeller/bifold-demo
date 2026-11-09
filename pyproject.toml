@@ -41,6 +41,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "bifold_demo.characters" = ["*.json"]
 "bifold_demo.characters.outfit" = ["*.json", "overrides/*.json"]
+"bifold_demo.characters.headshape" = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
