@@ -16,8 +16,8 @@ the ratios are steadier. The scratch scripts are not in the repository.
 - **The faces get their shape back.** With the normal and specular maps the folds of the eyelids, the nose, the
   nasolabial folds and the lips catch the light, and the skin has a sheen where the artists painted it (the preview).
   This changes faces more than anything else in S2: to the face embedders a window's face moves to a cosine of 0.86
-  (AdaFace; 0.70 at worst) from the same window drawn flat, and the identities separate a little better (d'
-  +0.3-0.4).
+  (AdaFace; 0.70 at worst) from the same window drawn flat, and the identities separate a little better (d' +0.30
+  to +0.45 for AdaFace, +0.29 to +0.57 for ArcFace R50, up to +0.21 for SFace, in this run and the review's).
 - **2048 changes little for today's embedders.** They see a 112-pixel crop with the eyes 35 pixels apart, so a
   window's face (eyes 52-132 pixels apart in these measurements) is shrunk before they see it, and the 1024 texture
   (112 texels between the eyes) already holds what reaches them: from 1024 to 2048 the embeddings move to a cosine of
@@ -31,10 +31,11 @@ the ratios are steadier. The scratch scripts are not in the repository.
 - **Detection and separation stay perfect** on this synthetic set (20 avatars facing the camera at 2-5 m, turned up
   to 25 degrees, ideal camera): YuNet and SCRFD find 60 of 60 faces per distance in every configuration, the equal
   error rate is 0 and rank-1 100 % for AdaFace IR-101, ArcFace R50 and SFace.
-- **Cost.** Linear light and the maps make the 1280x720 view 1.2-1.3 times and the head windows 1.4 times slower on
-  the software renderer; the maps add 107 MiB of textures for the 20 heads, the detail textures 43 MiB per head
+- **Cost.** Linear light and the maps make the 1280x720 view 1.1-1.5 times and the head windows 1.4-1.7 times slower
+  on the software renderer (this run and the review's, on the shared machine); the maps add 107 MiB of textures for the 20 heads, the detail textures 43 MiB per head
   drawn with them (4 heads in the fair at 6 s). A face from photos at 2048 takes 2-3.5 times as long as at 1024.
-- **Linear light** keeps the fair's look (3.2 levels from before over the whole view, with the fog re-tuned) and
+- **Linear light** keeps the fair's look at the low quality (3.2 levels from before over the whole view, with the
+  fog re-tuned; at the default high quality, with the hemisphere light, 5.0, the floor about 4 levels lighter) and
   moves the embeddings to a cosine of 0.992.
 
 ## 1. The assets
@@ -47,7 +48,7 @@ draw as before.
 
 The maps' green channel: a normal map baked from a height field holds a gradient, which has no curl unless one of its
 components is read backwards. At the scale of the folds (a blur of 4 texels at 2048) the residual curl of the 20
-heads' maps is 0.33-0.56 read green-up and 0.85-0.96 read green-down, so all 20 are green-up (`+v`); a raking light
+heads' maps is 0.22-0.53 read green-up and 0.87-0.97 read green-down, so all 20 are green-up (`+v`); a raking light
 from above confirms it (read the other way, the folds look lit from below). One head (`Male_Adult_04`) has a fine skin
 texture that reads the other way below about 2 texels; its folds read like every other head's, and the check uses the
 folds.
@@ -59,7 +60,10 @@ and blending happen in linear light, and the picture is an sRGB framebuffer. A f
 is now the grey of half the light (level 188, not 128). Surfaces in full light and in shadow look as before; the
 fall-off between them is lighter, as on a real curved surface. The fair's fog, which veils dark distant surfaces sooner
 when it mixes light, went from 0.55 to 0.2: over the whole 1280x720 view at 6 s the picture is then within 3.2 levels
-of how it looked (mean absolute difference), the faces practically unchanged.
+of how it looked at the low quality (mean absolute difference; 2.5 on the older library), the faces practically
+unchanged. At the default high quality the hemisphere light (section 3.3 of the plan; the fair's 0.3) lightens what
+faces up: 5.0 levels from before (4.2 on the older library), the floor about 4 levels lighter (measured by the
+review).
 
 The head-texture pipeline finds its landmarks and head regions on renders of the avatar, and registration magnifies
 small changes in them: in linear light the landmarks moved by a tenth of a millimetre (the median), which shifted the
@@ -79,6 +83,8 @@ preset, 112 px faces), a fresh renderer per configuration, medians of three roun
 | Linear light, maps, 1024 | 309 ms (288-332) | 1286 ms | 25 ms | 443 MiB, 443 MiB |
 | Linear light, maps, 2048 where needed (the default) | 341 ms (296-375) | 1270 ms | 25 ms | 443 MiB, 614 MiB |
 
+- The review ran this again: the view 256 ms before and 285-378 after, the 34 windows 784 ms before and 1216-1344
+  after (1.6-1.7 times): the shared machine's timings vary by that much.
 - The view barely uses the maps (its faces are small) and pays mostly for linear light (the sRGB framebuffer, which
   llvmpipe encodes and blends in software); the windows, mostly face, pay for both.
 - The packed 1024 maps take 107 MiB for the 20 heads (5.3 MiB each with mipmaps). A head drawn with its 2048
@@ -200,4 +206,9 @@ the confidence within 0.0001, the trimap's shares within 0.001).
   window read its head's textures again).
 - **The yoga clip caches** are made again once: their key covers the character model's source, which changed.
 - **Ambient occlusion**: the packed map's alpha is 255, room for a baked occlusion map (the Rocketbox heads have
-  none).
+  none); mipmaps and smaller copies average a data map's channels without weighting them by its alpha.
+- **Faces from photos near the camera**: their face has no avatar maps at any size, but the rest of the head (the
+  scalp, the ears) is drawn with the 1024 maps even where the 2048 ones would show; close-ups (S4) would want the
+  detail cache to read a head's maps alone for them.
+- **Tangents** go through the normal matrix, like the normals: right for turns and even scales, as characters have;
+  a character scaled unevenly would need the model matrix's (renderer.py notes it).

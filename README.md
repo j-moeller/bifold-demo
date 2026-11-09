@@ -1369,8 +1369,8 @@ DirectX: green down), and the Rocketbox maps were baked in 3ds Max. A normal
 map baked from a height field holds its gradient, and a gradient has no curl,
 unless one of its components is read backwards: `tangents.normal_green` checks
 every map while preparing, at the scale of the folds (a blur of 4 texels at
-2048). On the 20 prepared heads the residual curl is 0.33-0.56 of the terms
-read green-up and 0.85-0.96 read green-down: the Rocketbox heads are
+2048). On the 20 prepared heads the residual curl is 0.22-0.53 of the terms
+read green-up and 0.87-0.97 read green-down: the Rocketbox heads are
 green-up (`+v`), and the check would flip a map stored the other way (the
 result is in each avatar's metadata, `head_maps`). One head, `Male_Adult_04`,
 has a fine skin texture that reads the other way below about 2 texels, while
@@ -1395,8 +1395,10 @@ look as before and only the fall-off between them changes (lighter, as light
 on a curved surface really falls off). Fog veils dark distant surfaces sooner
 when it mixes light: the fair's fog strength went from 0.55 to 0.2, which
 keeps its far end within a level of how it looked (3.2 levels mean absolute
-difference over the whole 1280x720 view at 6 s, the faces practically
-unchanged). `renderer.linear = False` draws on the stored sRGB values, as
+difference over the whole 1280x720 view at 6 s at the low quality, 2.5 on the
+older library, the faces practically unchanged; at the default high quality,
+with the hemisphere light below, 5.0 and 4.2, the floor about 4 levels
+lighter). `renderer.linear = False` draws on the stored sRGB values, as
 before. The head-texture pipeline draws its own renders of an avatar that
 way, whatever the renderer's setting (`landmarks.render_views`: stage 0's
 landmarks and the head's regions are found on them): registration magnifies
@@ -1442,9 +1444,12 @@ The identity check of the head-texture stages renders the face the same way.
 
 **Detail levels.** The 2048 textures cost four times the memory of the 1024
 ones (21 MiB per texture with its mipmaps, 43 MiB per head with its maps)
-and add nothing to a face smaller than about 110 pixels between the eyes. So
-the renderer draws a person's head with them only in a picture where that
-person's eyes are at least `renderer.detail_from` (64) pixels apart: a
+and add nothing to a face much smaller than about 110 pixels between the
+eyes. A face's texels are uneven, though: about 120 between the eyes near the
+eyes, 102-109 at the median of the face, 66-70 on its sparsest tenth (4 heads
+measured at 1024). So the renderer draws a person's head with them only in a
+picture where that person's eyes are at least `renderer.detail_from` (64)
+pixels apart, where the sparsest parts begin to be magnified: a
 window of the virtual sensor, or a camera close to someone; everywhere else
 the 1024 ones ([scene/detail.py](src/bifold_demo/scene/detail.py)); a head
 outside the picture does not count. At most `renderer.detail_heads` (6) heads
@@ -1493,15 +1498,17 @@ its own head match its texture within a median delta E of 3.3 (90 % within
 preview [docs/previews/high_res_heads.jpg](docs/previews/high_res_heads.jpg)).
 The maps change faces the most: in the sensor's windows a face's embedding
 moves to a cosine of 0.86 from the same window drawn flat, and the 20 avatars'
-identities separate a little better (d' up by 0.3-0.4 for AdaFace IR-101,
-ArcFace R50 and SFace). The 2048 textures hardly reach today's embedders,
+identities separate a little better (d' up by 0.30-0.45 for AdaFace IR-101,
+0.29-0.57 for ArcFace R50 and up to 0.21 for SFace, two runs). The 2048
+textures hardly reach today's embedders,
 whose crops have the eyes 35 pixels apart: from 1024 to 2048 the embeddings
 move to a cosine of 0.998 and the separation does not change; they show
 where a picture shows a face larger than about 110 pixels between the eyes
 (close portraits, S4's close-ups). YuNet and SCRFD find every face of the
 measurement (2-5 m) in every configuration. On the software renderer linear
-light and the maps make the view about 1.25 times and the head windows 1.4
-times slower; the maps take 107 MiB for the 20 heads, the 2048 textures 43
+light and the maps make the view about 1.1-1.5 times and the head windows
+1.4-1.7 times slower (two runs on the shared machine); the maps take 107 MiB
+for the 20 heads, the 2048 textures 43
 MiB per head drawn with them.
 
 **Older caches** (format 1, without maps) still load and draw as before;

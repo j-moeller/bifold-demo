@@ -162,6 +162,8 @@ void main() {
     vec4 q = vec4(in_position, 1.0);
     vec4 p = vec4(dot(r0, q), dot(r1, q), dot(r2, q), 1.0);
     v_normal = u_normal_matrix * skin_direction(r0, r1, r2, in_normal);
+    // (the tangent lies in the surface: the model matrix would carry it, the normal matrix does the same for the
+    // turns and the even scales characters have; a character scaled unevenly would need the model matrix's)
     v_tangent = vec4(u_normal_matrix * skin_direction(r0, r1, r2, in_tangent.xyz), in_tangent.w);
     v_world = (u_model * p).xyz;
     v_uv = in_uv;
