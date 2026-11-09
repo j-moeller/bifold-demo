@@ -485,3 +485,23 @@ branch and pushed; its results go into the progress log.
     - finish-first scheduling;
     - and the rest.
   - **E1** starts after these fixes.
+- **9 November, 16:45 UTC: stopped on request.**
+  - **F2:** review fixes 1-2 are on the branch:
+    - one name per person;
+    - the clock going back (R, the webcam, reloads);
+    - "unknown" turning into a name too fast, and stale results wiping the window requests;
+    - no names from uncalibrated models;
+    - finish-first scheduling, and swaps caught at small sizes when windows are on.
+
+    Still to do:
+    - the calibration (about 95 avatars, `--fpir` per track, a margin for the uncertainty, a stricter target for
+      real cameras);
+    - the windows-off case of swaps at small sizes;
+    - the head-fit limit;
+    - the docs that overstate the checks;
+    - the surviving mutations, the API gaps for E1, and the calibration avatar that shares a face.
+
+    The builder's unfinished changes are uncommitted in its worktree (`.claude/worktrees/agent-adc7f1f54970b7936`,
+    branch `f2-review-fixes`).
+  - **S3:** its independent review was stopped part way; its notes are in `scratchpad/steps/S3_review/notes.txt`.
+  - **Next:** E1 and S4.
