@@ -104,10 +104,12 @@ def _weld(positions: np.ndarray, uvs: np.ndarray) -> np.ndarray:
 
 
 def _any_perpendicular(n: np.ndarray) -> np.ndarray:
-    """Unit vectors at right angles to the unit vectors ``n``."""
+    """Unit vectors at right angles to the unit vectors ``n`` (+x where ``n`` is no direction: a vertex no triangle
+    gives a normal)."""
     helper = np.where((np.abs(n[:, 1]) < 0.9)[:, None], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0])
     t = np.cross(helper, n)
-    return t / np.linalg.norm(t, axis=1, keepdims=True)
+    length = np.linalg.norm(t, axis=1, keepdims=True)
+    return np.where(length > 1e-12, t / np.maximum(length, 1e-30), [1.0, 0.0, 0.0])
 
 
 def normal_green(normal_rgb: np.ndarray, margin: float = 0.15) -> tuple[str, float, float]:

@@ -151,6 +151,38 @@ def test_small_textures_show_the_light_of_their_texels(gl, prepared):
     assert (np.abs(value.astype(int) - 188) <= 3).all(), value
 
 
+def test_cut_outs_seen_small_keep_their_colour(gl):
+    """A cut-out (three opaque white texels and a transparent black one in every 2x2 block, like the gaps between
+    hair strands) seen small is drawn white where it shows: its mipmaps weight the colour by coverage, so the
+    transparent texels lend it no black (averaged without the weights it would come out at about 225)."""
+    rgba = np.zeros((256, 256, 4), np.uint8)
+    rgba[...] = (255, 255, 255, 255)
+    rgba[1::2, 1::2] = (0, 0, 0, 0)
+    scene = Scene(background=(0, 0, 0))
+    scene.camera = Camera(position=(0, 0, 2), target=(0, 0, 0), fov=60)
+    scene.add(Quad(texture=Texture(rgba), size=0.2, lit=False), name="far")  # 256 texels on about 14 pixels
+    value = _render(scene)[45, 80]
+    assert (value.astype(int) >= 252).all(), value
+
+
+def test_fog_and_light_colours_come_out_as_given(gl):
+    """Colours the sRGB curve changes (not the primaries' 0 and 255): a surface deep in the fog shows the fog's colour,
+    a white surface lit squarely by a coloured light without ambient light shows the light's colour, each as given
+    (each converted to linear light once, and encoded back once)."""
+    from bifold_demo.scene import Fog
+
+    fog = (128, 64, 200)
+    scene = Scene(background=(0, 0, 0), fog=Fog(start=0.5, end=1.0, color=fog))
+    scene.camera = Camera(position=(0, 0, 0), target=(0, 0, -1))
+    scene.add(Quad(size=4.0, texture="#ffffff", position=(0, 0, -3), lit=False), name="deep in the fog")
+    assert np.abs(_render(scene)[45, 80].astype(int) - fog[::-1]).max() <= 1
+    light = (255, 200, 120)
+    scene = Scene(background=(0, 0, 0), ambient=0.0, light_direction=(0, 0, -1), light_color=light)
+    scene.camera = Camera(position=(0, 0, 2), target=(0, 0, 0))
+    scene.add(Quad(texture="#ffffff", size=1.0), name="lit squarely")
+    assert np.abs(_render(scene)[45, 80].astype(int) - light[::-1]).max() <= 1
+
+
 def test_light_falls_off_in_linear_light_and_shadow_keeps_its_level(gl):
     """A surface turned 60 degrees from the light gets half the light (level 188, not 128); a surface in shadow is
     as dark as the ambient level says (0.2 of white: 51)."""

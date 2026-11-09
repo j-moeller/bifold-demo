@@ -100,6 +100,100 @@ def test_the_specular_map_scales_a_highlight(gl):
     assert _render(_wall(specular=120), head_on, ambient=0.2, specular=0.0)[1] == levels[0]
 
 
+def _floor_head(heading=0.0, head_yaw=0.0):
+    """A one-bone ("Head") character whose part is a 1 m square facing up round the bone (u along +x), with a
+    checker of normals tilted 30 degrees towards +u and +v by turns, as a head with a "Head" bone turns it."""
+    from bifold_demo.characters.model import CharacterState
+
+    positions = np.array([[-0.5, 0, 0.5], [0.5, 0, 0.5], [0.5, 0, -0.5], [-0.5, 0, -0.5]], np.float32)
+    normals = np.tile(np.array([0, 1, 0], np.float32), (4, 1))
+    uvs = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], np.float32)
+    indices = np.array([[0, 1, 2], [0, 2, 3]], np.uint32)
+    packed = np.full((8, 8, 4), 255, np.uint8)
+    tilt = np.round((np.sin(TILT) + 1) * 127.5)
+    cells = (np.add.outer(np.arange(8), np.arange(8)) // 2) % 2 == 0
+    packed[..., 0] = np.where(cells, tilt, 128)
+    packed[..., 1] = np.where(cells, 128, tilt)
+    packed[..., 2] = 0
+    colour = np.full((8, 8, 4), 200, np.uint8)
+    primitive = SkinnedPrimitive("floor_head", positions, normals, uvs, indices, np.zeros((4, 4), np.int32),
+                                 np.tile(np.array([1, 0, 0, 0], np.float32), (4, 1)), colour)
+    primitive.tangents = vertex_tangents(positions, normals, uvs, indices)
+    primitive.maps = packed
+    skeleton = Skeleton(["Head"], [-1], np.eye(4)[None])
+    person = Character(CharacterModel("floor", skeleton, [primitive], np.eye(4)[None]), shadow=False)
+    person.behaviour = lambda _t: CharacterState((0.0, 0.0, 0.0), heading, [], head_yaw=head_yaw)
+    return person
+
+
+def _turned_with(person, turn):
+    """The picture of ``person`` from above under a light from the side, the camera and the light turned by ``turn``
+    (4x4) about the origin: what a turned head looks like to a camera and a light that turn with it."""
+    from bifold_demo.scene.renderer import Renderer
+
+    scene = Scene(background=(0, 0, 0), ambient=0.0, light_direction=tuple(turn[:3, :3] @ np.array([-1.0, -0.6, -0.3])))
+    scene.add(person, name="floor")
+    scene.update(0.0, 0.0)
+    scene.camera = Camera(position=(0, 1.2, 0), target=(0, 0, 0), fov=40, up=tuple(turn[:3, :3] @ np.array([0, 0, -1.0])))
+    renderer = Renderer(64, 64, samples=0)
+    try:
+        return renderer.render(scene)[20:44, 20:44].astype(int)  # (the middle: the square's turned edges left out)
+    finally:
+        renderer.release()
+
+
+def test_the_tangent_frame_turns_with_the_head_bone_and_the_person(gl):
+    """A normal-mapped part turned by its bone (the head turning) or with the whole person, and the camera and the
+    light turned with it, looks the same: the tangents are skinned and turned like the normals (else the map's
+    slopes would point the old way and the light would fall differently)."""
+    straight = _turned_with(_floor_head(), np.eye(4))
+    assert np.ptp(straight) > 20  # (the checker of slopes shows)
+    bone = _floor_head(head_yaw=40.0)
+    bone.update(0.0)
+    assert np.abs(_turned_with(bone, bone.pose[0]) - straight).mean() < 1.0
+    person = _floor_head(heading=90.0)
+    person.update(0.0)
+    assert np.abs(_turned_with(person, person.matrices()[0]) - straight).mean() < 1.0
+
+
+def test_maps_read_from_files_are_data_as_arrays_are(gl, tmp_path):
+    """A packed map in a PNG file, as the prepared avatars have them (decoded on the preloading thread with its
+    mipmaps), draws as the same map given as an array: near, and far away where only its mipmaps show (a checker of
+    opposite slopes averages to a flat normal; averaged as colours it would tilt)."""
+    import cv2
+
+    from bifold_demo.scene.renderer import Renderer
+
+    packed = np.zeros((64, 64, 4), np.uint8)
+    packed[..., 0] = np.where((np.add.outer(np.arange(64), np.arange(64)) % 2) == 0, 255, 0)
+    packed[..., 1], packed[..., 2], packed[..., 3] = 128, 40, 255
+    path = tmp_path / "wall_maps.png"
+    cv2.imwrite(str(path), cv2.cvtColor(packed, cv2.COLOR_RGBA2BGRA))
+    from_array = _wall()
+    from_array.skinned_model.primitives[0].maps = packed
+    model = _wall().skinned_model
+    model.primitives[0].maps = str(path)
+    from_file = Character(model, shadow=False)  # (decodes the file on the preloading thread)
+    for job in from_file.texture_jobs:
+        job.result()
+
+    def pixel(person, distance):
+        scene = Scene(background=(0, 0, 0), ambient=0.1, light_direction=(-1.0, 0.0, -0.4))
+        scene.camera = Camera(position=(0, 1, distance), target=(0, 1, 0), fov=40)
+        scene.add(person, name="wall")
+        scene.update(0.0, 0.0)
+        renderer = Renderer(64, 64, samples=0)
+        try:
+            return renderer.render(scene)[32, 32].astype(int)
+        finally:
+            renderer.release()
+
+    for distance in (2.0, 25.0):  # the wall fills the picture, then covers about four pixels
+        assert np.abs(pixel(from_file, distance) - pixel(from_array, distance)).max() <= 2, distance
+    flat = _wall()
+    assert np.abs(pixel(from_array, 25.0) - pixel(flat, 25.0)).max() <= 3  # (the slopes average out far away)
+
+
 def test_the_low_quality_draws_without_maps(gl):
     light = (-1.0, 0.0, -1.0)
     tilted = _wall(tilt=(TILT, 0.0), specular=120)

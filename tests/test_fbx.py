@@ -297,6 +297,7 @@ def test_a_head_gets_packed_maps_detail_textures_and_tangents(tmp_path):
     from PIL import Image
 
     from bifold_demo.characters.tangents import normal_green
+    from bifold_demo.scene.textures import downsample
 
     textures = tmp_path / "Textures"
     textures.mkdir()
@@ -322,6 +323,7 @@ def test_a_head_gets_packed_maps_detail_textures_and_tangents(tmp_path):
     assert np.array_equal(maps[..., 0], normal[..., 0]) and np.array_equal(maps[..., 1], 255 - normal[..., 1])
     assert (maps[..., 2] == 40).all() and (maps[..., 3] == 255).all()  # specular level; no occlusion yet
     assert normal_green(maps[..., :3])[0] == "+v"  # stored the library's way round
+    assert np.array_equal(head.maps, downsample(maps, (32, 32), srgb=False))  # the 1024 copy averaged as data
     assert head.tangents.shape == (4, 4) and np.allclose(np.linalg.norm(head.tangents[:, :3], axis=1), 1)
     np.testing.assert_allclose(head.tangents[:, :3], np.tile([1.0, 0.0, 0.0], (4, 1)), atol=1e-6)  # u grows to +x
     info = model.metadata["head_maps"]["skin"]

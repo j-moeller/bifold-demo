@@ -477,6 +477,41 @@ def test_the_renders_the_stages_analyse_do_not_depend_on_the_light_model(gl):
     assert abs(lit_like_the_fair[40:56, 40:56].astype(float).mean() - 188) < 10  # the renderer's own light model
 
 
+def test_the_renders_the_stages_analyse_do_not_depend_on_the_quality_or_the_detail(gl):
+    """The same renders are drawn at the low quality with the 1024 textures, whatever the renderer's quality and
+    detail settings: here a head whose packed map darkens it (its occlusion) and whose detail texture has another
+    colour, which the high quality and a near detail level would show; the renderer keeps its own settings."""
+    from bifold_demo.characters.model import Detail
+    from bifold_demo.characters.tangents import vertex_tangents
+    from bifold_demo.scene.renderer import Renderer
+
+    model = synthetic_head_model()
+    head = model.primitives[0]
+    head.texture = np.full((64, 64, 4), (200, 160, 140, 255), np.uint8)
+    head.tangents = vertex_tangents(head.positions, head.normals, head.uvs, head.indices)
+    head.maps = np.full((64, 64, 4), (128, 128, 0, 128), np.uint8)  # flat, no shine, half the ambient light
+    head.detail = Detail(np.full((64, 64, 4), (40, 200, 40, 255), np.uint8))
+    cameras = [PhotoCamera.around(CENTRE, 0.6, yaw, 0.0, fov=30.0, size=(96, 96)) for yaw in (0.0, 30.0)]
+    renderer = Renderer(96, 96)
+    try:
+        renderer.quality, renderer.detail_from = "low", math.inf
+        reference = RENDER_VIEWS(model, cameras, renderer)
+        renderer.quality, renderer.detail_from = "high", 1.0
+        pinned = RENDER_VIEWS(model, cameras, renderer)
+        assert (renderer.quality, renderer.detail_from) == ("high", 1.0)
+        renderer.linear, renderer.detail_from = False, math.inf  # (as render_views draws, but at the high quality)
+        scene = _scene_of(model, cameras[0])
+        high = renderer.render(scene)[40:56, 40:56].astype(int)
+        renderer.quality, renderer.detail_from = "low", 1.0  # (and at the low quality with the detail texture)
+        detail = renderer.render(scene)[40:56, 40:56].astype(int)
+    finally:
+        renderer.release()
+    assert all(np.array_equal(a, b) for a, b in zip(reference, pinned))
+    middle = reference[0][40:56, 40:56].astype(int)
+    assert np.abs(high - middle).mean() > 20  # (the occlusion shows at the high quality)
+    assert np.abs(detail - middle).mean() > 20  # (and the detail texture where it is near)
+
+
 def _scene_of(model, camera):
     from bifold_demo.characters.character import Character
     from bifold_demo.scene import Scene

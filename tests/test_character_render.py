@@ -301,6 +301,31 @@ def test_blob_shadow_darkens_the_floor_under_the_feet(render):
     assert np.all(darker >= 0)
 
 
+def test_a_blob_shadow_darkens_the_floor_as_it_looks(gl):
+    """The middle of a blob shadow takes SHADOW_STRENGTH off the floor's colour as it looks (its stored value), in
+    linear light as on the stored values: seen from above, past a thin upright sheet that hides nothing of it."""
+    from bifold_demo.scene.renderer import SHADOW_STRENGTH, Renderer
+
+    positions = np.array([[-0.5, 0, 0], [0.5, 0, 0], [0.5, 1, 0], [-0.5, 1, 0]], np.float32)  # edge-on from above
+    sheet = SkinnedPrimitive("sheet", positions, np.tile(np.float32([0, 0, 1]), (4, 1)), np.zeros((4, 2), np.float32),
+                             np.array([[0, 1, 2], [0, 2, 3]], np.uint32), np.zeros((4, 4), np.int64),
+                             np.tile(np.float32([1, 0, 0, 0]), (4, 1)), np.full((2, 2, 4), 255, np.uint8))
+    skeleton = Skeleton(["Hips"], [-1], np.eye(4)[None])
+    scene = Scene(background=(0, 0, 0))
+    scene.camera = Camera(position=(0, 6, 0), target=(0, 0, 0), fov=20, up=(0, 0, -1))
+    scene.add(Plane(size=(8, 8), texture="#c8c8c8", lit=False), name="floor")
+    scene.add(Character(CharacterModel("sheet", skeleton, [sheet], np.eye(4)[None])), name="person")
+    scene.update(0.0, 0.0)
+    renderer = Renderer(64, 64, samples=0)
+    try:
+        for linear in (True, False):
+            renderer.linear = linear
+            middle = int(renderer.render(scene)[32, 32, 1])
+            assert abs(middle - 200 * (1 - SHADOW_STRENGTH)) <= 2, (linear, middle)
+    finally:
+        renderer.release()
+
+
 def test_gpu_resources_are_shared_and_released(render):
     model = _model()
     scene = _scene(Character(model))
