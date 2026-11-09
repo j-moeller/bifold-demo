@@ -302,3 +302,51 @@ branch and pushed; its results go into the progress log.
     - S3 needs tangents recomputed after fitting and its own maps for fitted photo heads;
     - S4 needs the 2048 maps for photo faces.
   - **The S2 builder** is fixing all findings forward on top of the branch.
+- **9 November, 03:35 UTC: S2's review fixed; F1 and S2 are done.** The S2 builder fixed every finding forward except
+  painted hair's sheen (documented). Ten commits are on the branch:
+  - **Faces from photos keep their identity.** Where a face from photos covers the head, it is drawn without the
+    avatar's normal and specular maps and without the hemisphere light's variation; the face already carries the
+    person's own relief and soft light from above. This covers the cast, the head-texture stages and created
+    characters.
+    - Re-measured on the branch with the review's unchanged script (painted faces, 48 windows), at the default
+      quality:
+      - AdaFace's same-person score 0.359, against 0.275 before and 0.363 at the low quality;
+      - the ResNet-50 0.346 (0.265 before), SFace 0.397 (0.356 before);
+      - no window below AdaFace's or the ResNet-50's threshold (12 and 14 of 48 below 0.22 before).
+    - The stages' identity check, by the builder: 0.234 → 0.274.
+    - The avatars' own faces are drawn exactly as before, so the maps' gain for them stands (AdaFace d' +0.5-0.65 in
+      the harder cases).
+    - `Character.maps_overrides` gives a person their own maps (S3's fitted heads).
+  - **Detail textures by need.** The heads whose eyes are furthest apart keep their 2048 textures: claims fade when a
+    head is not drawn, and a newcomer needs eyes 1.25 times further apart to take a place. Heads outside the picture do
+    not count, and pixels are freed once the textures are on the GPU. Re-measured on the branch with 8 people near the
+    camera:
+    - with `detail_wait`: 6 reads instead of 96, a frame with its windows 341 ms instead of 2572;
+    - in the live demo: 303 of 480 windows at 2048 instead of none.
+    - (The review's script needed a one-line change: fix 5 added an argument to the cache's read function.)
+  - **Tests:** all 42 of the review's mutations are now caught (26 before). One new test found NaN tangents on
+    vertices without a normal (fixed).
+  - **The lows:**
+    - documentation numbers corrected;
+    - a near 2048 photo face gets the head's 2048 maps;
+    - a 2048 face's 1024 copy is made on the worker thread;
+    - packed maps are no longer averaged weighted by their alpha;
+    - colour images are resized in linear light;
+    - the fair names avatars of the old format at start, with the command that updates them;
+    - photo-face caches are made again after a library upgrade.
+  - **Checks:**
+    - the builder's tests on the old library: 713 passed, 9 skipped;
+    - the full suite on the branch with the 2048 library, the photos and every face model: 933 passed, 8 skipped
+      (they need Rocketbox's raw files);
+    - lint unchanged.
+  - **The shared avatar library for later steps** is `charcache2048` (format 2, 20 avatars, 367 MB). The old one
+    stays for the format-1 tests.
+    - A library prepared before S2 still loads and draws, but without maps or 2048 heads.
+    - To update it, run the command the fair prints at start: `bifold-characters fetch --avatars <names> --clips
+      basic`, with `--dest <library>` when it is not the default folder.
+  - **Next, when asked:**
+    - F2: person tracks → face → identity, with open-set decisions calibrated per model and face size. On a CPU like
+      this one, budget about one AdaFace embedding a second, or use the ResNet-50.
+    - E1: evaluation.
+    - S3: fitting the head's shape to a person (ICT-FaceKit).
+    - S4: close-ups.
