@@ -131,10 +131,11 @@ def _turned_with(person, turn):
     (4x4) about the origin: what a turned head looks like to a camera and a light that turn with it."""
     from bifold_demo.scene.renderer import Renderer
 
-    scene = Scene(background=(0, 0, 0), ambient=0.0, light_direction=tuple(turn[:3, :3] @ np.array([-1.0, -0.6, -0.3])))
+    light, up = turn[:3, :3] @ np.array([-1.0, -0.6, -0.3]), turn[:3, :3] @ np.array([0.0, 0.0, -1.0])
+    scene = Scene(background=(0, 0, 0), ambient=0.0, light_direction=tuple(light))
     scene.add(person, name="floor")
     scene.update(0.0, 0.0)
-    scene.camera = Camera(position=(0, 1.2, 0), target=(0, 0, 0), fov=40, up=tuple(turn[:3, :3] @ np.array([0, 0, -1.0])))
+    scene.camera = Camera(position=(0, 1.2, 0), target=(0, 0, 0), fov=40, up=tuple(up))
     renderer = Renderer(64, 64, samples=0)
     try:
         return renderer.render(scene)[20:44, 20:44].astype(int)  # (the middle: the square's turned edges left out)

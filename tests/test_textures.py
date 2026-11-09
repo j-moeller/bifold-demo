@@ -105,7 +105,8 @@ def test_srgb_and_linear_light():
     assert to_linear(levels).dtype == np.float32 and to_linear(255) == 1.0 and to_linear(0) == 0.0
     assert to_linear(128) == pytest.approx(0.2158605, abs=1e-6)  # the sRGB curve, not a plain 2.2 power
     assert to_srgb(0.5) == 188 and to_srgb([-1.0, 2.0]).tolist() == [0, 255]
-    assert color_to_linear("#ffffff") == (1.0, 1.0, 1.0) and color_to_linear((128, 0, 0))[0] == pytest.approx(0.2159, abs=1e-4)
+    assert color_to_linear("#ffffff") == (1.0, 1.0, 1.0)
+    assert color_to_linear((128, 0, 0))[0] == pytest.approx(0.2159, abs=1e-4)
 
 
 def test_downsampling_averages_light_and_keeps_cut_out_colours():
