@@ -201,3 +201,14 @@ work goes on. The people are avatars from the
   and B fitted wearing the face textures made from A's renders on the fitted
   head. Top: the front; bottom: turned 75 degrees. Renders of avatars only
   (`docs/research/head_shape_results.md`).
+- `people_identity.jpg`: the demo's `N` (step F2) in the fair, 20 s into a
+  measurement run of the best profile (AdaFace, at the one embedding a second
+  this CPU allows) with the virtual sensor's windows
+  (`docs/research/face_recognition_f2_results.md`). Every person found is
+  followed by a track (`#2`), and above their box is what is decided about
+  them: in green a name with its similarity, in red `unknown`, in amber `?`
+  with how far along the evidence is; the face found in the head region is
+  boxed with its five landmarks. On the right, the windows of the 8K sensor
+  that the tracks asked for (track number, level, pixels between the eyes,
+  render time). Half the fair's avatars are known, enrolled from renders of
+  themselves; the three in red are strangers. Renders of avatars only.

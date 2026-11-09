@@ -801,8 +801,9 @@ recognised, and the demo names them, says "unknown" or waits; it never
 guesses. Step by step, with the models of a *profile* (below; `best` by
 default):
 
-1. **People.** The person detector (YOLO) finds the people, and the person
-   tracker follows them from frame to frame with stable numbers
+1. **People.** The person detector (YOLO; YOLOX in the commercial profile)
+   finds the people, and the person tracker follows them from frame to frame
+   with stable numbers
    ([`detection/tracker.py`](src/bifold_demo/detection/tracker.py): ByteTrack,
    written in numpy). Each box has a Kalman filter; confident boxes are
    matched first, weak ones (someone half hidden behind someone else) second;
@@ -919,6 +920,15 @@ normalised against a *cohort* of faces that are not in the gallery (T-norm,
 AS-norm), when the calibration says so; the calibration records which cohort
 it was made with, and no other is used with it.
 
+The shipped calibrations hold the target for the fair's people (avatars): in
+a check on avatars they were not made from, the false-alarm rate measured at
+1 % asked was 0.3-1.7 %. Real faces differ: on LFW's pairs of real strangers
+the avatar-made thresholds with T-norm let more strangers through than asked
+(SFace and the ResNet-50: 1-1.6 times at 1 %, 3-6 times at 1 in 1,000; see
+the [results note](docs/research/face_recognition_f2_results.md)). With real
+people (the webcam, the face cast), ask for a lower `--fpir` where a false
+name matters.
+
 **Making a calibration.** Calibrations are made only from data that may be
 shipped: renders of the Rocketbox avatars (MIT), never photos of people (those
 and LFW may only check one):
@@ -983,6 +993,17 @@ evidence (every face's time, quality weight, size, yaw and source); the log
 writes them as lines of JSON. Runs are deterministic for the same frames: the
 tracker, the budget and the decisions read only the frames' times (a scene's own
 time, or the camera's).
+
+**Measured** in the fair, half its avatars known (enrolled from renders of
+themselves), 30 s per run, two crowds per profile, with the sensor's windows
+([results](docs/research/face_recognition_f2_results.md), preview
+[`people_identity.jpg`](docs/previews/people_identity.jpg)): nobody was named
+as somebody else and no stranger was named in any run. Known people were
+named within 2 s of their face being shown: 8 of 8 with the commercial
+profile (SFace), 7 of 8 with the licensed one (the ResNet-50), 1 of 8 with
+the best one (AdaFace). The best profile is held back by this CPU's budget of
+one AdaFace embedding a second (a name needs two faces, and every new track
+shares the budget); with ten a second it named the same people in 0.8 s.
 
 ### The recognition core: models, profiles, licences
 
