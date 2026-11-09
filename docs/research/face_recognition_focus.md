@@ -422,3 +422,35 @@ branch and pushed; its results go into the progress log.
     avatar cohort lets 3-6 times more real strangers through than asked at 1 in 1,000, and the raw avatar thresholds
     are far too strict. E1 must measure the asked rate against the measured one on real people. For now the README
     advises a lower `--fpir` for real faces.
+- **9 November, 13:30 UTC: S3 built and measured; its independent review started.**
+  - **All four parts are on the branch;** the last is the results note [head_shape_results.md](head_shape_results.md).
+  - **The builder's full suite:** 964 passed, 8 skipped. All 17 mutation checks are caught. No new package: everything
+    is numpy.
+  - **Defaults** were tuned on half of the avatars; the numbers are on the other half.
+  - **Geometry** (20 test pairs, an avatar standing in for a person, six photos up to 60 degrees):
+    - landmark error after a similarity alignment 2.65 → 2.38 mm; 13 pairs better, 7 worse;
+    - mouth 3.0 → 1.8, forehead 3.9 → 2.6, outline 10.0 → 8.4;
+    - but the cheeks get worse (2.3 → 2.7) and the surface overall slightly worse (1.25 → 1.35).
+    - Three photos (front and 30 degrees each way) do best: 2.21 mm, 18 of 20 pairs better.
+    - The free-form correction alone does as well on the landmarks and better on the surface (2.36 / 1.18). Which fit
+      to keep as the default is left to the review.
+  - **Recognition** (8 pairs; the person's renders as the gallery, the other avatar wearing textures made from them as
+    the probe; 72 probes per head through S1's windows). The fitted head against the avatar's own:
+
+    | Model | Same-person score | d' | Rank-1 |
+    |---|---|---|---|
+    | AdaFace | 0.502 → 0.574 | 3.60 → 4.52 | 88 % → 100 % |
+    | ResNet-50 | 0.506 → 0.591 | 3.49 → 5.07 | |
+    | SFace | 0.655 → 0.692 | 4.43 → 4.92 | |
+
+    The gain holds at every size and turn. On the real photos, checked locally with numbers only, the same-person
+    scores rose by 0.02-0.04.
+  - **A defect found and fixed on the way:** fitting the irises as residuals let turned photos make heads 5-15 % too
+    big. The size is now held apart from the shape.
+  - **Costs:**
+    - setting up the space on an avatar head: 9-18 s, once per avatar;
+    - the fit: about 8 s for six photos;
+    - a fitted known face with its textures: 55 s, against 45 s without;
+    - each fitted head: about 0.2 MB of GPU buffers.
+  - **On the Mac,** the identity space is fetched once with `bifold-characters identity-space` (395 MB of OBJ
+    files, kept as a 21 MB file).
