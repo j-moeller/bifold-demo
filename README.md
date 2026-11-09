@@ -949,11 +949,11 @@ its input (size, colour order, normalisation), its output, its licence, what
 it was trained on and where the file comes from. Three **profiles** put them
 together (`--face-profile`, or `BIFOLD_FACE_PROFILE`; default `best`):
 
-| Profile | Face detector | Recogniser (fallback) | Quality | Licences of the weights |
-|---|---|---|---|---|
-| `best` | SCRFD-10G | AdaFace IR-101, trained on WebFace12M (`buffalo_l` ResNet-50) | eDifFIQA-T and geometry | research use only |
-| `licensed` | SCRFD-10G | InsightFace `buffalo_l` ResNet-50 | eDifFIQA-T and geometry | research use only, unless a commercial licence is bought from InsightFace |
-| `commercial` | YuNet | AuraFace-v1 (SFace) | geometry | MIT and Apache-2.0 |
+| Profile | Person detector | Face detector | Recogniser (fallback) | Quality | Licences of the weights |
+|---|---|---|---|---|---|
+| `best` | YOLO26n (Ultralytics) | SCRFD-10G | AdaFace IR-101, trained on WebFace12M (`buffalo_l` ResNet-50) | eDifFIQA-T and geometry | research use only |
+| `licensed` | YOLO26n (Ultralytics) | SCRFD-10G | InsightFace `buffalo_l` ResNet-50 | eDifFIQA-T and geometry | research use only, unless a commercial licence is bought from InsightFace |
+| `commercial` | YOLOX-s | YuNet | AuraFace-v1 (SFace) | geometry | MIT and Apache-2.0 |
 
 AdaFace IR-101 is the most accurate recogniser on small and poor faces whose
 weights can be run here (TinyFace rank-1 72 %, IJB-C 97.7 % at 1e-4); its ONNX
@@ -968,6 +968,19 @@ sface_2021dec --pack lfw.bin` keeps what it finds in the models folder's
 "Commercial" is about the weights' licences only: the detectors
 were trained on WIDER FACE and most recognisers on web-scraped faces whose
 terms are for research, so anything that ships needs a legal review first.
+Ultralytics' YOLO, code and weights, is AGPL-3.0, so the commercial profile
+finds people with YOLOX-s instead
+([`detection/yolox.py`](src/bifold_demo/detection/yolox.py): Megvii's
+official ONNX from YOLOX's GitHub release, Apache-2.0, trained on COCO, pinned
+by SHA-256 in the registry and fetched with the profile); the person tracker
+is the demo's own code. With `--face-profile commercial` the demo uses it for
+`D` and `N` unless `--model` names another detector. On 17 frames of the fair
+YOLOX-s found 66 % of the people 40-80 pixels tall (YOLO26n 43 %), 96 % of
+those 80-160 pixels tall (89 %) and all larger ones, with boxes as close to
+the people's (an overlap of 0.73 against 0.74), but takes 260 ms a frame on
+four CPU cores against YOLO26n's 110 ms. YOLOX-tiny, registered too
+(`bifold-faces fetch --model yolox_tiny`), takes 100 ms but misses most people
+under 80 pixels.
 
 ```bash
 bifold-faces fetch --profile best      # SCRFD-10G, AdaFace, buffalo_l (fallback), eDifFIQA-T: 560 MB, 460 MB kept

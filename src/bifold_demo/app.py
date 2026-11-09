@@ -148,14 +148,32 @@ class DemoApp:
 
     # -- setup ------------------------------------------------------------------------
 
+    def _people_detector(self) -> str | None:
+        """The face profile's own person detector (the commercial profile's YOLOX), unless ``--model`` chose one."""
+        if self.config.model != DEFAULT_MODEL:
+            return None
+        from .recognition import registry
+
+        try:
+            return registry.profile(self.config.face_profile).people
+        except ValueError:
+            return None
+
     def _load_detector(self) -> bool:
-        """Load YOLO; on failure keep the video running and show the error (``D`` retries)."""
-        from .detection import YoloDetector
+        """Load the detector (YOLO, or the face profile's own: YOLOX in the commercial profile); on failure keep the
+        video running and show the error (``D`` retries)."""
+        from . import detection
+        from .detection import yolox
 
         cfg = self.config
-        print(f"[detector] loading {cfg.model} ...")
+        own = self._people_detector()
+        print(f"[detector] loading {own or cfg.model} ...")
         try:
-            self.detector = YoloDetector(cfg.model, cfg.device, cfg.conf, cfg.iou, cfg.imgsz, cfg.classes)
+            if own:
+                self.detector = yolox.YoloxDetector(own, cfg.conf, cfg.iou, cfg.classes)
+            else:
+                self.detector = detection.YoloDetector(cfg.model, cfg.device, cfg.conf, cfg.iou, cfg.imgsz,
+                                                       cfg.classes)
         except ValueError:
             raise  # bad options such as an unknown class name: report them and stop
         except Exception as exc:  # noqa: BLE001 - e.g. weights cannot be downloaded

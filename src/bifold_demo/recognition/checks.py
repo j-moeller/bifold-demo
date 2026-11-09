@@ -247,16 +247,22 @@ def _check_run(spec, path, report: Report) -> None:
     """Run the model on random input: output shapes, finite values, the same twice, alone as in a batch."""
     rng = np.random.default_rng(0)
     try:
-        if spec.task == "detector":
-            from .detect import ScrfdDetector, YuNetDetector
+        if spec.task in ("detector", "people"):
+            if spec.task == "people":
+                from ..detection.yolox import YoloxDetector
 
-            detector = YuNetDetector(path, spec) if spec.form == "opencv" else ScrfdDetector(path, spec)
+                detector = YoloxDetector(spec.id, models_folder=Path(path).parent, download=False, progress=None)
+            else:
+                from .detect import ScrfdDetector, YuNetDetector
+
+                detector = YuNetDetector(path, spec) if spec.form == "opencv" else ScrfdDetector(path, spec)
             noise = rng.integers(0, 256, (480, 640, 3), dtype=np.uint8)
             first, second = detector.detect(noise), detector.detect(noise)
             if [f.box for f in first] != [f.box for f in second]:
                 report.fail("two runs on the same image differ")
             else:
-                report.note(f"runs: {len(first)} faces in noise, the same twice")
+                report.note(f"runs: {len(first)} {'faces' if spec.task == 'detector' else 'objects'} in noise, the "
+                            f"same twice")
             return
         crops = rng.integers(0, 256, (9, 112, 112, 3), dtype=np.uint8)
         if spec.task == "quality":
@@ -291,6 +297,12 @@ def speed(spec, path) -> dict:
     """Milliseconds per crop at batch 1 and 8 (embedders, quality) or per image at canvases of 160 and 640 pixels
     (detectors), on this machine's execution provider."""
     rng = np.random.default_rng(0)
+    if spec.task == "people":
+        from ..detection.yolox import YoloxDetector
+
+        detector = YoloxDetector(spec.id, models_folder=Path(path).parent, download=False, progress=None)
+        image = rng.integers(0, 256, (720, 1280, 3), dtype=np.uint8)
+        return {"1280x720 frame": timed(detector.detect, image) * 1000}
     if spec.task == "detector":
         from .detect import ScrfdDetector, YuNetDetector
 

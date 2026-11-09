@@ -310,6 +310,7 @@ def test_n_switches_the_recognition_of_people(gl, tmp_path, monkeypatch):
 
     from bifold_demo import detection
     from bifold_demo.app import DemoApp, DemoConfig
+    from bifold_demo.detection import yolox
     from bifold_demo.recognition import gallery, people, registry
     from bifold_demo.recognition.engine import FaceEngine
 
@@ -321,6 +322,7 @@ def test_n_switches_the_recognition_of_people(gl, tmp_path, monkeypatch):
     monkeypatch.setattr(FaceEngine, "model_id", property(lambda self: "sface_2021dec"))
     monkeypatch.setattr(FaceEngine, "threshold", property(lambda self: 0.363))
     monkeypatch.setattr(detection, "YoloDetector", FakeDetector)
+    monkeypatch.setattr(yolox, "YoloxDetector", lambda model, *args, **kwargs: FakeDetector(model))
     app = DemoApp(DemoConfig(headless=True, frames=1, width=160, height=90, detect=False, uploads=None,
                              face_profile="commercial"))
     assert registry.profile_name() == "commercial"  # --face-profile reaches every engine (the creator's too)
@@ -332,6 +334,7 @@ def test_n_switches_the_recognition_of_people(gl, tmp_path, monkeypatch):
     assert app.recognize_enabled and isinstance(app.people, people.PeopleRecognizer)
     assert isinstance(app.people.gallery, gallery.Gallery) and messages[-1] == "recognition on"
     assert app.detector is not None and not app.detect_enabled  # N loads the person detector, D stays off
+    assert app._people_detector() == "yolox_s"  # the commercial profile's own: no AGPL code
     frame = app.scene_source.read()
     assert app._people_for(frame).people == []  # (the stand-in finds "things", not people)
     app._handle_key(ord("n"), window)

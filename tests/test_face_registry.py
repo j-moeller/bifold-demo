@@ -123,9 +123,9 @@ def test_every_model_is_pinned_and_described():
         assert spec.file.size is not None or spec.needs, spec.id  # only a file we cannot see here lacks its size
         for source in spec.file.places():
             assert source.url.startswith("https://") and (source.member is None or source.size)
-        assert spec.task in ("detector", "embedder", "quality") and spec.form in ("onnxruntime", "opencv")
+        assert spec.task in ("detector", "embedder", "quality", "people") and spec.form in ("onnxruntime", "opencv")
         assert spec.licence and spec.data and spec.origin and spec.size[0] > 0
-        assert (spec.dim > 0) == (spec.task != "detector")
+        assert (spec.dim > 0) == (spec.task not in ("detector", "people"))  # (detectors give boxes)
         if spec.norm_output:
             assert spec.form == "onnxruntime" and spec.task == "embedder"
         assert (0.0 < spec.threshold < 1.0) == (spec.task == "embedder"), spec.id  # a provisional cut each

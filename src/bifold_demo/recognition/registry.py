@@ -7,7 +7,8 @@ how it was made, the inputs and outputs its graph must have (checked by ``bifold
 authors published. Nothing is downloaded or run that is not listed here, with its checksum.
 
 A **profile** chooses one model per stage (:class:`Profile`): a face detector, an embedder (with fallbacks, tried in
-order) and a quality model. Three profiles stand behind one switch (``--face-profile``, which :func:`use_profile`
+order), a quality model and, where it is not the demo's Ultralytics YOLO, the person detector the recognition of
+people runs (step F2). Three profiles stand behind one switch (``--face-profile``, which :func:`use_profile`
 makes the whole process's choice, or ``BIFOLD_FACE_PROFILE``; :func:`profile_name`):
 
 * ``best`` (the default): SCRFD-10G and AdaFace IR-101 trained on WebFace12M, the most accurate recogniser on
@@ -16,7 +17,9 @@ makes the whole process's choice, or ``BIFOLD_FACE_PROFILE``; :func:`profile_nam
 * ``licensed``: SCRFD-10G and ``buffalo_l`` ResNet-50, InsightFace's own files, for which InsightFace sells
   commercial licences. Without such a licence they are research-only too.
 * ``commercial``: YuNet with AuraFace-v1 (Apache-2.0; on Hugging Face only, so it is fetched where Hugging Face can
-  be reached), else SFace (Apache-2.0), with the geometric quality measures only. AuraFace's colour order and
+  be reached), else SFace (Apache-2.0), with the geometric quality measures only; people are found by YOLOX-s
+  (Apache-2.0, Megvii's official ONNX; :mod:`bifold_demo.detection.yolox`) instead of the AGPL Ultralytics YOLO, so
+  the profile runs no AGPL code. AuraFace's colour order and
   normalisation are assumed, so it is used only once a recorded ``bifold-faces check`` shows it beats SFace on the
   same test packs (its ``gate``; see :func:`.checks.gate`); until then the profile uses SFace.
 
@@ -77,7 +80,7 @@ class Tensor:
 class ModelSpec:
     id: str  # short and stable: the gallery's caches are named after it
     title: str  # for people
-    task: str  # "detector", "embedder" or "quality"
+    task: str  # "detector" (faces), "embedder", "quality" or "people" (a person detector)
     file: ModelFile
     form: str  # "onnxruntime" (run by ONNX Runtime) or "opencv" (run by OpenCV's own face classes)
     size: tuple[int, int]  # the input image the model sees, (width, height) (a detector's default canvas)
@@ -115,9 +118,11 @@ class Profile:
     embedders: tuple[str, ...]  # in order of preference: the first one available is used
     quality: str | None  # a quality model, or None: the geometric measures only
     summary: str
+    people: str | None = None  # the person detector of the recognition of people (None: the demo's Ultralytics YOLO)
 
     def models(self) -> tuple[str, ...]:
-        return (self.detector, *self.embedders, *((self.quality,) if self.quality else ()))
+        return (self.detector, *self.embedders, *((self.quality,) if self.quality else ()),
+                *((self.people,) if self.people else ()))
 
 
 SCRFD = ModelSpec(
@@ -223,8 +228,28 @@ EDIFFIQA_T = ModelSpec(
     inputs=(Tensor("input", ("batch_size", 3, 112, 112)),), outputs=(Tensor("quality", ("batch_size", 1)),),
     opset=20)
 
+YOLOX_RELEASE = GITHUB + "Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/"
+YOLOX_DATA = "COCO 2017 (annotations CC BY 4.0; images under Flickr's terms)"
+YOLOX_ORIGIN = "Megvii's official ONNX export, YOLOX GitHub release 0.1.1rc0 (Megvii-BaseDetection/YOLOX)"
+
+YOLOX_S = ModelSpec(
+    "yolox_s", "YOLOX-s (Megvii; COCO)", "people",
+    ModelFile("yolox_s.onnx", YOLOX_RELEASE + "yolox_s.onnx",
+              "c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063", 35_858_002),
+    "onnxruntime", (640, 640), bgr=True, mean=0.0, std=1.0, dim=0, licence="Apache-2.0", commercial=True,
+    data=YOLOX_DATA, origin=YOLOX_ORIGIN, inputs=(Tensor("images", (1, 3, 640, 640)),),
+    outputs=(Tensor("output", (1, 8400, 85)),), opset=11, published={"COCO val mAP": 40.5})
+
+YOLOX_TINY = ModelSpec(
+    "yolox_tiny", "YOLOX-tiny (Megvii; COCO)", "people",
+    ModelFile("yolox_tiny.onnx", YOLOX_RELEASE + "yolox_tiny.onnx",
+              "427cc366d34e27ff7a03e2899b5e3671425c262ea2291f88bb942bc1cc70b0f7", 20_219_662),
+    "onnxruntime", (416, 416), bgr=True, mean=0.0, std=1.0, dim=0, licence="Apache-2.0", commercial=True,
+    data=YOLOX_DATA, origin=YOLOX_ORIGIN, inputs=(Tensor("images", (1, 3, 416, 416)),),
+    outputs=(Tensor("output", (1, 3549, 85)),), opset=11, published={"COCO val mAP": 32.8}, optional=True)
+
 MODELS: dict[str, ModelSpec] = {m.id: m for m in (SCRFD, YUNET, ADAFACE_IR101, BUFFALO_L_R50, ANTELOPEV2_R100,
-                                                  SFACE, AURAFACE, EDIFFIQA_T)}
+                                                  SFACE, AURAFACE, EDIFFIQA_T, YOLOX_S, YOLOX_TINY)}
 
 PROFILES: dict[str, Profile] = {p.name: p for p in (
     Profile("best", SCRFD.id, (ADAFACE_IR101.id, BUFFALO_L_R50.id), EDIFFIQA_T.id,
@@ -233,7 +258,7 @@ PROFILES: dict[str, Profile] = {p.name: p for p in (
             "InsightFace's own SCRFD-10G and ResNet-50, commercially usable with a licence bought from InsightFace"),
     Profile("commercial", YUNET.id, (AURAFACE.id, SFACE.id), None,
             "weights under commercial licences: YuNet (MIT) with AuraFace-v1 (Apache-2.0) where Hugging Face can be "
-            "reached, else SFace (Apache-2.0)"),
+            "reached, else SFace (Apache-2.0); people found by YOLOX-s (Apache-2.0)", people=YOLOX_S.id),
 )}
 
 
@@ -283,6 +308,7 @@ def fetch(name: str | None = None, folder=None, progress=print, ids=None) -> dic
     if ids is None:
         chosen = profile(name)
         stages = [(chosen.detector,), chosen.embedders] + ([(chosen.quality,)] if chosen.quality else [])
+        stages += [(chosen.people,)] if chosen.people else []
     else:
         stages = [(model(i).id,) for i in ids]
     wanted = list({i: model(i) for stage in stages for i in stage}.values())
