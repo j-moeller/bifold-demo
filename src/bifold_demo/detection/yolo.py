@@ -86,10 +86,11 @@ class YoloDetector:
             self.device = "cpu"
             self.detect(blank)
 
-    def detect(self, image: np.ndarray) -> list[Detection]:
-        """Detect objects in a BGR image."""
+    def detect(self, image: np.ndarray, conf: float | None = None) -> list[Detection]:
+        """Detect objects in a BGR image; ``conf``: the lowest confidence to report this time (default: ``conf``; the
+        person tracker takes weak boxes too)."""
         result = self.model.predict(
-            image, conf=self.conf, iou=self.iou, imgsz=self.imgsz, device=self.device,
+            image, conf=self.conf if conf is None else conf, iou=self.iou, imgsz=self.imgsz, device=self.device,
             classes=self.class_ids, verbose=False,
         )[0]
         boxes = result.boxes

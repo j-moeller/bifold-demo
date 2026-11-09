@@ -62,7 +62,7 @@ def test_matching_leaves_pairs_over_the_limit_unpaired():
     assert match(np.zeros((0, 2)), 1.0) == ([], [], [0, 1])
 
 
-# -- the tracker on hand-made boxes -------------------------------------------------------------------------------------
+# -- the tracker on hand-made boxes ------------------------------------------------------------------------------------
 
 
 def _walk(start, velocity, t, size=(60, 160)):

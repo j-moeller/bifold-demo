@@ -19,8 +19,15 @@ The core (docs/research/face_recognition_focus.md, step F1), stage by stage:
 * :mod:`.runtime`: ONNX Runtime sessions. Importing this package switches ONNX Runtime's telemetry off
   (``ORT_DISABLE_TELEMETRY=1``, unless set already) before anything can import ONNX Runtime.
 
-:mod:`.recognizer` follows faces over the frames of the demo and :mod:`.cast` puts the known people's faces on the 3D
-people.
+From person to identity (step F2), frame by frame:
+
+* :mod:`.people`: :class:`~.people.PeopleRecognizer`, the chain the demo's ``N`` runs: person tracks
+  (:mod:`bifold_demo.detection.tracker`), faces in their head regions (:mod:`.heads`), the evidence per track
+  (:mod:`.evidence`), open-set decisions (:mod:`.decision`: a name, "unknown" or "not decided yet") calibrated per
+  model and face size against one target false-alarm rate (:mod:`.calibration`).
+* :mod:`.truth`: what a scene knows about its people, to score tracks and decisions (evaluation only).
+
+:mod:`.cast` puts the known people's faces on the 3D people.
 """
 
 import os

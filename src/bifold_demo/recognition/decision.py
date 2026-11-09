@@ -33,9 +33,9 @@ decided yet" ("contested").
 
 **Someone else on the track.** A track can jump to another person (two people crossed, a lost track was picked up by
 someone else). So every new face is first compared with the track's own evidence (:meth:`IdentityPolicy.
-consistent`): a score below what a known person's face of that quality reaches all but ``reject_miss`` of the time,
-and no higher than the median score of two strangers, means someone else. The track's old evidence is then dropped
-and its name withdrawn (:meth:`IdentityPolicy.reset`) before the new face counts.
+consistent`): a score below what a known person's face of that quality reaches all but ``switch_miss`` (0.5 %) of the
+time, where that floor is decisive, means someone else. The track's old evidence is then dropped and its name
+withdrawn (:meth:`IdentityPolicy.reset`) before the new face counts.
 
 Every decision is a :class:`Decision` with the raw, normalised and calibrated scores of the best person and the
 runner-up, the thresholds, the model and the evidence; :class:`DecisionLog` keeps them (and writes them as JSON lines
@@ -66,8 +66,11 @@ __all__ = ["NAMED", "UNDECIDED", "UNKNOWN", "Decision", "DecisionLog", "Decision
 class DecisionSettings:
     """The policy's settings (see the module docs). ``fpir``: the target false-alarm rate per decision; ``margin``,
     ``keep``: decades of rarity; ``reject_miss``: how often a known person's face may score below the reject
-    threshold; ``decisive``: the rarity the reject threshold needs among strangers' scores for "unknown";
-    ``min_weight``, ``min_frames``: enough good evidence; ``sustain``: seconds a switch to another name or to
+    threshold; ``switch_miss``: how often a new face of the same person may score below the floor that says the track
+    shows someone else; ``decisive``: the rarity the reject threshold (and that floor) needs among strangers' scores;
+    ``min_weight``, ``min_frames``: enough good evidence (summed quality weights, :attr:`~.quality.Quality.weight`:
+    two frontal faces of 24 pixels between the eyes, or one of 40, and at least two frames; the calibration's bins
+    already count how good the faces are); ``sustain``: seconds a switch to another name or to
     unknown must hold; ``sustain_unknown``: seconds the score must stay below the reject threshold (from not decided);
     ``incumbent``: decades a track holding a name counts more for it in the assignment."""
 
@@ -75,8 +78,9 @@ class DecisionSettings:
     margin: float = 1.0
     keep: float = 1.0
     reject_miss: float = 0.02
+    switch_miss: float = 0.005
     decisive: float = 1.0
-    min_weight: float = 1.0
+    min_weight: float = 0.5
     min_frames: int = 2
     sustain: float = 1.0
     sustain_unknown: float = 1.0
@@ -118,8 +122,8 @@ class Decision:
     :data:`UNDECIDED`), ``name`` (when named), ``reason`` and ``progress`` (0-1, how far along a track not decided yet
     is), the best ``candidate`` and the ``runner_up`` with their raw, normalised and calibrated (rarity) scores, the
     thresholds of the face's bin (``accept``, ``keep``, ``reject``, in normalised score units, and ``accept_rarity``),
-    the ``model``, the ``evidence`` (frames, summed weight, face size, yaw, and per frame its time, weight, size, yaw and
-    source), the ``time`` and ``frame`` it was made at, and whether the state ``changed``."""
+    the ``model``, the ``evidence`` (frames, summed weight, face size, yaw, and per frame its time, weight, size, yaw
+    and source), the ``time`` and ``frame`` it was made at, and whether the state ``changed``."""
 
     track: int
     time: float
@@ -296,13 +300,13 @@ class IdentityPolicy:
     def consistent(self, score: float, size: float, yaw: float) -> bool:
         """Whether a new face whose (normalised) score against its track's own evidence is ``score`` can be the same
         person: not when that score is below what a known person's face of this quality reaches all but
-        ``reject_miss`` of the time, and no rarer among strangers than their median (see the module docs). Where the
-        calibration cannot tell (no mated curve, or a reject threshold that is not decisive), every face is."""
+        ``switch_miss`` of the time (see the module docs). Where the calibration cannot tell (no mated curve, or that
+        floor is not decisive among strangers' scores), every face is."""
         curve = self.calibration.curve(size, yaw)
-        floor = curve.mated_quantile(self.settings.reject_miss)
+        floor = curve.mated_quantile(self.settings.switch_miss)
         if floor is None or curve.rarity(floor) < self.settings.decisive:
             return True
-        return not (score < floor and curve.rarity(score) < -math.log10(0.5))
+        return score >= floor
 
     # -- decisions -------------------------------------------------------------------------------------------------
 
@@ -324,9 +328,9 @@ class IdentityPolicy:
                waiting: dict | None = None) -> dict[int, Decision]:
         """Decide every track: ``aggregates`` maps a track's id to its :class:`~.evidence.Aggregate` (``None``: no
         evidence yet); ``evidence``: per track a dict describing it for the log; ``waiting``: per track why it has no
-        evidence yet (``"no face"``, ``"turned"``, ...). Returns ``{track: Decision}``; tracks not given are forgotten."""
-        for gone in [t for t in self.tracks if t not in aggregates]:
-            del self.tracks[gone]
+        evidence yet (``"no face"``, ``"turned"``, ...). Returns ``{track: Decision}``. Tracks not given keep what the
+        policy remembers of them (a track lost for a moment: its name holds when it is found again); :meth:`forget`
+        drops a track."""
         known = len(self.gallery.people()) if hasattr(self.gallery, "people") else 0
         proposals: dict[int, tuple] = {}
         scored: dict[int, Scores] = {}

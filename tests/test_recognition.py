@@ -240,7 +240,39 @@ def test_a_gallery_of_real_photos_names_the_faces(engine, zidane, tmp_path):
     assert [name for _, name in named] == ["Left Man", "Right Man"]
 
 
-def test_the_demo_names_the_faces_in_the_rendered_scene(gl, engine, zidane, tmp_path, monkeypatch):
+class FacesAsPeople:
+    """A stand-in person detector for a still picture: a person's box below each face the face engine finds in the
+    first frame (where the recognition's head model expects the head), so that the demo's recognition can be tested on
+    a photo without YOLO."""
+
+    model_name, device, conf, class_ids = "faces-as-people", "cpu", 0.35, None
+
+    def __init__(self, engine):
+        self.engine = engine
+        self.boxes = None
+
+    def detect(self, image, conf=None):
+        from bifold_demo.detection.results import Detection
+        from bifold_demo.recognition.heads import HeadModel, face_size
+
+        if self.boxes is None:
+            head = HeadModel()
+            self.boxes = []
+            for face in self.engine.detect(image, min_size=0):
+                (x, y), eyes = face.points[:2].mean(axis=0), face_size(face)
+                height = eyes / head.eyes
+                top = y - head.below * height
+                self.boxes.append(Detection((x - 0.2 * height, top, x + 0.2 * height, top + height), 0.9, 0,
+                                            "person"))
+        return list(self.boxes)
+
+
+def test_the_demo_names_the_people_in_the_rendered_scene(gl, engine, zidane, tmp_path, monkeypatch):
+    """N: person tracks, their faces, decisions; the overlay names the known people (two men of the sample photo,
+    enrolled from crops of it). The man on the right faces the camera and is named within a second; the man on the
+    left is turned about 55 degrees, so each of his faces counts little: he is named later, or not yet, never
+    wrongly."""
+    from bifold_demo import detection
     from bifold_demo.app import DemoApp, DemoConfig
     from bifold_demo.scene import Camera, Quad, Scene
     from bifold_demo.scene.textures import sample_image
@@ -252,31 +284,43 @@ def test_the_demo_names_the_faces_in_the_rendered_scene(gl, engine, zidane, tmp_
         (tmp_path / "faces" / name).mkdir(parents=True)
         crop = zidane[max(0, y - h // 2):y + 2 * h, x - w // 2:x + w * 3 // 2]
         cv2.imwrite(str(tmp_path / "faces" / name / "crop.jpg"), _enrollable(crop))
+    stand_in = FacesAsPeople(engine)
+    monkeypatch.setattr(detection, "YoloDetector", lambda *args, **kwargs: stand_in)
     scene = Scene(background=(40, 40, 40), camera=Camera(position=(0, 0, 2.2), target=(0, 0, 0), fov=50))
     scene.add(Quad(texture=sample_image("zidane.jpg"), height=1.6, lit=False), name="photo")
-    app = DemoApp(DemoConfig(headless=True, frames=1, width=960, height=540, detect=False, recognize=True,
-                             uploads=None, faces=str(tmp_path / "faces")), scene=scene)
-    app.run()  # headless runs are in step: the faces of each frame are found before it is drawn
-    assert app.recognize_enabled and app.recognizer is not None and app.face_worker is None
+    app = DemoApp(DemoConfig(headless=True, frames=30, width=960, height=540, detect=False, recognize=True,
+                             uploads=None, faces=str(tmp_path / "faces"), embed_rate=30.0), scene=scene)
+    app.run()  # headless runs are in step: the people of each frame are found before it is drawn (one second)
+    assert app.recognize_enabled and app.people is not None and app.face_worker is None
     frame = app.scene_source.read()
-    result = app._faces_for(frame)
-    assert sorted(f.name for f in result.faces) == ["Left Man", "Right Man"]
+    result = app._people_for(frame)
+    left, right = sorted(result.people, key=lambda p: p.box[0])
+    assert right.name == "Right Man" and left.name in ("Left Man", None)
+    assert all(p.face is not None for p in result.people)
+    assert all(d.name in (None, "Left Man", "Right Man") for d in app.people.log.entries)
+    assert not any(d.name == "Right Man" and d.track == left.id for d in app.people.log.entries)
     lines = app._status_lines(frame, None)
+    assert any(line.startswith("2 tracks: ") and "Right Man" in line for line in lines)
     canvas = app._compose(frame, None, result)
     assert (canvas != frame.image).any()
-    assert "faces: 2 known, in the picture: Left Man, Right Man" in lines
 
 
-def test_n_switches_the_face_recognition(gl, tmp_path, monkeypatch):
+def test_n_switches_the_recognition_of_people(gl, tmp_path, monkeypatch):
+    from test_pipeline import FakeDetector
+
+    from bifold_demo import detection
     from bifold_demo.app import DemoApp, DemoConfig
-    from bifold_demo.recognition import gallery, recognizer, registry
+    from bifold_demo.recognition import gallery, people, registry
     from bifold_demo.recognition.engine import FaceEngine
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(registry, "_chosen", None)  # (put back afterwards: the app sets it)
     monkeypatch.setattr(FaceEngine, "__init__", lambda self, *a, **k: setattr(self, "notes", []))
     monkeypatch.setattr(FaceEngine, "describe", lambda self: "no models (a test)")
-    monkeypatch.setattr(FaceEngine, "faces", lambda self, image, min_size=0: [])
+    monkeypatch.setattr(FaceEngine, "detect", lambda self, image, min_size=0, canvas=None, region=None: [])
+    monkeypatch.setattr(FaceEngine, "model_id", property(lambda self: "sface_2021dec"))
+    monkeypatch.setattr(FaceEngine, "threshold", property(lambda self: 0.363))
+    monkeypatch.setattr(detection, "YoloDetector", FakeDetector)
     app = DemoApp(DemoConfig(headless=True, frames=1, width=160, height=90, detect=False, uploads=None,
                              face_profile="commercial"))
     assert registry.profile_name() == "commercial"  # --face-profile reaches every engine (the creator's too)
@@ -285,46 +329,13 @@ def test_n_switches_the_face_recognition(gl, tmp_path, monkeypatch):
     messages = []
     app.notify = lambda message, *args, **kwargs: messages.append(message)
     app._handle_key(ord("n"), window)
-    assert app.recognize_enabled and isinstance(app.recognizer, recognizer.FaceRecognizer)
-    assert isinstance(app.recognizer.gallery, gallery.Gallery) and messages[-1] == "face recognition on"
+    assert app.recognize_enabled and isinstance(app.people, people.PeopleRecognizer)
+    assert isinstance(app.people.gallery, gallery.Gallery) and messages[-1] == "recognition on"
+    assert app.detector is not None and not app.detect_enabled  # N loads the person detector, D stays off
     frame = app.scene_source.read()
-    assert app._faces_for(frame).faces == []
+    assert app._people_for(frame).people == []  # (the stand-in finds "things", not people)
     app._handle_key(ord("n"), window)
-    assert not app.recognize_enabled and app._faces_for(frame) is None and messages[-1] == "face recognition off"
-
-
-def test_followed_faces_average_their_frames_and_keep_their_names(tmp_path):
-    from bifold_demo.recognition.recognizer import FaceRecognizer
-
-    gallery = Gallery(tmp_path / "faces", FakeEngine())
-    _photo(tmp_path / "faces" / "Ada" / "a.png", (200, 10, 10))
-    gallery.refresh(force=True)
-    ada = _vector((200, 10, 10))
-    noise = np.zeros(128)
-    noise[10] = 1.0
-
-    class Frames:
-        """Each frame: (box, embedding) of the faces in it."""
-
-        def __init__(self):
-            self.frames = []
-
-        def faces(self, image, min_size=0):
-            return [(Face(box, ((0.0, 0.0),) * 5, 0.9), v / np.linalg.norm(v)) for box, v in self.frames.pop(0)]
-
-    engine = Frames()
-    recognizer = FaceRecognizer(gallery, engine)
-    weak = ada * 0.3 + noise * 0.95  # one frame alone is below the threshold
-    assert ada @ (weak / np.linalg.norm(weak)) < THRESHOLD
-    engine.frames = [[((10, 10, 40, 40), ada)], [((12, 11, 40, 40), weak)], [((14, 12, 40, 40), weak)],
-                     [((300, 10, 40, 40), weak)]]
-    first = recognizer.recognize(None, now=0.0)[0]
-    assert first.name == "Ada"
-    assert [recognizer.recognize(None, now=t)[0].name for t in (0.1, 0.2)] == ["Ada", "Ada"]  # followed: averaged
-    elsewhere = recognizer.recognize(None, now=0.3)[0]
-    assert elsewhere.name is None and elsewhere.track != first.track  # another face, on its own
-    engine.frames = [[((16, 12, 40, 40), weak)]]
-    assert recognizer.recognize(None, now=2.0)[0].track not in (first.track, elsewhere.track)  # forgotten after 1 s
+    assert not app.recognize_enabled and app._people_for(frame) is None and messages[-1] == "recognition off"
 
 
 class _People:

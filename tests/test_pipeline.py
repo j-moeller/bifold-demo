@@ -22,12 +22,15 @@ class FakeDetector:
         self.delay = delay
         self.seen = []
 
+    def detect(self, image, conf=None):
+        h, w = image.shape[:2]
+        return [Detection((w * 0.25, h * 0.25, w * 0.75, h * 0.75), 0.9, 0, "thing")]
+
     def detect_frame(self, frame):
         time.sleep(self.delay)
         self.seen.append(frame.index)
-        w, h = frame.size
-        det = Detection((w * 0.25, h * 0.25, w * 0.75, h * 0.75), 0.9, 0, "thing")
-        return DetectionResult([det], frame.index, frame.source, frame.size, self.delay * 1000, time.perf_counter())
+        return DetectionResult(self.detect(frame.image), frame.index, frame.source, frame.size, self.delay * 1000,
+                               time.perf_counter())
 
 
 def _frame(i, source="scene"):

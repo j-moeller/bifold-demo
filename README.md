@@ -54,7 +54,7 @@ for your terminal app. Allow it, then run the command again.
 |-----------|-----------------------------------------------------------|
 | `S`       | switch the source: scene ↔ webcam                         |
 | `D`       | turn detection on or off                                  |
-| `N`       | face recognition on or off: names on the faces of known people (see [Face recognition](#face-recognition)) |
+| `N`       | who the people are, on or off: person tracks, their faces, a name, "unknown" or "?" each (see [Face recognition](#face-recognition)) |
 | `W`       | high-resolution windows on the heads of the people found, shown on the right (see [the virtual sensor](#the-virtual-high-resolution-sensor)) |
 | `Space`   | pause or resume the scene's simulation time               |
 | `R`       | restart the scene (time 0, physics reset)                 |
@@ -796,35 +796,58 @@ through the floor when the person kneels.
 ## Face recognition
 
 [`recognition/`](src/bifold_demo/recognition) tells who the people in the
-picture are, in five steps, with the models of a *profile* (below; `best` by
+picture are. A person is found and followed, their face is found and
+recognised, and the demo names them, says "unknown" or waits; it never
+guesses. Step by step, with the models of a *profile* (below; `best` by
 default):
 
-1. **Find the faces.** A face detector (SCRFD-10G; YuNet in the commercial
-   profile) finds each face and five landmarks on it (the eyes, the nose tip
-   and the mouth corners).
-2. **Line them up.** Each face is turned upright and scaled by its landmarks
-   onto a 112 x 112 template.
-3. **Fingerprint them.** A recogniser (AdaFace IR-101 in the best profile)
-   turns the face into an *embedding*: 512 numbers (128 for SFace), trained so
-   that photos of one person give nearly the same numbers and other people's
-   faces different ones. Two faces are compared by the cosine similarity of
-   their embeddings.
-4. **Judge the quality.** Each face gets a quality record: how many pixels lie
-   between the eyes, which way the head is turned, how sharp and well lit the
-   face is, and a learnt quality score.
-5. **Compare with the known people.** A face is the known person with the
-   highest score, if it reaches the model's threshold (for now one per model,
-   at about one false match in a thousand pairs of strangers on the LFW
-   benchmark, counted on its 3,000 stranger pairs: 0.22 for AdaFace and the
-   ResNet-50; calibrated decisions per face size come next), else unknown.
+1. **People.** The person detector (YOLO) finds the people, and the person
+   tracker follows them from frame to frame with stable numbers
+   ([`detection/tracker.py`](src/bifold_demo/detection/tracker.py): ByteTrack,
+   written in numpy). Each box has a Kalman filter; confident boxes are
+   matched first, weak ones (someone half hidden behind someone else) second;
+   a person lost from view is kept about a second.
+2. **Their faces.** Faces are looked for only in each person's head region (a
+   square around the top of their box): in a high-resolution window of the
+   [virtual sensor](#the-virtual-high-resolution-sensor) when the person's
+   track asked for one, else in a crop of the frame
+   ([`heads.py`](src/bifold_demo/recognition/heads.py)). A face belongs to the
+   person whose head it fits (place and size); where heads overlap in a crowd,
+   each face goes to one person.
+3. **Line them up, fingerprint them, judge them.** The face detector's five
+   landmarks (eyes, nose tip, mouth corners) turn the face upright onto a 112 x
+   112 template; a recogniser (AdaFace IR-101 in the best profile) turns it into
+   an *embedding*: 512 numbers (128 for SFace), nearly the same for photos of
+   one person and different for other people, compared by their cosine
+   similarity. Each face gets a quality record: the pixels between the eyes,
+   which way the head is turned, how sharp and well lit it is, and a learnt
+   quality score.
+4. **Evidence per person** ([`evidence.py`](src/bifold_demo/recognition/evidence.py)).
+   Only faces worth it are embedded: big enough, turned less than 55 degrees,
+   sharp, mostly in the picture. Embeddings cost (on four CPU cores AdaFace
+   takes about half a second per face), so the machine's *budget* of
+   embeddings a second is shared out: people not decided yet first, better
+   faces first, decided people re-checked now and then. A person's embeddings
+   are averaged, the better faces counting more; consecutive frames are nearly
+   the same picture, so the average is scored once, never frame by frame.
+5. **Decide** ([`decision.py`](src/bifold_demo/recognition/decision.py),
+   [`calibration.py`](src/bifold_demo/recognition/calibration.py)). Each
+   person is in one of three states: **a name**, **unknown**, or **not decided
+   yet** (below).
 
-In the demo `N` (or `--recognize`) turns it on: every face in the picture gets
-a box with the name of the person and the similarity under it, or `?` for a
-stranger, and the status panel lists who is in the picture. It runs on its own
-thread beside the object detection. A face only 30 pixels tall gives a noisy
-fingerprint, so faces are followed from frame to frame and named from the
-average of their last eight fingerprints, and a named face keeps its name
-while that average stays near the threshold (no flickering names).
+In the demo `N` (or `--recognize`) turns it on; it runs the person detector
+itself (`D` then only says whether the other things found are drawn too). Each
+person gets a box in the colour of what is decided, with their number and
+their state above it: the name and its similarity in green (`#3 Ada 0.52`),
+`unknown` in red, and in amber `?` with how far along the evidence is
+(`#3 ? 40%`) or what it waits for (`#3 ? turned`). The face found for them in
+the frame is boxed with its five landmarks. The status panel gives the profile
+and its recogniser, the embeddings a second against the budget, the number of
+people followed and how many are named (and who), unknown or not decided yet.
+Everything runs on worker threads beside the video, so nothing stalls the view.
+With `W` on, the high-resolution windows follow the tracks' requests (people
+not decided yet, facing the camera, with small faces, first).
+
 `--face-profile` (or `BIFOLD_FACE_PROFILE`) chooses the models, for everything
 in the run that looks at faces: the recognition, the character creator's face
 painting and the head textures' identity check.
@@ -852,16 +875,68 @@ profile's ResNet-50 a tenth and SFace 20-30 ms; on a Mac, CoreML should be much
 faster (not measured yet). Where the CPU is all there is, the licensed or
 commercial profile keeps the live view responsive.
 
+### From person to identity: the states, the target, the calibration
+
+**Three states.** A person is **named** when the score of their averaged
+face against the best known person passes the *accept* threshold, beats the
+runner-up by a margin, and enough good evidence has been seen (at least two
+faces, together worth two frontal faces of 24 pixels between the eyes, or one
+of 40). They are **unknown** when enough good evidence has been seen and the
+best score stays (a second) below the *reject* threshold: the score a known
+person's face of that quality falls below only 2 % of the time. Everything else
+is **not decided yet**: a turned or tiny face (whose known and unknown scores
+cannot be told apart) is never called unknown, it waits. A named person keeps
+their name while their score stays within a factor of ten of the accept
+threshold (hysteresis: names do not flicker); switching to another name, or to
+unknown, needs that name's threshold and margin held for a second. A name is
+given to one person at a time: when two people claim it, the stronger claim
+wins and the other goes back to "not decided yet". A track that jumps to
+someone else (two people crossed) is noticed by its next good face, which does
+not fit the evidence so far: its evidence and name go at once.
+
+**The target.** You set one thing: the false-alarm rate per decision, `--fpir`
+(default 0.01): how often a decision about a stranger names somebody. With `n`
+known people a stranger has `n` chances, so each person's threshold is set at
+about `fpir / n` of strangers' scores. Each model's **calibration** turns that
+rate into its own threshold for each face size (pixels between the eyes,
+measured by the face's height, which a turned head does not shrink) and yaw: a
+score becomes a *rarity*, how rarely strangers reach it (`-log10` of their
+rate), the same currency for every model, so the same target gives the same
+behaviour in every profile. A calibration is kept per model in
+`models/calibration/<model>.json`; without one a model gets provisional
+thresholds from its LFW threshold (one false match in a thousand pairs of
+strangers), which never say "unknown". Scores can be normalised against a
+*cohort* of faces that are not in the gallery (T-norm, AS-norm), when the
+calibration says so.
+
+**The budget per profile** (embeddings a second for everyone, on a four-core
+CPU like the development machine's; `--embed-rate` sets another): `best`
+(AdaFace) 1, `licensed` (ResNet-50) 4, `commercial` (SFace) 20. A person is
+embedded at most twice a second. On a Mac with CoreML the rates can be raised
+about tenfold.
+
 ```python
 from bifold_demo.recognition import FaceEngine, Gallery
+from bifold_demo.recognition.decision import DecisionLog, DecisionSettings
+from bifold_demo.recognition.people import PeopleRecognizer
+from bifold_demo.detection import YoloDetector
 
-engine = FaceEngine(profile="best")       # finds, lines up, fingerprints and judges faces
-gallery = Gallery("faces", engine)        # the known people
-gallery.refresh()
-for record in engine.analyse(image):      # every face: box, landmarks, aligned crop, embedding, quality
-    match = gallery.match(record.vector)  # match.name (None: unknown), match.score, match.runner_up
-    print(match.name, record.quality.ied, record.quality.pose)
+gallery = Gallery("faces", FaceEngine(profile="best"))
+people = PeopleRecognizer(gallery, YoloDetector(), settings=DecisionSettings(fpir=0.01),
+                          windows=service,                    # a sensor.WindowService, or None
+                          log=DecisionLog("decisions.jsonl"))  # every decision, for the evaluation
+for frame in frames:                     # sources.Frame, with frame.windows
+    result = people.process(frame)       # PeopleResult
+    for person in result.people:         # Person: id, box, decision, face (with landmarks)
+        print(person.id, person.decision.state, person.decision.name, person.decision.raw)
 ```
+
+Each `Decision` carries the raw, normalised and calibrated scores of the best
+person and the runner-up, the thresholds of the face's bin, the model and the
+evidence (every face's time, quality weight, size, yaw and source); the log
+writes them as lines of JSON. Runs are deterministic for the same frames: the
+tracker, the budget and the decisions read only the frames' times (a scene's own
+time, or the camera's).
 
 ### The recognition core: models, profiles, licences
 
@@ -2309,7 +2384,8 @@ src/bifold_demo/
   scene/       scene.py (objects, camera), geometry.py, textures.py,
                animation.py, physics.py, renderer.py (ModernGL),
                frustum.py (culling for windows)                         ← the 3D scene
-  detection/   yolo.py (YoloDetector), worker.py (AsyncDetector)      ← module 2: recognition
+  detection/   yolo.py (YoloDetector), worker.py (AsyncDetector), tracker.py (person tracks,
+               ByteTrack), assignment.py (the Hungarian algorithm)      ← module 2: recognition
   display/     overlay.py (boxes, HUD), window.py, sensor_view.py (the windows, W)  ← module 3: on screen
   characters/  model.py (skeleton, clips, posing), fbx.py + fbx_convert.py (FBX reader),
                character.py (skinned scene object), behaviour.py, crowd.py,
@@ -2330,7 +2406,10 @@ src/bifold_demo/
                rocketbox.py + library.py + cli.py (bifold-characters),
                rocketbox_catalog.json (avatar labels)                   ← 3D people
   recognition/ engine.py (a profile's models together), gallery.py (known people),
-               recognizer.py (faces over frames), cast.py (known faces on 3D people),
+               people.py (person to identity, frame by frame), heads.py (faces in head regions),
+               evidence.py (gates, budget, evidence per track), calibration.py (thresholds from a
+               target false-alarm rate, cohorts), decision.py (name, unknown, not decided yet),
+               truth.py (the scene's truth, for evaluation), cast.py (known faces on 3D people),
                registry.py (face models and profiles), runtime.py (ONNX Runtime),
                detect.py (SCRFD, YuNet), align.py (the five-point template),
                embed.py (embedders), quality.py (a quality record per face),

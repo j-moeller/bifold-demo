@@ -54,30 +54,52 @@ def draw_detections(image: np.ndarray, detections: list[Detection], from_size: t
                     text_thickness, cv2.LINE_AA)
 
 
-KNOWN_FACE, UNKNOWN_FACE = (60, 200, 60), (170, 170, 170)
+NAMED_COLOUR, UNKNOWN_COLOUR, UNDECIDED_COLOUR = (60, 200, 60), (90, 90, 235), (0, 190, 255)  # BGR
+STATE_COLOURS = {"named": NAMED_COLOUR, "unknown": UNKNOWN_COLOUR, "undecided": UNDECIDED_COLOUR}
 
 
-def draw_faces(image: np.ndarray, faces, from_size: tuple[int, int] | None = None) -> None:
-    """Draw recognised faces in place: a box round each face and the person's name under it (green), or "?" for a
-    stranger (grey). ``faces``: :class:`~bifold_demo.recognition.recognizer.Recognized` items; ``from_size`` as for
-    :func:`draw_detections`."""
+def person_label(person, score: bool = True) -> str:
+    """``#3 Ada 0.52``, ``#3 unknown`` or ``#3 ? 40%`` (``? waiting`` and the like once the evidence is there): a
+    followed person's number and what is decided about them (:class:`~bifold_demo.recognition.people.Person`);
+    ``score``: the named person's similarity."""
+    decision = person.decision
+    label = f"#{person.id} {decision.label}"
+    if score and decision.state == "named" and decision.raw is not None:
+        label += f" {decision.raw:.2f}"
+    return label
+
+
+def draw_people(image: np.ndarray, people, from_size: tuple[int, int] | None = None, score: bool = True) -> None:
+    """Draw the followed people in place (:class:`~bifold_demo.recognition.people.Person` items): each person's box
+    in the colour of what is decided (green: a name, red: unknown, amber: not decided yet), their number and the
+    decision above it, and the face found for them in this frame with its five landmarks. ``from_size`` as for
+    :func:`draw_detections`; ``score``: show the named person's similarity."""
     h, w = image.shape[:2]
     sx, sy = (w / from_size[0], h / from_size[1]) if from_size else (1.0, 1.0)
     s = _ui_scale(image)
     thickness, font_scale, text_thickness = max(1, round(1.5 * s)), 0.5 * s, max(1, round(1.2 * s))
-    for item in faces:
-        x, y, bw, bh = item.face.box
-        x1, y1, x2, y2 = round(x * sx), round(y * sy), round((x + bw) * sx), round((y + bh) * sy)
-        known = item.name is not None
-        color = KNOWN_FACE if known else UNKNOWN_FACE
-        cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness, cv2.LINE_AA)
-        label = f"{item.name} {item.match.score:.2f}" if known else "?"
+    for person in people:
+        colour = STATE_COLOURS.get(person.decision.state, UNDECIDED_COLOUR)
+        x0, y0, x1, y1 = person.box
+        p0, p1 = (round(x0 * sx), round(y0 * sy)), (round(x1 * sx), round(y1 * sy))
+        cv2.rectangle(image, p0, p1, colour, thickness, cv2.LINE_AA)
+        face = person.face
+        if face is not None:
+            fx, fy, fw, fh = face.face.box
+            cv2.rectangle(image, (round(fx * sx), round(fy * sy)), (round((fx + fw) * sx), round((fy + fh) * sy)),
+                          colour, max(1, thickness - 1), cv2.LINE_AA)
+            radius = max(1, round(1.5 * s))
+            for px, py in face.face.landmarks:
+                cv2.circle(image, (round(px * sx), round(py * sy)), radius, colour, -1, cv2.LINE_AA)
+        label = person_label(person, score)
         (tw, th), baseline = cv2.getTextSize(label, FONT, font_scale, text_thickness)
         pad = max(2, round(3 * s))
-        left = max(0, min(w - tw - 2 * pad, (x1 + x2 - tw) // 2 - pad))
-        top = y2 + 2 if y2 + th + baseline + 2 * pad + 2 <= h else max(0, y1 - th - baseline - 2 * pad - 2)
-        cv2.rectangle(image, (left, top), (left + tw + 2 * pad, top + th + baseline + 2 * pad), color, -1)
-        cv2.putText(image, label, (left + pad, top + pad + th), FONT, font_scale, _text_color(color), text_thickness,
+        left = max(0, min(w - tw - 2 * pad, p0[0]))
+        top = p0[1] - th - baseline - 2 * pad - 1
+        if top < 0:  # no room above the box: inside it
+            top = max(0, p0[1] + 1)
+        cv2.rectangle(image, (left, top), (left + tw + 2 * pad, top + th + baseline + 2 * pad), colour, -1)
+        cv2.putText(image, label, (left + pad, top + pad + th), FONT, font_scale, _text_color(colour), text_thickness,
                     cv2.LINE_AA)
 
 

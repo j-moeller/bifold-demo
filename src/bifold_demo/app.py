@@ -12,14 +12,14 @@ import cv2
 
 from .detection import DEFAULT_MODEL, AsyncDetector, DetectionResult
 from .display import Window, draw_banner, draw_detections, draw_panel, draw_selection
-from .display.overlay import draw_faces
+from .display.overlay import draw_people
 from .display.window import TAB
 from .loader import SceneReloader, load_scene
 from .scene import Scene
 from .selection import Selection, person_name
 from .sources import FixedStepClock, Frame, SceneSource, SimulationClock, SourceSwitcher, WebcamSource
 
-HELP = ("S source | D detect | N names | W windows | Space pause | R reset | [ ] confidence | Y / click people | "
+HELP = ("S source | D detect | N who | W windows | Space pause | R reset | [ ] confidence | Y / click people | "
         "C creator | F fullscreen | P screenshot | H hide | Q quit")
 STALE_AFTER = 1.0  # seconds after which old detections are no longer drawn
 
@@ -52,7 +52,9 @@ class DemoConfig:
     items: str | None = "items"  # looks for the hats, glasses, signs and t-shirts (see characters.accessories)
     faces: str = "faces"  # photos of the people the face recognition knows (see recognition.gallery)
     face_profile: str | None = None  # the face models: best, licensed, commercial (None: $BIFOLD_FACE_PROFILE / best)
-    recognize: bool = False  # start with the face recognition on (N toggles it)
+    recognize: bool = False  # start with the recognition of people on (N toggles it; see recognition.people)
+    fpir: float = 0.01  # the target false-alarm rate per decision of the recognition (see recognition.calibration)
+    embed_rate: float | None = None  # face embeddings a second for everyone (None: the model's, recognition.evidence)
     cast: bool = True  # put the known people's faces on 3D people (when the faces folder has photos)
     created: str | None = "created"  # characters made in the character creator, shown in the fair (None: not)
     windows: bool = False  # start with the virtual sensor's windows shown (W toggles them; see bifold_demo.sensor)
@@ -110,12 +112,12 @@ class DemoApp:
         self.detect_enabled = config.detect
         self.gallery = None  # the known people (recognition.gallery), loaded when first needed
         self.cast = None  # their faces on the 3D people (recognition.cast)
-        self.recognizer = None  # the face recognition (N), loaded when first switched on
-        self.face_worker: AsyncDetector | None = None
+        self.people = None  # who the people are (N: recognition.people), made when first switched on
+        self.face_worker: AsyncDetector | None = None  # it, on a worker thread (with the person detector)
         self.recognize_enabled = False
         self._face_error: str | None = None
         self._faces_submitted: tuple[str, int] | None = None
-        self._last_faces = None
+        self._last_people = None
         self.sync = config.sync or config.headless  # headless renders faster than real time: keep boxes in step
         self.show_hud = True
         self.display_rate = _Rate()
@@ -190,16 +192,41 @@ class DemoApp:
         self.gallery = gallery
         return gallery
 
-    def _load_recognizer(self) -> bool:
-        """The face recognition (``N``); on failure keep the video running and show the error (``N`` retries)."""
-        from .recognition.recognizer import FaceRecognizer
+    def _load_people(self) -> bool:
+        """Who the people are (``N``): person tracks from the person detector (loaded here if detection is off),
+        faces in their head regions, decisions (see recognition.people). On failure the video goes on and the error
+        is shown (``N`` retries)."""
+        from .recognition.decision import DecisionSettings
+        from .recognition.people import PeopleRecognizer
 
         gallery = self._load_gallery()
         if gallery is None:
             return False
-        self.recognizer = FaceRecognizer(gallery)
+        if self.detector is None and not self._load_detector():
+            self._face_error = f"the recognition needs the person detector: {self._detector_error}"
+            return False
+        classes = getattr(self.detector, "class_ids", None)
+        if classes is not None and 0 not in classes:  # (COCO's person is class 0)
+            self._face_error = "the recognition needs the person class: leave out --classes or include person"
+            return False
+        try:
+            self.people = PeopleRecognizer(gallery, self.detector, settings=DecisionSettings(fpir=self.config.fpir),
+                                           windows=self.window_service if self.windows_on else None,
+                                           rate=self.config.embed_rate)
+        except Exception as exc:  # noqa: BLE001 - e.g. a damaged calibration file: the video goes on
+            self._face_error = f"recognition unavailable: {type(exc).__name__}: {exc}"
+            print(f"[faces] {self._face_error}")
+            return False
+        calibration = self.people.calibration
+        if calibration.is_provisional:
+            print(f"[faces] no calibration for {self.people.model}: thresholds from its LFW threshold, no 'unknown' "
+                  f"(bifold-faces calibrate makes one)")
+        else:
+            print(f"[faces] calibration: {calibration.path} ({calibration.normalisation} normalisation); target "
+                  f"false-alarm rate {self.config.fpir:.1%} per decision; {self.people.budget.rate:g} embeddings a "
+                  f"second")
         if not self.sync:
-            self.face_worker = AsyncDetector(self.recognizer).start()
+            self.face_worker = AsyncDetector(self.people).start()
         return True
 
     def _load_cast(self) -> None:
@@ -259,8 +286,9 @@ class DemoApp:
 
     def _show_windows(self, on: bool) -> str:
         """Show the windows of the virtual high-resolution sensor (or stop): high-resolution views of the heads of
-        the people the detector finds, delivered with the frames (see bifold_demo.sensor). Until the person tracker
-        asks for them, they follow the person boxes of the detections."""
+        the people the detector finds, delivered with the frames (see bifold_demo.sensor). With the recognition on
+        (``N``) the person tracks ask for them (those not decided yet first); else they follow the detector's person
+        boxes."""
         if on and self.window_service is None:
             from .display.sensor_view import BoxTags
             from .sensor import Sensor, WindowService
@@ -276,6 +304,8 @@ class DemoApp:
         for source in {id(s): s for s in (self.scene_source, *self.switcher.started())}.values():
             if hasattr(source, "windows"):
                 source.windows = self.window_service if on else None
+        if self.people is not None:  # the tracks ask for them (or no longer)
+            self.people.windows = self.window_service if on else None
         if not on:
             if self.window_service is not None:
                 self.window_service.clear()
@@ -288,7 +318,9 @@ class DemoApp:
             sensor = Sensor.with_lines(preset.lines, (cfg.width, cfg.height))
         else:
             sensor = service.sensor or Sensor.scaled(DEFAULT_SCALE, (cfg.width, cfg.height))
-        need = "" if self.detect_enabled and self.detector is not None else " (they follow the people found: D)"
+        following = self.recognize_enabled and self.people is not None
+        need = "" if following or (self.detect_enabled and self.detector is not None) else \
+            " (they follow the people found: D or N)"
         return f"windows on: up to {cfg.max_windows} a frame, {sensor} sensor, {preset.name} camera{need}"
 
     def _request_windows(self, frame: Frame, result: DetectionResult | None) -> None:
@@ -306,16 +338,16 @@ class DemoApp:
         self.window_service.request([WindowRequest(tag, box=box, frame=result.frame_index)
                                      for tag, box in zip(tags, boxes)])
 
-    def _faces_for(self, frame: Frame):
-        """The recognised faces of ``frame`` (or of a frame just before it), or ``None``; kept for the status panel."""
-        self._last_faces = self._recognized(frame)
-        return self._last_faces
+    def _people_for(self, frame: Frame):
+        """Who the people of ``frame`` (or of a frame just before it) are, or ``None``; kept for the status panel."""
+        self._last_people = self._recognized(frame)
+        return self._last_people
 
     def _recognized(self, frame: Frame):
-        if not self.recognize_enabled or self.recognizer is None:
+        if not self.recognize_enabled or self.people is None:
             return None
         if self.face_worker is None:
-            return self.recognizer.detect_frame(frame)
+            return self.people.detect_frame(frame)
         key = (frame.source, frame.index)
         if key != self._faces_submitted:
             self.face_worker.submit(frame)
@@ -343,7 +375,7 @@ class DemoApp:
         if cfg.detect:
             self._load_detector()
         if cfg.recognize:
-            self.recognize_enabled = self._load_recognizer()
+            self.recognize_enabled = self._load_people()
         if cfg.windows:
             print(f"[demo] {self._show_windows(True)}")
         self._load_cast()
@@ -368,9 +400,10 @@ class DemoApp:
                         for note in self.creator.update():
                             self.notify(note, 4.0, error=note.startswith("cannot"))
                     result = self._detections_for(frame)
-                    if self.windows_on:  # for the frames to come: windows show their own moment
+                    people = self._people_for(frame)
+                    if self.windows_on and people is None:  # for the frames to come (with N, the tracks ask)
                         self._request_windows(frame, result)
-                    self._last_canvas = self._compose(frame, result, self._faces_for(frame))
+                    self._last_canvas = self._compose(frame, result, people)
                     self.display_rate.tick(time.perf_counter())
                     if cfg.record:
                         self._record(self._last_canvas)
@@ -412,6 +445,8 @@ class DemoApp:
     def _detections_for(self, frame: Frame) -> DetectionResult | None:
         if not self.detect_enabled or self.detector is None:
             return None
+        if self.recognize_enabled and self.people is not None:
+            return None  # the recognition runs the detector (one model, one thread): its result has the boxes
         if self.worker is None:
             return self.detector.detect_frame(frame)
         key = (frame.source, frame.index)
@@ -423,7 +458,7 @@ class DemoApp:
             return None
         return result
 
-    def _compose(self, frame: Frame, result: DetectionResult | None, faces=None):
+    def _compose(self, frame: Frame, result: DetectionResult | None, people=None):
         if self._creating():
             canvas = self.creator_view.draw(frame.image)
             self._draw_message(canvas)
@@ -431,8 +466,12 @@ class DemoApp:
         canvas = frame.image.copy()  # the detector may still be reading the original
         if result is not None:
             draw_detections(canvas, result.detections, None if result.frame_size == frame.size else result.frame_size)
-        if faces is not None:
-            draw_faces(canvas, faces.faces, None if faces.frame_size == frame.size else faces.frame_size)
+        if people is not None:
+            scale = None if people.frame_size == frame.size else people.frame_size
+            if self.detect_enabled and self.detector is not None:  # D: the other things found (people are tracks)
+                draw_detections(canvas, [d for d in people.detections if d.label != "person"
+                                         and d.confidence >= self.detector.conf], scale)
+            draw_people(canvas, people.people, scale)
         selecting = self.selection.active and frame.source == "scene"
         if selecting and self.selection.box is not None:
             t = self.scene_source.scene.time
@@ -467,8 +506,12 @@ class DemoApp:
         if frame.source == "scene":
             clock = self.scene_source.clock
             lines[0] += f"  t={clock.now():5.1f}s" + ("  PAUSED" if clock.paused else "")
+        people = self._last_people if self.recognize_enabled and self.people is not None else None
         if self.detector is None or not self.detect_enabled:
-            lines.append("detection: off")
+            lines.append("detection: off" + (" (people are found for N)" if people is not None else ""))
+        elif self.recognize_enabled and self.people is not None:
+            lines.append(f"{self.detector.model_name} on {self.detector.device}: with the recognition (N), "
+                         f"conf>={self.detector.conf:.2f}")
         else:
             rate = self.worker.fps if self.worker else self.display_rate.value
             latency = f"{result.inference_ms:3.0f} ms" if result else "--"
@@ -480,16 +523,8 @@ class DemoApp:
                     counts[det.label] = counts.get(det.label, 0) + 1
                 summary = ", ".join(f"{n} {label}" for label, n in sorted(counts.items(), key=lambda kv: -kv[1]))
                 lines.append(f"objects: {summary or 'none'}")
-        if self.recognize_enabled and self.recognizer is not None:
-            known = self.recognizer.gallery.people()
-            faces = self._last_faces
-            line = f"faces: {len(known)} known"
-            if faces is not None and faces.source == frame.source:
-                names = sorted(f.name for f in faces.faces if f.name)
-                strangers = sum(f.name is None for f in faces.faces)
-                line += f", in the picture: {', '.join(names) or 'nobody known'}"
-                line += f" (+{strangers} unknown)" if strangers else ""
-            lines.append(line)
+        if self.recognize_enabled and self.people is not None:
+            lines += self._people_lines(frame, people)
         if self.windows_on and self.window_service is not None:
             asked = len(self.window_service.requests)
             spent = sum(w.render_ms + w.camera_ms for w in frame.windows)
@@ -498,6 +533,24 @@ class DemoApp:
         if frame.source == "scene":
             created = self.created.status() if self.created is not None else None
             lines += ([created] if created else []) + self.selection.status_lines(self.scene_source.scene.time)
+        return lines
+
+    def _people_lines(self, frame: Frame, people) -> list[str]:
+        """The status of the recognition: the profile and its model, embeddings a second against the budget, the
+        tracks and what is decided about them, and who is in the picture."""
+        recognizer = self.people
+        known = recognizer.gallery.people()
+        title = getattr(getattr(recognizer.engine, "embedder_spec", None), "title", recognizer.model)
+        rate = f"{people.rate:.1f}" if people is not None else "-"
+        lines = [(f"people ({recognizer.profile or 'faces'}: {title}): {rate} of {recognizer.budget.rate:g} "
+                  f"embeddings/s, {len(known)} known")]
+        if people is not None and people.source == frame.source:
+            counts = people.counts()
+            names = sorted(p.name for p in people.people if p.name)
+            target = f"FPIR {self.config.fpir:.0%}" if people.calibrated else "provisional thresholds"
+            lines.append(f"{len(people.people)} tracks: {counts['named']} named ({', '.join(names) or '-'}), "
+                         f"{counts['unknown']} unknown, {counts['undecided']} not decided; {target}; "
+                         f"{people.inference_ms:.0f} ms")
         return lines
 
     def _handle_key(self, key: int, window: Window) -> None:
@@ -531,11 +584,13 @@ class DemoApp:
             self.detect_enabled = not self.detect_enabled
             self.notify(f"detection {'on' if self.detect_enabled else 'off'}")
         elif key == ord("n"):
-            if self.recognizer is None and not self._load_recognizer():
+            if self.people is None and not self._load_people():
                 self.notify(self._face_error, 5, error=True)
                 return
             self.recognize_enabled = not self.recognize_enabled
-            self.notify(f"face recognition {'on' if self.recognize_enabled else 'off'}")
+            if not self.recognize_enabled:
+                self.people.reset()  # (its windows go too; the tracks start afresh when switched on again)
+            self.notify(f"recognition {'on' if self.recognize_enabled else 'off'}")
         elif key == ord("w"):
             message = self._show_windows(not self.windows_on)
             self.notify(message, 3.0, error=message.startswith("windows unavailable"))
@@ -544,6 +599,8 @@ class DemoApp:
         elif key == ord("r"):
             self.scene_source.reset()
             self.selection.reset()
+            if self.people is not None:
+                self.people.reset()
             self.notify("scene reset", 1.0)
         elif key in (ord("y"), TAB):
             if self.switcher.active_name != "scene":
@@ -640,6 +697,16 @@ def _size(text: str) -> tuple[int, int]:
         raise argparse.ArgumentTypeError("size must look like 1280x720") from None
 
 
+def _rate(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"a rate must be a number between 0 and 1, not {text!r}") from None
+    if not 0.0 < value < 1.0:
+        raise argparse.ArgumentTypeError(f"a rate must be between 0 and 1 (0.01 for 1 %), not {value}")
+    return value
+
+
 def _preset(text: str) -> str:
     from .sensor import camera_preset
 
@@ -673,7 +740,13 @@ def parse_args(argv=None) -> DemoConfig:
     g.add_argument("--face-profile", default=None, choices=("best", "licensed", "commercial"),
                    help="the face models: best (research-only weights, the default), licensed (InsightFace's, "
                         "commercial with a licence from InsightFace) or commercial (default: $BIFOLD_FACE_PROFILE)")
-    g.add_argument("--recognize", action="store_true", help="start with the face recognition on (N toggles it)")
+    g.add_argument("--recognize", action="store_true",
+                   help="start with the recognition of people on: person tracks, faces, names (N toggles it)")
+    g.add_argument("--fpir", type=_rate, default=0.01, metavar="RATE",
+                   help="the recognition's target false-alarm rate per decision, e.g. 0.01 for 1 %% (default 0.01)")
+    g.add_argument("--embed-rate", type=float, default=None, metavar="N",
+                   help="face embeddings a second for everyone (default: the model's: 1 for AdaFace, 4 for the "
+                        "ResNet-50, 20 for SFace, as a four-core CPU allows)")
     g.add_argument("--no-cast", dest="cast", action="store_false",
                    help="do not put the faces of the known people on the 3D people")
     g.add_argument("--created", default="created",
@@ -726,7 +799,8 @@ def parse_args(argv=None) -> DemoConfig:
         mirror=a.mirror, model=a.model, device=a.device, conf=a.conf, iou=a.iou, imgsz=a.imgsz, classes=a.classes,
         detect=a.detect, sync=a.sync, fullscreen=a.fullscreen, record=a.record, headless=a.headless,
         frames=a.frames, reload=a.reload, uploads=a.uploads or None, items=a.items or None, faces=a.faces,
-        face_profile=a.face_profile, recognize=a.recognize, cast=a.cast, created=a.created or None,
+        face_profile=a.face_profile, recognize=a.recognize, fpir=a.fpir, embed_rate=a.embed_rate, cast=a.cast,
+        created=a.created or None,
         windows=a.windows, max_windows=a.max_windows, sensor=a.sensor, camera_preset=a.camera_preset,
         webcam_capture=a.webcam_capture, quality=a.quality,
     )

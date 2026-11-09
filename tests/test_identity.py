@@ -7,6 +7,7 @@ import math
 import threading
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
@@ -218,12 +219,16 @@ def test_undecided_tracks_and_better_faces_come_first():
     faces = [Candidate(1, 0.9, "a", decided=True, last=0.0), Candidate(2, 0.3, "b"), Candidate(3, 0.6, "c"),
              Candidate(3, 0.8, "c2"), Candidate(4, 0.95, "d", decided=True, last=9.0)]
     chosen = s.choose(faces, 10, now=10.0)
-    assert [c.key for c in chosen] == ["c2", "b", "a"]  # undecided first (the better of track 3's two), then the
-    # decided track due for a check; track 4 was checked a second ago
+    assert [c.key for c in chosen] == ["c2", "b", "a", "d"]  # undecided first (the better of track 3's two), then
+    # the decided track due for a check, then the one checked a second ago (with what the budget leaves)
     assert [c.key for c in s.choose(faces, 1, now=10.0)] == ["c2"]
+    # faces about as good take turns: the one waiting longest first
+    turns = [Candidate(6, 0.4501, last=9.0), Candidate(7, 0.45, last=8.0)]
+    assert [c.track for c in s.choose(turns, 1, now=10.0)] == [7]
     assert s.choose([Candidate(5, 0.9, last=9.8)], 1, now=10.0) == []  # at most twice a second
-    assert s.choose([Candidate(5, 0.4, median=0.5)], 1, now=10.0) == []  # no better than its median: not worth it
+    assert s.choose([Candidate(5, 0.4, median=0.5)], 1, now=10.0) == []  # worse than its median: not worth it
     assert s.choose([Candidate(5, 0.6, median=0.5)], 1, now=10.0)
+    assert s.choose([Candidate(5, 0.5, median=0.5)], 1, now=10.0)  # (as good: a still face keeps its turn)
 
 
 def _frame(vector, weight=1.0, t=0.0, size=30.0, yaw=0.0, model="m"):
@@ -466,7 +471,7 @@ def test_a_track_is_named_only_with_a_rare_score_a_margin_and_enough_evidence(ca
     assert named.accept == pytest.approx(calibration.threshold(0.01, 3, 40.0, 0.0))
     assert named.model == "m" and named.frame == 7 and named.evidence["frames"] == 3 and named.label == "Ada"
     policy, people = _policy(calibration)
-    little = policy.decide({1: _agg({"Ada": 0.5}, people, weight=0.4)}, 0.0)[1]
+    little = policy.decide({1: _agg({"Ada": 0.5}, people, weight=0.2)}, 0.0)[1]  # (0.5 needed)
     assert (little.state, little.reason, little.progress) == (UNDECIDED, "collecting", 0.4) and little.label == "? 40%"
     one = policy.decide({1: _agg({"Ada": 0.5}, people, frames=1)}, 0.1)[1]
     assert (one.state, one.progress) == (UNDECIDED, 0.5)  # a single frame is never enough
@@ -557,9 +562,11 @@ def test_one_identity_per_track_and_one_track_per_identity(calibration):
     # different names: no contest
     two = policy.decide({1: _agg({"Ada": 0.45}, people), 3: _agg({"Ben": 0.5}, people)}, 2.0)
     assert (two[1].name, two[3].name) == ("Ada", "Ben")
-    assert set(policy.tracks) == {1, 3}
-    policy.decide({3: _agg({"Ben": 0.5}, people)}, 3.0)
-    assert set(policy.tracks) == {3}  # a track no longer given is forgotten
+    policy.decide({3: _agg({"Ben": 0.5}, people)}, 3.0)  # track 1 lost for a moment: remembered
+    back = policy.decide({1: _agg({"Ada": 0.45}, people), 3: _agg({"Ben": 0.5}, people)}, 3.5)
+    assert (back[1].name, back[1].changed) == ("Ada", False)
+    policy.forget(1)  # removed by the tracker
+    assert set(policy.tracks) == {3}
 
 
 def test_a_track_found_to_show_someone_else_loses_its_name_at_once(calibration):
@@ -591,3 +598,207 @@ def test_decisions_are_logged_for_the_evaluation(calibration, tmp_path):
         assert key in first
     assert first["evidence"]["sources"] == ["window"] and first["evidence"]["frames"] == 3
     assert lines[1]["state"] == "undecided" and not lines[2]["changed"]
+
+
+# -- the pipeline ------------------------------------------------------------------------------------------------------
+
+COLOURS = {"Ada": (200, 60, 40), "Ben": (40, 200, 60), "Cleo": (60, 40, 200), "Stranger": (180, 180, 40)}
+
+
+def _identity(colour) -> np.ndarray:
+    """The made-up embedding of a face of ``colour`` (BGR): a direction of its own for each person of
+    :data:`COLOURS` (the nearest colour), the same in every frame: a perfect recogniser."""
+    names = list(COLOURS)
+    nearest = min(range(len(names)), key=lambda k: np.linalg.norm(np.subtract(COLOURS[names[k]], colour)))
+    return _axis(4 + nearest)
+
+
+class _PipelineEngine:
+    """Finds the faces it was told about (frame pixels) in head regions and windows, aligns them with the real
+    alignment, and embeds a face by its colour."""
+
+    model_id = "m"
+    threshold = 0.3
+    fiqa = None
+    profile = type("P", (), {"name": "test"})()
+
+    def __init__(self):
+        self.faces = []  # this frame's faces (frame pixels)
+        self.windows = {}  # id(window image) -> (offset, scale)
+        self.embedded = 0
+        self.embedder = self
+
+    def detect(self, image, min_size=0.0, canvas=None, region=None):
+        offset, scale = self.windows.get(id(image), (np.zeros(2), 1.0))
+        found = []
+        for face in self.faces:
+            middle = face.points[:2].mean(axis=0)
+            if region is not None:
+                x, y, w, h = region
+                if not (x <= middle[0] <= x + w and y <= middle[1] <= y + h):
+                    continue
+            local = Face(((face.box[0] - offset[0]) * scale, (face.box[1] - offset[1]) * scale, face.box[2] * scale,
+                          face.box[3] * scale), tuple(tuple((np.asarray(p) - offset) * scale) for p in face.landmarks),
+                         face.score)
+            if 0 <= local.points[:, 0].min() and local.points[:, 0].max() < image.shape[1]:
+                found.append(local)
+        return found
+
+    def align(self, image, face):
+        from bifold_demo.recognition.align import align
+
+        return align(image, face.landmarks)
+
+    def embed(self, crops):
+        from bifold_demo.recognition.embed import Embeddings
+
+        self.embedded += len(crops)
+        vectors = [_identity(np.median(c[40:90, 35:77].reshape(-1, 3), axis=0)) for c in crops]
+        return Embeddings(np.array(vectors, np.float32), np.ones(len(crops), np.float32))
+
+
+def _paint(image, face, colour, seed):
+    """A textured face of ``colour`` (so that it is sharp) around ``face``'s box."""
+    x, y, w, h = (round(v) for v in face.box)
+    pad = int(0.4 * w)
+    rng = np.random.default_rng(seed)
+    patch = np.clip(np.asarray(colour, float) + rng.normal(0, 25, (h + 2 * pad, w + 2 * pad, 3)), 0, 255)
+    y0, x0 = max(0, y - pad), max(0, x - pad)
+    image[y0:y + h + pad, x0:x + w + pad] = patch[:image[y0:y + h + pad, x0:x + w + pad].shape[0],
+                                                  :image[y0:y + h + pad, x0:x + w + pad].shape[1]]
+
+
+class _Detector:
+    def __init__(self):
+        self.boxes = []
+
+    def detect(self, image, conf=None):
+        from bifold_demo.detection.results import Detection
+
+        return [Detection(tuple(box), 0.9, 0, "person") for box in self.boxes]
+
+
+class _Service:
+    """A stand-in window service: keeps the requests; its scheduler takes the priority hook."""
+
+    def __init__(self):
+        self.scheduler = type("S", (), {"priority": None})()
+        self.asked = []
+
+    def request(self, requests):
+        self.asked = list(requests)
+
+
+def _scene(t, who=("Ada", "Stranger", "Ben"), turned=("Ben",)):
+    """People walking slowly: their boxes (frame pixels), their faces (where the head model expects them), and the
+    frame with the faces painted on."""
+    image = np.full((720, 1280, 3), 90, np.uint8)
+    boxes, faces = [], []
+    for k, name in enumerate(who):
+        x = 100 + 400 * k + 20 * t
+        box = (x, 60.0, x + 220, 660.0)  # (near the camera: 22 pixels between the eyes)
+        boxes.append(box)
+        if name in turned:
+            continue  # the back of the head: no face
+        face = _head_face(box)
+        faces.append(face)
+        _paint(image, face, COLOURS[name], k)
+    return image, boxes, faces
+
+
+def _video_frame(image, index, t, windows=()):
+    from bifold_demo.sources.base import Frame
+
+    return Frame(image, index, float(index), "scene", t, list(windows))
+
+
+def _recognizer(calibration, service=None, rate=2.0, **settings):
+    from bifold_demo.recognition.people import PeopleRecognizer
+
+    people = {name: _identity(COLOURS[name]) for name in ("Ada", "Ben", "Cleo")}
+    engine, detector = _PipelineEngine(), _Detector()
+    recognizer = PeopleRecognizer(_Gallery(people), detector, engine, calibration=calibration, windows=service,
+                                  rate=rate, settings=DecisionSettings(**settings), log=DecisionLog())
+    return recognizer, engine, detector
+
+
+def _run(recognizer, engine, detector, seconds=4.0, fps=10.0, **scene):
+    results = []
+    for k in range(int(seconds * fps)):
+        t = k / fps
+        image, boxes, faces = _scene(t, **scene)
+        detector.boxes, engine.faces = boxes, faces
+        results.append(recognizer.process(_video_frame(image, k, t)))
+    return results
+
+
+def test_the_pipeline_names_known_people_says_unknown_for_strangers_and_waits_for_turned_heads(calibration):
+    recognizer, engine, detector = _recognizer(calibration, rate=2.0)
+    results = _run(recognizer, engine, detector)
+    last = {p.id: p for p in results[-1].people}
+    ada, stranger, ben = (last[i] for i in sorted(last))
+    assert (ada.state, ada.name) == (NAMED, "Ada")
+    assert stranger.state == UNKNOWN
+    assert (ben.state, ben.decision.reason) == (UNDECIDED, "no face yet")  # turned away all along: never a guess
+    assert ada.face is not None and ada.face.source == "frame" and ben.face is None
+    # the budget: about 2 embeddings a second for everyone (one at once), decided tracks re-checked only now and then
+    assert engine.embedded <= 2 * 4 + 1
+    first_named = next(r.time for r in results if any(p.name == "Ada" for p in r.people))
+    assert first_named <= 1.5
+    assert results[-1].counts() == {NAMED: 1, UNKNOWN: 1, UNDECIDED: 1}
+    assert all(set(r.timings) == {"people", "track", "faces", "quality", "embed", "decide"} for r in results)
+    # never a wrong name, and the same run gives the same decisions
+    assert not any(p.name not in (None, "Ada") for r in results for p in r.people)
+    again, engine2, detector2 = _recognizer(calibration, rate=2.0)
+    replay = _run(again, engine2, detector2)
+    assert [[(p.id, p.state, p.name, p.decision.reason) for p in r.people] for r in results] == \
+        [[(p.id, p.state, p.name, p.decision.reason) for p in r.people] for r in replay]
+
+
+def test_a_track_that_turns_out_to_show_someone_else_loses_its_name(calibration):
+    """The tracker keeps one number while the person under it changes (two people crossed): the new person's first
+    good face disagrees with the track's evidence, so the old evidence and the name go at once."""
+    recognizer, engine, detector = _recognizer(calibration, rate=5.0, sustain=1.0)
+    _run(recognizer, engine, detector, seconds=2.0, who=("Ada",), turned=())
+    assert recognizer.log.entries[-1].name == "Ada"
+    results = []
+    for k in range(20, 50):
+        t = k / 10
+        image, boxes, faces = _scene(t, who=("Cleo",), turned=())
+        detector.boxes, engine.faces = boxes, faces
+        results.append(recognizer.process(_video_frame(image, k, t)))
+    states = [(r.people[0].state, r.people[0].name) for r in results]
+    assert results[0].people[0].id == 1 and recognizer.tracks[1].resets == 1
+    assert ("named", "Ada") not in states[1:]  # gone with the first good face of Cleo
+    assert states[-1] == (NAMED, "Cleo")  # once Cleo's evidence held for the switch time
+    switched = next(k for k, s in enumerate(states) if s == (NAMED, "Cleo"))
+    assert switched >= 10  # (1 s at 10 frames a second)
+
+
+def test_the_tracks_ask_for_windows_and_their_faces_come_from_the_windows(calibration):
+    service = _Service()
+    recognizer, engine, detector = _recognizer(calibration, service=service, rate=5.0)
+    assert service.scheduler.priority == recognizer.priority
+    image, boxes, faces = _scene(0.0, who=("Ada", "Ben"), turned=("Ben",))
+    detector.boxes, engine.faces = boxes, faces
+    recognizer.process(_video_frame(image, 0, 0.0))
+    assert sorted(r.tag for r in service.asked) == [1, 2]  # undecided, faces small in the frame
+    assert all(r.face_px == recognizer.window_face_px and r.box is not None for r in service.asked)
+    # the next frame comes with a window on Ada's head: her face is found and aligned there
+    region = HEAD.square(boxes[0])
+    x0, y0, x1, y1 = (round(v) for v in region)
+    picture = cv2.resize(image[y0:y1, x0:x1], None, fx=4.0, fy=4.0, interpolation=cv2.INTER_CUBIC)
+    window = _Window(picture, (x0, y0), 4.0, tag=1)
+    engine.windows[id(picture)] = (np.array([x0, y0], float), 4.0)
+    result = recognizer.process(_video_frame(image, 1, 0.6, [window]))  # (a track is embedded twice a second)
+    ada = next(p for p in result.people if p.id == 1)
+    assert ada.face.source == "window" and ada.face.image is picture and ada.embedded
+    assert recognizer.tracks[1].evidence.frames[-1].source == "window"
+    assert recognizer.tracks[1].evidence.frames[-1].size == pytest.approx(4.0 * face_size(faces[0]), rel=0.02)
+    # the window order: undecided before decided, waiting adds up so that tracks take turns
+    from bifold_demo.sensor import WindowRequest
+
+    high = WindowRequest(1, box=(0, 0, 10, 30), priority=3.0)
+    low = WindowRequest(2, box=(0, 0, 10, 30), priority=1.0)
+    assert recognizer.priority(high, 0) > recognizer.priority(low, 0)
+    assert recognizer.priority(low, 41) > recognizer.priority(high, 0)
