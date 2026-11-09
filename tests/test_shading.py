@@ -416,6 +416,38 @@ def test_a_near_head_is_drawn_with_its_detail_maps(gl):
     assert with_detail < with_1024 - 15
 
 
+def test_a_near_head_wearing_a_larger_texture_of_its_own_gets_its_detail_maps(gl):
+    """A head that wears a colour texture of its own larger than 1024 (a face from photos at 2048) is drawn near with
+    that texture and the head's own 2048 maps (only those are read), far with the texture's 1024 level and the 1024
+    maps."""
+    from bifold_demo.characters.model import Detail
+    from bifold_demo.scene.renderer import Renderer
+
+    model = _wall(tilt=(TILT, 0.0)).skinned_model
+    model.skeleton = Skeleton(["Head"], [-1], np.eye(4)[None])
+    part = model.primitives[0]
+    part.positions = part.positions - np.array([0, 1, 0], np.float32)  # the wall round the head bone
+    part.detail = Detail(part.texture, _wall(tilt=(-TILT, 0.0)).skinned_model.primitives[0].maps)
+    person = Character(model, shadow=False)
+    person.texture_overrides[part.name] = Texture(np.full((1100, 1100, 4), 200, np.uint8))
+    scene = Scene(background=(0, 0, 0), ambient=0.0, light_direction=(-1.0, 0.0, -1.0))
+    scene.camera = Camera(position=(0, 0, 2), target=(0, 0, 0), fov=40)
+    scene.add(person, name="p")
+    scene.update(0.0, 0.0)
+    renderer = Renderer(64, 64, samples=0)
+    try:
+        renderer.detail_from = float("inf")
+        with_1024 = int(renderer.render(scene)[32, 32, 1])
+        renderer.detail_from = 1.0
+        with_detail = int(renderer.render(scene)[32, 32, 1])
+        memory = renderer.memory()
+    finally:
+        renderer.release()
+    assert with_detail < with_1024 - 15
+    assert memory["detail_heads"] == 1 and memory["detail_loads"] == 1
+    assert memory["detail"] < 1024 * 4 * 2  # (the 8-texel maps alone, not the colour texture)
+
+
 def _crowd(xs, detail=(0, 200, 0)):
     """People at ``xs`` = [(x, z)] (metres) in front of a camera at (0, 0, 4) looking at the origin, each a wall
     centred on its "Head" bone with a red 1024 texture and a detail texture of ``detail``."""

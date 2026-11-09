@@ -748,6 +748,9 @@ class Renderer:
                         detail = self._details.get(primitive, eye, self.detail_wait, self.detail_heads)
                         if detail is not None:
                             texture = detail[0]
+                    elif near and mapped and _has_maps(primitive) and getattr(primitive.detail, "maps", None) \
+                            is not None:  # a face of its own at 2048: the head's 2048 maps beside it
+                        detail = self._details.get(primitive, eye, self.detail_wait, self.detail_heads, maps_only=True)
                     elif not near and is_large(texture):
                         texture = base_copy(texture)
                 if mapped and _has_maps(primitive):

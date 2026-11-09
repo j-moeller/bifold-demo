@@ -1469,7 +1469,8 @@ demo reads them in the background and draws the 1024 ones until they are
 there, so a frame never waits for a 2048 PNG. Once on the GPU, their pixels
 are given up. A texture larger than 1024 that a person wears instead of the
 model's (a face made from photos) is drawn from its 1024 mipmap level the same
-way, made where the texture is made (`prepare_upload`, on a worker thread).
+way, made where the texture is made (`prepare_upload`, on a worker thread),
+and near the camera beside the head's own 2048 maps (read alone for it).
 `renderer.memory()` says what the textures take on the GPU, what the detail
 textures still hold in memory (`detail_cpu`) and how many pictures were
 refused a head's detail textures (`detail_refused`).

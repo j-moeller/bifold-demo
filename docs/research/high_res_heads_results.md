@@ -207,8 +207,5 @@ the confidence within 0.0001, the trimap's shares within 0.001).
 - **The yoga clip caches** are made again once: their key covers the character model's source, which changed.
 - **Ambient occlusion**: the packed map's alpha is 255, room for a baked occlusion map (the Rocketbox heads have
   none); mipmaps and smaller copies average a data map's channels without weighting them by its alpha.
-- **Faces from photos near the camera**: their face has no avatar maps at any size, but the rest of the head (the
-  scalp, the ears) is drawn with the 1024 maps even where the 2048 ones would show; close-ups (S4) would want the
-  detail cache to read a head's maps alone for them.
 - **Tangents** go through the normal matrix, like the normals: right for turns and even scales, as characters have;
   a character scaled unevenly would need the model matrix's (renderer.py notes it).

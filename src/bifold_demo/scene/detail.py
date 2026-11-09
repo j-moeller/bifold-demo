@@ -22,7 +22,7 @@ pixels are not kept in memory.
 
 A texture larger than 1024 pixels that a person wears instead of the model's (``texture_overrides``: a face made from
 photos at 2048) gets the same treatment: :func:`base_copy` is its 1024 mipmap level, drawn where the picture does not
-need more.
+need more; where it does, the head's own 2048 maps are drawn beside it (read alone: ``DetailCache.get(maps_only)``).
 """
 
 from __future__ import annotations
@@ -127,12 +127,15 @@ class DetailCache:
         """A new frame: the claims of the heads its pictures do not draw fade (:data:`FADE`)."""
         self.frame += 1
 
-    def get(self, primitive, eye: float, wait: bool, keep: int) -> tuple[Texture, Texture | None] | None:
+    def get(self, primitive, eye: float, wait: bool, keep: int,
+            maps_only: bool = False) -> tuple[Texture | None, Texture | None] | None:
         """The detail ``(colour, maps)`` of ``primitive`` (one with a ``detail``), drawn in a picture with its eyes
         ``eye`` pixels apart, at most ``keep`` heads holding theirs: read now when ``wait`` and not read yet (else
         asked for on a background thread) if it is held or may be (see the module docs); ``None`` until they are
-        there, when it may not hold them, or when they cannot be read (it is then not tried again)."""
-        key = id(primitive)
+        there, when it may not hold them, or when they cannot be read (it is then not tried again). ``maps_only``:
+        only the packed map, ``(None, maps)``, for a head that wears a colour texture of its own (a face from photos
+        at 2048)."""
+        key = ("maps", id(primitive)) if maps_only else id(primitive)
         entry = self._entries.get(key)
         if entry is not None and entry[0]() is not primitive:  # the id of a mesh part that is gone
             self._dropped += self._drop(key)
@@ -143,9 +146,9 @@ class DetailCache:
                 return None
             entry = self._entries[key] = [weakref.ref(primitive), None, None, 0.0, self.frame]
             if wait:
-                entry[1] = self._read(primitive.detail)
+                entry[1] = self._read(primitive.detail, maps_only)
             else:
-                entry[2] = _background().submit(self._read, primitive.detail)
+                entry[2] = _background().submit(self._read, primitive.detail, maps_only)
         entry[3], entry[4] = max(self._claim(entry), float(eye)), self.frame
         if entry[2] is not None and (wait or entry[2].done()):
             job, entry[2] = entry[2], None
@@ -171,15 +174,15 @@ class DetailCache:
                 if entry[4] != self.frame and entry[2] is None]
         if not free:
             return False
-        claim, key = min(free)
+        claim, key = min(free, key=lambda item: item[0])
         if eye <= HYSTERESIS * claim:
             return False
         self._dropped += self._drop(key)
         return len(self._entries) < keep
 
-    def _read(self, detail):
+    def _read(self, detail, maps_only: bool = False):
         try:
-            textures = load(detail)
+            textures = (None, _texture(detail.maps, False)) if maps_only else load(detail)
         except (OSError, ValueError) as exc:  # a damaged file: the 1024 textures are drawn
             print(f"[renderer] cannot read a head's detail textures, drawing it at 1024: {exc}")
             return False
