@@ -350,3 +350,23 @@ branch and pushed; its results go into the progress log.
     - E1: evaluation.
     - S3: fitting the head's shape to a person (ICT-FaceKit).
     - S4: close-ups.
+- **9 November, 09:45 UTC: F2 and S3 started** (on request: "Continue"). Both builders work in their own worktrees
+  from the branch's head.
+  - **F2, person, face, identity:**
+    - person tracks from YOLO's boxes, with a tracker of our own (no AGPL code in the commercial profile);
+    - faces looked for only in each track's head region, in S1's windows when the track is undecided;
+    - quality-weighted evidence per track within an embedding budget per profile;
+    - open-set decisions in three states, calibrated per model and face size against one target FPIR, from avatar
+      renders that may be shipped;
+    - one identity per track;
+    - the demo's overlay;
+    - if time allows, YOLOX as the commercial profile's person detector.
+  - **S3, the head's shape fitted to the person:**
+    - ICT-FaceKit's identity space (MIT) carried onto every avatar head;
+    - a multi-view fit to a person's photos (landmarks, the irises for scale, outlines, a small free-form
+      correction);
+    - the fitted head on the rig (eyes, teeth and face bones follow);
+    - textures made on the fitted head at 2048;
+    - a `shape.npz` per created character and known face;
+    - measured on avatars as people and on random faces from the space, and for recognition.
+  - **Then:** both reviewed independently. E1 (evaluation) follows F2, and S4 (close-ups) follows S3.
