@@ -370,3 +370,32 @@ branch and pushed; its results go into the progress log.
     - a `shape.npz` per created character and known face;
     - measured on avatars as people and on random faces from the space, and for recognition.
   - **Then:** both reviewed independently. E1 (evaluation) follows F2, and S4 (close-ups) follows S3.
+- **9 November, 12:15 UTC: F2 and S3 well along.** Each piece passed its tests on the branch before it was pushed.
+  - **F2, on the branch (parts 1-8):**
+    - person tracks: ByteTrack in numpy, with its own assignment solver;
+    - faces looked for only in the tracks' head regions (S1's windows, else crops), each face given to the right
+      track when regions overlap;
+    - quality-weighted evidence per track within an embedding budget (here about 1 AdaFace embedding a second, 4 of the
+      ResNet-50, 20 of SFace);
+    - the decisions:
+      - a name, "unknown" or "not decided yet", calibrated per model, face size and yaw against one target
+        false-alarm rate;
+      - hysteresis, and one identity per track;
+      - a log of every decision for E1;
+    - the demo's N with the new overlay (the old per-frame recogniser is gone);
+    - YOLOX as the commercial profile's person detector, so that profile runs no AGPL code. On the fair it finds 66 %
+      of the people 40-80 px tall, against YOLO's 43 %, but takes 260 ms a frame here against 110.
+    - **Calibrations shipped for AdaFace, the ResNet-50 and SFace,** made from renders of 38 Rocketbox avatars that
+      are not in the fair, with T-norm and its cohort. The choice was made by a held-out check. Avatars that wear the
+      same face count as one identity.
+  - **S3, on the branch (parts 1-3):**
+    - ICT-FaceKit's identity space (fetched from a pinned commit, every file checked);
+    - the space carried onto each avatar head;
+    - a Levenberg-Marquardt fit over all photos: landmarks weighted by how faithfully MediaPipe follows a shape,
+      outlines from profiles, the size from the irises held apart from the shape;
+    - the fitted head on the rig (eyes, teeth and face bones follow; checks in all 12 expressions);
+    - known faces, created characters and the creator wear fitted heads, kept in `shape.npz`.
+    - **First numbers on avatars standing in for people (tuning pairs):** landmark error after a similarity alignment
+      3.18 → 2.29 mm. Fitted with the space alone, without the outlines and the free-form correction, a head barely
+      improves: the landmarks carry little of the nose, cheeks and profile.
+  - Both builders are measuring and finishing. Their independent reviews follow.
