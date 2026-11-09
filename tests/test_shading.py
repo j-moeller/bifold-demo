@@ -474,6 +474,32 @@ def test_more_heads_near_than_are_kept_keep_their_places(gl):
         renderer.release()
 
 
+def test_a_head_read_in_the_background_and_not_drawn_since_gives_its_place_up(gl):
+    """Read in the background, a head's detail textures finish while no picture asks for them any more (the person
+    left the windows): another head can still take their place once the first one's claim has faded."""
+    import time
+
+    from bifold_demo.scene.renderer import Renderer
+
+    scene, people = _crowd([(-1.2, 0.0), (1.2, 0.0)])
+    renderer = Renderer(64, 64, samples=0)
+    renderer.detail_heads, renderer.detail_from, renderer.detail_wait = 1, 3.0, False
+    try:
+        renderer.render(scene)
+        _window_on(renderer, scene, people[0])  # asks for the first head's: read in the background
+        deadline = time.monotonic() + 10
+        while renderer.memory()["detail_loads"] < 1 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        shown = []
+        for _frame in range(12):  # only the second person from now on
+            renderer.render(scene)
+            shown.append(_window_on(renderer, scene, people[1]))
+            time.sleep(0.05)
+        assert renderer.memory()["detail_loads"] == 2 and shown[-1] == [0, 200, 0]
+    finally:
+        renderer.release()
+
+
 def test_a_head_outside_the_picture_is_not_read(gl):
     from bifold_demo.scene.detail import eye_pixels
     from bifold_demo.scene.renderer import Renderer

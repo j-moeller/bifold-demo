@@ -163,6 +163,10 @@ class DetailCache:
             return False
         if len(self._entries) < keep:
             return True
+        for entry in self._entries.values():  # reads finished for heads no picture asked for since
+            if entry[2] is not None and entry[2].done():
+                job, entry[2] = entry[2], None
+                entry[1] = job.result()
         free = [(self._claim(entry), key) for key, entry in self._entries.items()
                 if entry[4] != self.frame and entry[2] is None]
         if not free:
