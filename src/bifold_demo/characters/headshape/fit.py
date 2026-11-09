@@ -769,7 +769,9 @@ def fit_person(photos, model, head, hs: HeadSpace, space=None, options: FitOptio
     model_offsets = m.vertex_offsets(delta) if use_space else np.zeros_like(m.points)
     beta = state.beta[m.extra:]  # the identity coefficients (the uniform scale apart)
     mahalanobis = float(np.sqrt(np.mean(beta ** 2))) if use_space else math.nan
-    scale = 1.0 + SCALE_STEP * float(delta[0]) if m.extra else 1.0
+    scale = 1.0  # the face's size against the avatar's (the uniform scale's coefficient also undoes what the
+    if use_space:  # identity modes do to the size: often 20 % and more)
+        scale = _spread((m.mark_base + np.einsum("k,kld->ld", delta, m.mark_modes))[m.sized]) / m.size
     free = None
     start = time.perf_counter()
     if options.free or not use_space:

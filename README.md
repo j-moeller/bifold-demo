@@ -2101,9 +2101,19 @@ How well it works is measured with avatars as people (renders of one avatar
 fitted onto another's head and compared with it, as the NoW benchmark aligns
 and measures; `characters/headshape/evaluate.py`) and with random identities
 of the space: [docs/research/head_shape_results.md](docs/research/head_shape_results.md).
-On eight pairs of the tuning avatars (six renders up to 60° turned, focal
-length unknown), the median landmark error went from 2.8 mm (the avatar's own
-head) to 2.3 mm and the surface error over the face from 1.3 to 1.1 mm.
+On the twenty pairs of the test avatars (six renders up to 60° turned, focal
+length unknown) the median landmark error went from 2.65 mm (the avatar's own
+head) to 2.38 mm, most in the mouth, nose, forehead and profile; the cheeks got
+worse, and so did the surface error over the face (1.25 to 1.35 mm). Three
+photos (the front, 30° each way) did better (2.21 mm, surface 1.13), and the
+free-form correction alone (`FitOptions(space=False)`) was as good on the
+landmarks (2.36 mm), better on the surface (1.18 mm) and made no head worse
+by more than 0.1 mm. On the tuning avatars, where the defaults were chosen, the
+space's fit went from 2.82 to 2.29 mm. For the face recognition the shape
+pays more than its millimetres suggest: avatars wearing textures made from
+another avatar's renders looked more like that avatar to all three engines on
+the fitted head than on their own (AdaFace's genuine score 0.50 to 0.57, its
+rank-1 rate 88 to 100 %, the impostor scores unchanged).
 
 A fitted face shape is biometric data like the photos it comes from: it is
 kept only in git-ignored folders and deleted with the person or character.
