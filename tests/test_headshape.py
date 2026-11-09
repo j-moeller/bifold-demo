@@ -6,6 +6,7 @@ alignment has a similarity to find; three smooth identity modes and two expressi
 and ICT-FaceKit; the photos' landmarks are the true landmarks projected by known cameras.
 """
 
+import dataclasses
 import math
 
 import numpy as np
@@ -199,6 +200,9 @@ def test_the_space_is_laid_on_the_head_with_its_scale(made, setup):
     truth[:, :count] = space.identity * SCALE
     error = np.linalg.norm(modes - truth, axis=2)[:, skin & (made.fade > 0.99)]
     assert np.median(error) < 1e-4 and error.max() < 1.5e-3  # metres: the right points, the right sign and size
+    size = np.linalg.norm(truth, axis=2)[:, skin & (made.fade > 0.99)]
+    moved = size > 0.001  # where the modes move the head: their size relative to the truth's
+    assert np.median(error[moved] / size[moved]) < 0.03
     eyes = made.eye > 0  # an eyeball moves with its rim, as one
     assert np.ptp(modes[0][made.eye == 1], axis=0).max() < 1e-9
     assert np.linalg.norm(modes[0][eyes], axis=1).max() > 0
@@ -247,6 +251,51 @@ def test_one_photo_or_no_change_keeps_the_avatars_head(made, setup):
     kept = shapefit.fit_person(same, model, marks, made, space, options)  # the avatar itself: nothing to gain
     assert not kept.usable and "no better than the avatar's own" in kept.reason
     assert "keeps the avatar's shape" in kept.summary()
+
+
+def test_the_size_comes_from_the_irises_and_is_held(made, setup):
+    """Photos of the avatar whose irises say the person's head is 10 % smaller than the avatar's: the landmarks
+    cannot tell sizes apart (a larger head farther away looks the same), the irises and the avatar's size as the
+    prior can; the fitted head is uniformly scaled to the size between them (its shape the avatar's), and without
+    irises it keeps the avatar's size."""
+    model, space, _landmarks, marks = setup
+    rims = list(cf.RIGHT_IRIS[1:] + cf.LEFT_IRIS[1:])
+    reliability = marks.reliability.copy()
+    reliability[rims] = 0.0  # (stage 0 has no rims on this head: only the photos' count, as the ruler)
+    triangles = np.asarray(model.primitives[1].indices, np.int64).reshape(-1, 3)
+    reliability[made.fade[triangles[marks.triangle]].min(axis=1) < 0.999] = 0.0  # (nor points where the neck
+    marks = dataclasses.replace(marks, reliability=reliability)  # fades: the head does not scale there; no face does)
+    pupils = np.linalg.norm(marks.points[cf.LEFT_IRIS[0]] - marks.points[cf.RIGHT_IRIS[0]])
+    photos = []
+    for k, (yaw, pitch) in enumerate(((0, 0), (0, 10), (0, -10), (35, 0), (-35, 0))):
+        camera = PhotoCamera.around(CENTRE, 0.8, yaw, pitch, fov=35.0, size=(640, 480))
+        xy = camera.project(marks.points)
+        radius = shapefit.IRIS_RADIUS / (0.9 * pupils) * np.linalg.norm(xy[cf.LEFT_IRIS[0]] - xy[cf.RIGHT_IRIS[0]])
+        for iris in (cf.RIGHT_IRIS, cf.LEFT_IRIS):  # the rim: across, up, across, down
+            xy[list(iris[1:])] = xy[iris[0]] + radius * np.array([[1, 0], [0, -1], [-1, 0], [0, 1]])
+        photos.append(shapefit.Photo(f"photo {k}", (640, 480), xy, camera, True))
+    options = {"expressions": False, "contour": False, "outline": False, "trust": False}
+    eyes = [made.eye == 1, made.eye == 2]
+    head = np.asarray(model.primitives[1].positions, np.float64)
+
+    def eye_distance(offsets):
+        moved = head + offsets
+        return float(np.linalg.norm(moved[eyes[1]].mean(axis=0) - moved[eyes[0]].mean(axis=0)))
+
+    own = eye_distance(0.0)
+    fit = shapefit.fit_person(photos, model, marks, made, space, shapefit.FitOptions(**options))
+    assert fit.scale_from.startswith("the irises (3 photos"), fit.scale_from
+    spread = math.hypot(shapefit.IRIS_SPREAD / shapefit.IRIS_RADIUS, shapefit.IRIS_NOISE / math.sqrt(3))
+    weight, prior = spread ** -2, shapefit.SIZE_SPREAD ** -2
+    expected = math.exp(weight * math.log(0.9) / (weight + prior))  # about 0.95: about as sure as each other
+    assert fit.scale == pytest.approx(expected, abs=0.003)
+    assert eye_distance(fit.offsets) == pytest.approx(own * expected, abs=3e-4)
+    assert np.abs(fit.beta - made.alpha).max() < 0.1  # the shape is the avatar's
+    assert fit.iris_radius == pytest.approx(shapefit.IRIS_RADIUS * expected / 0.9, rel=0.02)
+    plain = shapefit.fit_person(photos, model, marks, made, space, shapefit.FitOptions(iris=False, **options))
+    assert plain.scale_from == "the avatar's own size" and math.isnan(plain.iris_radius)
+    assert plain.scale == pytest.approx(1.0, abs=0.003)
+    assert eye_distance(plain.offsets) == pytest.approx(own, abs=3e-4)
 
 
 def test_the_free_form_fallback_without_the_space(setup, monkeypatch):
@@ -310,8 +359,12 @@ def test_the_fitted_head_on_the_rig(made, setup):
     assert np.allclose(new.tangents, vertex_tangents(new.positions, new.normals, new.uvs, new.indices), atol=1e-5)
     assert not np.allclose(new.tangents, old.tangents, atol=1e-4)
     geometric = mesh.vertex_normals(new.positions, new.indices, mesh.weld(new.positions)[0])
+    before = mesh.vertex_normals(old.positions, old.indices, mesh.weld(old.positions)[0])
     skin = made.parts == s0.SKIN
-    assert np.median(np.einsum("nk,nk->n", geometric[skin], new.normals[skin])) > 0.99
+    turned = skin & (np.einsum("nk,nk->n", geometric, before) < np.cos(np.radians(2.0)))  # the surface turned there
+    assert turned.sum() > 20
+    assert np.median(np.einsum("nk,nk->n", geometric[turned], new.normals[turned])) > \
+        np.median(np.einsum("nk,nk->n", geometric[turned], np.asarray(old.normals)[turned])) + 1e-4
     assert "s_opacity" in shape.others and np.abs(shape.others["s_opacity"]).max() > 1e-5  # the hair moved along
     assert np.abs(shape.offsets[made.fade == 0]).max() < 1e-9  # the neck's edge stays where the body is
     check = rig.rig_checks(model, fitted, made)
@@ -327,9 +380,11 @@ def test_the_shape_file_round_trips_and_refuses_what_is_not_one(made, setup, tmp
     assert np.array_equal(again.offsets, shape.offsets) and again.others.keys() == shape.others.keys()
     assert again.bones.keys() == shape.bones.keys() and again.base == rig.base_key(model)
     assert not again.problems(model)
-    np.savez(tmp_path / "bad.npz", format=np.array(rig.FORMAT), offsets=np.array([object()], dtype=object))
+    values = dict(np.load(path, allow_pickle=False))
+    values["offsets"] = np.asarray(shape.offsets, np.float64).astype(object)  # a pickled array, else a good shape
+    np.savez(tmp_path / "bad.npz", **values)
     with pytest.raises(ValueError):
-        rig.Shape.load(tmp_path / "bad.npz")  # (an object array would need pickles: never loaded)
+        rig.Shape.load(tmp_path / "bad.npz")  # (an object array needs pickles: never loaded)
     other = synthetic_avatar()
     other.name = "Another"
     assert any("made for Synthetic" in p for p in again.problems(other))

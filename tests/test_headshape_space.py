@@ -110,7 +110,10 @@ def test_fetching_checks_every_file_converts_and_deletes_the_downloads(tiny, tmp
 
 def test_a_changed_file_upstream_is_refused(tiny, tmp_path):
     source, _shapes = tiny
-    (source / "FaceXModel" / "identity001.obj").write_bytes(_obj(NEUTRAL * 2.0))  # not what was pinned
+    path = source / "FaceXModel" / "identity001.obj"
+    data = bytearray(path.read_bytes())
+    data[-3] = ord("7") if data[-3] != ord("7") else ord("8")  # one digit changed: the size as pinned, not the hash
+    path.write_bytes(bytes(data))
     dest = tmp_path / "identity"
     with pytest.raises(downloads.DownloadError):
         space.fetch(dest, progress=None)

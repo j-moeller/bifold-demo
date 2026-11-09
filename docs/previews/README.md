@@ -194,3 +194,10 @@ work goes on. The people are avatars from the
   no maps, and with the 2048 texture and its maps: the folds of the eyelids,
   the nose and the forehead, the pores and the sheen of the skin. Renders of
   avatars only (`docs/research/high_res_heads_results.md`).
+- `head_shape.jpg`: head shapes from photos (step S3). Avatar A (Male_Adult_12)
+  stands in for a person: six renders of it (front, 30 and 60 degrees each
+  way, nodded) are the photos. From the left: A itself; avatar B
+  (Male_Adult_17) as it is; B's head fitted to A's renders (its own texture);
+  and B fitted wearing the face textures made from A's renders on the fitted
+  head. Top: the front; bottom: turned 75 degrees. Renders of avatars only
+  (`docs/research/head_shape_results.md`).

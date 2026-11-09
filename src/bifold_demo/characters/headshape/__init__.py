@@ -16,10 +16,11 @@ the avatar's, the head keeping the avatar's proportions, profile and outline. Th
   eyeballs, the teeth and tongue, the face bones and the hair with the skin.
 * :mod:`.fit` (S1-S4): **the fit**, all of a person's photos at once: the coefficients, per photo the camera and the
   expression (ICT's ARKit-named shapes, started from MediaPipe's blendshape scores, only where MediaPipe sees one),
-  the focal lengths, the scale from the irises; MediaPipe's landmarks weighted by their reliability, by how squarely
-  they are seen and by how faithfully they follow a head's shape (measured), the jaw line as the head's outline in
-  each photo, the face's outline against the segmenter's masks (:mod:`.outline`), priors; a small free-form
-  correction (:func:`~.fit.free_form`), which without the identity space is the whole fit (the fallback).
+  the focal lengths, the size (held at a target from the irises); MediaPipe's landmarks weighted by their
+  reliability, by how squarely they are seen and by how faithfully they follow a head's shape (measured), the jaw
+  line as the head's outline in each photo, the face's outline against the segmenter's masks (:mod:`.outline`),
+  priors; a small free-form correction (:func:`~.fit.free_form`), which without the identity space is the whole fit
+  (the fallback).
 * :mod:`.rig` (S5, S7): **the fitted head on the rig** (a per-character copy of the model sharing all but the head,
   the parts that move with it and the skeleton; eyeballs rigid, teeth with the jaw and lips, face bones and inverse
   binds re-solved, normals turned, tangents made again), its **checks** in the 12 expressions of the face rig, and

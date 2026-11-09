@@ -2016,17 +2016,23 @@ avatar's head (proportions where the photos agree, nothing where they do not).
   photos at once, by Levenberg-Marquardt: the coefficients, per photo the
   camera and, only where MediaPipe scores one, the expression (ICT's shapes,
   started from MediaPipe's blendshape scores), the focal length (EXIF data,
-  else free with a prior), the head's size from the irises (11.7 mm across;
-  else the avatar's own size; the summary says which). MediaPipe's landmarks
-  count by their reliability on the mesh, by how squarely the camera sees them
-  and by how faithfully they follow a head's shape (measured: well for the
-  eyes, brows and mouth, poorly for the nose, cheeks and outline); the jaw
-  line counts as the head's outline in each photo, and in photos turned 40°
-  or more and in profiles (placed by the head's outline when MediaPipe finds
-  no face there) the face's outline against the segmenter's masks, where the
-  face skin meets the background; a prior keeps the coefficients near the
-  avatar's where the photos say nothing. One photo, no face, or a fit no
-  better than the avatar's own head keep the avatar's head, with the reason.
+  else free with a prior). Photos cannot tell a head from a larger one
+  farther away, so the face's overall size is held at a target while the
+  coefficients shape it: the irises (11.7 mm across people) against the
+  distance between them in the frontal photos measure the person's eye
+  distance, which with the fitted proportions gives a size, weighed against
+  the avatar's own (without irises the avatar's size; the summary says
+  which); left free, the turned photos made the head 5-15 % too big.
+  MediaPipe's landmarks count by their reliability on the mesh, by how
+  squarely the camera sees them and by how faithfully they follow a head's
+  shape (measured: well for the eyes, brows and mouth, poorly for the nose,
+  cheeks and outline); the jaw line counts as the head's outline in each
+  photo, and in photos turned 40° or more and in profiles (placed by the
+  head's outline when MediaPipe finds no face there) the face's outline
+  against the segmenter's masks, where the face skin meets the background; a
+  prior keeps the coefficients near the avatar's where the photos say
+  nothing. One photo, no face, or a fit no better than the avatar's own head
+  keep the avatar's head, with the reason.
 - **On the rig** (`apply_shape`): a copy of the avatar that shares everything
   but the head, the parts that move with it and the skeleton; the eyeballs
   move rigidly with their lids, the teeth, gums and tongue with the lips and

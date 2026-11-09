@@ -11,10 +11,15 @@
   0 and 1; the eyes' gaze shapes are left out (the irises do not take part);
 * per camera session (photos of one picture shape without EXIF data) the focal length, free with a prior around
   the registration's (:data:`FOCAL_SPREAD`); with EXIF data it is held;
-* the scale: the irises are a ruler (a horizontal diameter of 11.7 mm across people, 4 % spread): in the frontal
-  photos where they are large enough, the iris radius in pixels against the eye's depth fixes the head's size (an
-  unknown iris size of the person with that prior is fitted with it); without irises the avatar's own eye distance
-  holds the size (:attr:`ShapeFit.scale_from` says which).
+* the size, apart from the shape: the landmarks cannot tell a head from a larger one farther away, so the face's
+  overall size (the spread of its landmarks) is held (:data:`SIZE_HOLD`) at a target, with a uniform scale of the
+  head as an extra unknown, and the coefficients shape it. The target is set every round: the irises are a ruler
+  (a horizontal diameter of 11.7 mm across people, 4 % spread): in the frontal photos where they are large enough,
+  the iris radius against the distance between the iris centres (both in pixels, so the camera's distance and lens
+  cancel) measures the person's eye distance, which with the shape's proportions gives a size; weighed against the
+  avatar's own size (people's spread :data:`SIZE_SPREAD`) that is the target; without irises the avatar's size
+  (:attr:`ShapeFit.scale_from` says which). Left free instead, with the irises' pixels against their depth as a few
+  more residuals, the turned photos made the head 5-15 % too big (``docs/research/head_shape_results.md``).
 
 **Residuals**: MediaPipe's landmarks against the avatar's stage-0 landmarks as the shape and the camera put them,
 weighted by their reliability on the mesh, by how squarely the surface faces the camera (MediaPipe only guesses the
@@ -23,7 +28,7 @@ oval below the ears) are not points on the mesh but where the head's outline is 
 is re-assigned every round to the vertex of the current head that is outermost there (along its marching line, after
 Zhu et al.) and only its distance across the outline counts; the head's outline against the photo's face-skin mask
 where that mask meets the background (:mod:`.outline`), alternated with the landmarks; and the priors: a unit
-Gaussian on ``beta``, the expressions' pulls, the focal length's and the iris size's.
+Gaussian on ``beta``, the expressions' pulls, the focal length's and the size held.
 
 **A small free-form correction** (:func:`free_form`) then removes what the photos agree on and the space cannot
 express: per landmark, the 3D correction that its residuals in at least two photos triangulate to (with the photos'
@@ -60,7 +65,9 @@ IRIS_RADIUS, IRIS_SPREAD = 0.00585, 0.00025  # metres: half of 11.7 +/- 0.5 mm
 IRIS_NOISE = 0.06  # of the radius: one photo's measurement
 IRIS_YAW = 15.0  # degrees: photos turned further do not measure the irises
 IRIS_MIN = 4.0  # pixels: smaller iris radii do not count
-SIZE_SPREAD = 0.002  # metres: the eye distance's pull to the avatar's own without irises
+SIZE_SPREAD = 0.05  # people's head sizes spread so (relative): the avatar's size is the prior on the person's
+SIZE_HOLD = 0.0002  # metres: the face's size (its landmarks' RMS spread) is held at the target so firmly
+SCALE_STEP = 0.01  # the uniform scale's coefficient: this share of the head's size per unit
 FOCAL_SPREAD = 0.5  # log focal length
 EXPRESSION_PULL, EXPRESSION_NEUTRAL = 0.35, 0.6  # spreads: around MediaPipe's score, around 0
 EXPRESSION_HELD = 0.01  # ... of the expressions MediaPipe scores below the gate: held at 0
@@ -169,7 +176,8 @@ class ShapeFit:
     cameras: list = field(default_factory=list)
     expressions: list = field(default_factory=list)  # per photo {name: weight} above 0.05
     focal: list = field(default_factory=list)
-    scale_from: str = ""  # "irises (n photos)" or "the avatar's own size"
+    scale_from: str = ""  # "the irises (n photos; ...)" or "the avatar's own size"
+    scale: float = 1.0  # the head's size against the avatar's
     iris_radius: float = math.nan  # metres, the fitted person's iris
     error_before: float = math.nan  # robust landmark error, in landmark noises, of the avatar's own head
     error_after: float = math.nan
@@ -210,14 +218,16 @@ class _Model:
         self.head = head
         self.weight = np.asarray(head.reliability, np.float64) * (landmark_trust() if options.trust else 1.0)
         self.space_triangles = space.triangles if space is not None and options.space else None
+        self.extra = 0  # coefficients before the space's: the uniform scale (with the space)
         if space is not None and options.space:
-            self.modes = hs.modes(space).astype(np.float64)  # (K, N, 3)
+            self.modes = np.concatenate([_scale_mode(model, hs)[None], hs.modes(space).astype(np.float64)])
+            self.extra = 1
             names = list(space.expression_names)
             keep = [k for k, n in enumerate(names) if not n.startswith("eyeLook")] if options.expressions else []
             self.expression_names = [names[k] for k in keep]
             self.expression_modes = hs.expressions(space)[keep].astype(np.float64) if keep else \
                 np.zeros((0, len(self.points), 3))
-            self.alpha = hs.alpha.astype(np.float64)
+            self.alpha = np.r_[0.0, hs.alpha.astype(np.float64)]
         else:
             self.modes = np.zeros((0, len(self.points), 3))
             self.expression_names = []
@@ -230,8 +240,9 @@ class _Model:
         self.mark_expr = np.einsum("lc,klcd->kld", self.mark_bary, self.expression_modes[:, tri])
         self.mark_normals = np.einsum("lc,lcd->ld", self.mark_bary, self.normals[tri])
         self.mark_normals /= np.maximum(np.linalg.norm(self.mark_normals, axis=1, keepdims=True), 1e-12)
-        self.eye_rims = hs.rim.astype(np.float64)  # (2, N)
         self.marches = _marching_lines(self, hs)
+        self.sized = np.array([k for k in POINTS if k not in IRISES])  # the landmarks whose spread is the size
+        self.size = _spread(self.mark_base[self.sized])  # the avatar's
 
     @property
     def k(self) -> int:
@@ -246,6 +257,19 @@ class _Model:
         if expression is not None and len(expression):
             out = out + np.einsum("e,end->nd", expression, self.expression_modes)
         return out
+
+
+def _scale_mode(model, hs: HeadSpace) -> np.ndarray:
+    """``(N, 3)``: the head scaled up by :data:`SCALE_STEP` about the middle between the eyes (faded at the neck,
+    the eyeballs and the mouth's inside with it)."""
+    points = np.asarray(model.primitives[hs.primitive].positions, np.float64)
+    middle = hs.eye_centre.mean(axis=0)
+    return hs.transfer(model, SCALE_STEP * hs.fade[:, None] * (points - middle)).head
+
+
+def _spread(points) -> float:
+    """The RMS distance of ``points`` from their middle."""
+    return float(np.sqrt(np.mean(np.sum((points - points.mean(axis=0)) ** 2, axis=1))))
 
 
 def landmark_trust() -> np.ndarray:
@@ -311,8 +335,8 @@ def _project(x_cam, f, centre):
 
 
 class _State:
-    """The unknowns: beta, per photo a rotation, a translation and expressions, per session a log focal length,
-    the iris radius."""
+    """The unknowns: beta, per photo a rotation, a translation and expressions, per session a log focal length;
+    and the size the head is held at (:func:`_size`)."""
 
     def __init__(self, m: _Model, photos, options: FitOptions):
         self.m = m
@@ -333,7 +357,7 @@ class _State:
         self.measured = [_mediapipe_expressions(p.blendshapes, m.expression_names) for p in photos]
         self.active = [e >= options.expression_gate for e in self.measured]  # the expressions fitted per photo
         self.expressions = [np.where(a, np.clip(e, 0.0, 1.0), 0.0) for e, a in zip(self.measured, self.active)]
-        self.iris = IRIS_RADIUS
+        self.size = None  # the face's size held (metres: its landmarks' RMS spread), set each round by _size
         self.contours = [{} for _ in photos]  # landmark -> vertex, per photo
         self.outline = [None for _ in photos]  # per photo: (vertices, gradients, values) of the outline term
 
@@ -356,8 +380,7 @@ def _mediapipe_expressions(shapes: dict, names) -> np.ndarray:
 
 
 def _columns(state: _State, free_modes: int):
-    """The unknowns' column ranges: ``beta[:free_modes]``, then per photo 6 + E, then the focal lengths, then the
-    iris radius."""
+    """The unknowns' column ranges: ``beta[:free_modes]``, then per photo 6 + E, then the focal lengths."""
     m = state.m
     cols = {"beta": (0, free_modes)}
     at = free_modes
@@ -368,21 +391,18 @@ def _columns(state: _State, free_modes: int):
         at += m.e
     cols["focal"] = (at, at + len(state.log_focal))
     at += len(state.log_focal)
-    cols["iris"] = (at, at + 1)
-    at += 1
     return cols, at
 
 
 def _residuals(state: _State, free_modes: int, weights=None, with_jacobian: bool = True):
     """The weighted residuals (and their Jacobian) of the current state: rows of landmarks, contours, outlines,
-    irises and priors. ``weights``: the robust weights per photo and landmark (``None``: from the residuals)."""
+    the size and priors. ``weights``: the robust weights per photo and landmark (``None``: from the residuals)."""
     m, options = state.m, state.options
     cols, n = _columns(state, free_modes)
     rows_r, rows_j = [], []
     delta = state.beta - m.alpha
     marks = m.mark_base + (np.einsum("k,kld->ld", delta, m.mark_modes) if m.k else 0.0)
     robust = []
-    iris_photos = 0
     for i, photo in enumerate(state.photos):
         e = state.expressions[i]
         x = marks + (np.einsum("e,eld->ld", e, m.mark_expr) if m.e else 0.0)
@@ -467,37 +487,12 @@ def _residuals(state: _State, free_modes: int, weights=None, with_jacobian: bool
             rows_r.append(got[0])
             if with_jacobian:
                 rows_j.append(got[1])
-        # the irises
-        if options.iris and _iris_usable(photo, state.camera(i)):
-            iris_photos += 1
-            radius = _iris_radius(photo)
-            eye = (x[cf.RIGHT_IRIS[0]] + x[cf.LEFT_IRIS[0]]) / 2.0
-            ec = eye @ r.T + t
-            z = ec[2]
-            predicted = f * state.iris / z
-            s_iris = IRIS_NOISE * radius
-            rows_r.append(np.array([(predicted - radius) / s_iris]))
-            if with_jacobian:
-                jac = np.zeros((1, n))
-                dz = r[2]  # dz / d(eye in character space)
-                dpred_dz = -f * state.iris / z ** 2 / s_iris
-                if free_modes:
-                    a, b = cols["beta"]
-                    eye_modes = (m.mark_modes[:free_modes, cf.RIGHT_IRIS[0]] + m.mark_modes[:free_modes,
-                                                                                          cf.LEFT_IRIS[0]]) / 2
-                    jac[0, a:b] = dpred_dz * eye_modes @ dz
-                a, b = cols[("pose", i)]
-                jac[0, a:a + 3] = dpred_dz * (-_skew(eye @ r.T))[2]
-                jac[0, a + 5] = dpred_dz
-                if state.focal_free[photo.group]:
-                    jac[0, cols["focal"][0] + photo.group] = predicted / s_iris
-                jac[0, cols["iris"][0]] = f / z / s_iris
-                rows_j.append(jac)
     # priors
     if free_modes:
         a, b = cols["beta"]
         weight = np.full(free_modes, math.sqrt(options.prior))
-        weight[options.first_modes:] = math.sqrt(options.prior_high)
+        weight[m.extra + options.first_modes:] = math.sqrt(options.prior_high)
+        weight[:m.extra] = 1e-3  # (the uniform scale: none to speak of; the size is held)
         rows_r.append(weight * (state.beta[:free_modes] - state.centre[:free_modes]))
         if with_jacobian:
             jac = np.zeros((free_modes, n))
@@ -525,20 +520,14 @@ def _residuals(state: _State, free_modes: int, weights=None, with_jacobian: bool
                 jac = np.zeros((1, n))
                 jac[0, a + g] = 1.0 / FOCAL_SPREAD
                 rows_j.append(jac)
-    a, _ = cols["iris"]
-    rows_r.append(np.array([(state.iris - IRIS_RADIUS) / IRIS_SPREAD]))
-    if with_jacobian:
-        jac = np.zeros((1, n))
-        jac[0, a] = 1.0 / IRIS_SPREAD
-        rows_j.append(jac)
-    if not iris_photos and free_modes:  # the size: the avatar's own eye distance
+    if free_modes and state.size is not None:  # the size held at the target
         rows = _size_rows(state, free_modes, cols, n, with_jacobian)
         rows_r.append(rows[0])
         if with_jacobian:
             rows_j.append(rows[1])
     r = np.concatenate(rows_r)
     j = np.concatenate(rows_j) if with_jacobian else None
-    return r, j, robust, iris_photos
+    return r, j, robust
 
 
 def _outline_rows(state, m, i, delta, e, r, t, f, centre, cols, n, free_modes, with_jacobian):
@@ -553,25 +542,39 @@ def _outline_rows(state, m, i, delta, e, r, t, f, centre, cols, n, free_modes, w
 def _size_rows(state, free_modes, cols, n, with_jacobian):
     m = state.m
     delta = state.beta - m.alpha
-    centres = []
-    derivatives = []
-    for e in range(2):
-        rim = m.eye_rims[e]
-        base = state.m.hs.eye_centre[e]
-        off = np.einsum("n,knd->kd", rim, m.modes[:free_modes]) if free_modes else np.zeros((0, 3))
-        centres.append(base + (delta[:free_modes] @ off if free_modes else 0.0))
-        derivatives.append(off)
-    axis = centres[1] - centres[0]
-    distance = float(np.linalg.norm(axis))
-    target = float(np.linalg.norm(state.m.hs.eye_centre[1] - state.m.hs.eye_centre[0]))
-    unit = axis / max(distance, 1e-9)
-    r = np.array([(distance - target) / SIZE_SPREAD])
+    marks = m.mark_base[m.sized] + np.einsum("k,kld->ld", delta[:free_modes], m.mark_modes[:free_modes, m.sized])
+    centred = marks - marks.mean(axis=0)
+    size = float(np.sqrt(np.mean(np.sum(centred ** 2, axis=1))))
+    r = np.array([(size - state.size) / SIZE_HOLD])
     if not with_jacobian:
         return r, None
     jac = np.zeros((1, n))
     a, b = cols["beta"]
-    jac[0, a:b] = (derivatives[1] - derivatives[0]) @ unit / SIZE_SPREAD
+    jac[0, a:b] = np.einsum("ld,kld->k", centred, m.mark_modes[:free_modes, m.sized]) / (len(marks) * size) / SIZE_HOLD
     return r, jac
+
+
+def _size(state: _State) -> tuple[float, str, float]:
+    """The face's size to hold the head at (its landmarks' RMS spread, metres), what it came from in words, and the
+    person's iris radius at that size (``nan`` without irises): see the module docs. The shape's own proportions
+    (from the current coefficients) turn the eye distance the irises measure into a size."""
+    m = state.m
+    delta = state.beta - m.alpha
+    marks = m.mark_base + (np.einsum("k,kld->ld", delta, m.mark_modes) if m.k else 0.0)
+    size = _spread(marks[m.sized])
+    pupils = float(np.linalg.norm(marks[cf.LEFT_IRIS[0]] - marks[cf.RIGHT_IRIS[0]])) * m.size / size  # at the avatar's
+    ratios = [_iris_radius(p) / p.eye_distance for i, p in enumerate(state.photos)
+              if state.options.iris and _iris_usable(p, state.camera(i)) and p.eye_distance > 0]
+    if not ratios or pupils <= 0:
+        return m.size, "the avatar's own size", math.nan
+    ratio = float(np.mean(ratios))
+    measured = IRIS_RADIUS / ratio / pupils  # the irises alone: the head's size against the avatar's
+    spread = math.hypot(IRIS_SPREAD / IRIS_RADIUS, IRIS_NOISE / math.sqrt(len(ratios)))
+    w_own, w_measured = SIZE_SPREAD ** -2, spread ** -2
+    scale = math.exp(w_measured * math.log(measured) / (w_own + w_measured))
+    words = (f"the irises ({len(ratios)} photos; the head {100 * scale:.0f} % of the avatar's size, the irises alone "
+             f"{100 * measured:.0f} %)")
+    return m.size * scale, words, ratio * pupils * scale
 
 
 def _outward(points, ks) -> np.ndarray:
@@ -628,7 +631,7 @@ def _assign_contours(state: _State) -> None:
 def _solve(state: _State, free_modes: int, iterations: int) -> float:
     """Levenberg-Marquardt on the state; returns the final cost."""
     cols, _n = _columns(state, free_modes)
-    r, j, robust, _ = _residuals(state, free_modes)
+    r, j, robust = _residuals(state, free_modes)
     cost = float(r @ r)
     lam = 1e-3
     for _ in range(iterations):
@@ -644,7 +647,7 @@ def _solve(state: _State, free_modes: int, iterations: int) -> float:
                 continue
             saved = _snapshot(state)
             _apply(state, step, cols, free_modes)
-            r2, _j2, _rb, _ = _residuals(state, free_modes, weights=robust, with_jacobian=False)
+            r2, _j2, _rb = _residuals(state, free_modes, weights=robust, with_jacobian=False)
             cost2 = float(r2 @ r2)
             if cost2 < cost:
                 lam = max(lam / 3.0, 1e-7)
@@ -654,7 +657,7 @@ def _solve(state: _State, free_modes: int, iterations: int) -> float:
             lam *= 10.0
         if not improved:
             break
-        r, j, robust, _ = _residuals(state, free_modes)
+        r, j, robust = _residuals(state, free_modes)
         new_cost = float(r @ r)
         if abs(cost - new_cost) < 1e-5 * max(cost, 1e-9):
             cost = new_cost
@@ -665,11 +668,11 @@ def _solve(state: _State, free_modes: int, iterations: int) -> float:
 
 def _snapshot(state: _State):
     return (state.beta.copy(), [r.copy() for r in state.rotations], [t.copy() for t in state.translations],
-            [e.copy() for e in state.expressions], state.log_focal.copy(), state.iris)
+            [e.copy() for e in state.expressions], state.log_focal.copy())
 
 
 def _restore(state: _State, saved) -> None:
-    (state.beta, state.rotations, state.translations, state.expressions, state.log_focal, state.iris) = saved
+    (state.beta, state.rotations, state.translations, state.expressions, state.log_focal) = saved
 
 
 def _apply(state: _State, step, cols, free_modes: int) -> None:
@@ -687,7 +690,6 @@ def _apply(state: _State, step, cols, free_modes: int) -> None:
             state.expressions[i] = np.clip(state.expressions[i] + step[a:b], 0.0, 1.0)
     a, _ = cols["focal"]
     state.log_focal = state.log_focal + np.where(state.focal_free, step[a:a + len(state.log_focal)], 0.0)
-    state.iris = float(np.clip(state.iris + step[cols["iris"][0]], 0.8 * IRIS_RADIUS, 1.2 * IRIS_RADIUS))
 
 
 def _robust_error(state: _State, offsets=None) -> float:
@@ -741,6 +743,7 @@ def fit_person(photos, model, head, hs: HeadSpace, space=None, options: FitOptio
         _assign_contours(state)
     _solve(state, 0, options.iterations)
     before = _robust_error(state)
+    scale_from, iris_radius = "the avatar's own size", math.nan
     timings["cameras"] = time.perf_counter() - start
     start = time.perf_counter()
     warnings = []
@@ -749,9 +752,10 @@ def fit_person(photos, model, head, hs: HeadSpace, space=None, options: FitOptio
             from .outline import prepare_outlines
 
             prepare_outlines(state)
-        stages = [min(options.first_modes, m.k), m.k]
+        stages = [min(m.extra + options.first_modes, m.k), m.k]
         for free_modes in stages:
             for _round in range(options.rounds):
+                state.size, scale_from, iris_radius = _size(state)
                 if options.contour:
                     _assign_contours(state)
                 if options.outline:
@@ -763,7 +767,9 @@ def fit_person(photos, model, head, hs: HeadSpace, space=None, options: FitOptio
     after = _robust_error(state)
     delta = state.beta - m.alpha
     model_offsets = m.vertex_offsets(delta) if use_space else np.zeros_like(m.points)
-    mahalanobis = float(np.sqrt(np.mean(state.beta ** 2))) if use_space else math.nan
+    beta = state.beta[m.extra:]  # the identity coefficients (the uniform scale apart)
+    mahalanobis = float(np.sqrt(np.mean(beta ** 2))) if use_space else math.nan
+    scale = 1.0 + SCALE_STEP * float(delta[0]) if m.extra else 1.0
     free = None
     start = time.perf_counter()
     if options.free or not use_space:
@@ -771,14 +777,13 @@ def fit_person(photos, model, head, hs: HeadSpace, space=None, options: FitOptio
         after = _robust_error(state, model_offsets + free)
     timings["free-form"] = time.perf_counter() - start
     offsets = model_offsets + (free if free is not None else 0.0)
-    iris_photos = sum(_iris_usable(p, state.camera(i)) for i, p in enumerate(photos)) if options.iris else 0
-    fit = ShapeFit(True, beta=state.beta.copy(), offsets=offsets, model_offsets=model_offsets, free=free,
+    fit = ShapeFit(True, beta=beta.copy(), offsets=offsets, model_offsets=model_offsets, free=free,
                    cameras=[state.camera(i) for i in range(len(photos))],
                    expressions=[{n: round(float(v), 3) for n, v in zip(m.expression_names, e) if v > 0.05}
                                 for e in state.expressions],
                    focal=[float(math.exp(state.log_focal[p.group])) for p in photos],
-                   scale_from=f"the irises ({iris_photos} photos)" if iris_photos else "the avatar's own size",
-                   iris_radius=state.iris if iris_photos else math.nan, error_before=before, error_after=after,
+                   scale_from=scale_from, scale=scale, iris_radius=iris_radius, error_before=before,
+                   error_after=after,
                    photos=len(photos), mahalanobis=mahalanobis,
                    method=("space + free-form" if free is not None else "space") if use_space else "free-form",
                    warnings=warnings, timings=timings)
