@@ -1989,10 +1989,12 @@ avatar's head (proportions where the photos agree, nothing where they do not).
   count by their reliability on the mesh, by how squarely the camera sees them
   and by how faithfully they follow a head's shape (measured: well for the
   eyes, brows and mouth, poorly for the nose, cheeks and outline); the jaw
-  line counts as the head's outline in each photo; a prior keeps the
-  coefficients near the avatar's where the photos say nothing. One photo, no
-  face, or a fit no better than the avatar's own head keep the avatar's head,
-  with the reason.
+  line counts as the head's outline in each photo, and in photos turned 40°
+  or more and in profiles (placed by the head's outline when MediaPipe finds
+  no face there) the face's outline against the segmenter's masks, where the
+  face skin meets the background; a prior keeps the coefficients near the
+  avatar's where the photos say nothing. One photo, no face, or a fit no
+  better than the avatar's own head keep the avatar's head, with the reason.
 - **On the rig** (`apply_shape`): a copy of the avatar that shares everything
   but the head, the parts that move with it and the skeleton; the eyeballs
   move rigidly with their lids, the teeth, gums and tongue with the lips and
@@ -2010,8 +2012,9 @@ avatar's head (proportions where the photos agree, nothing where they do not).
 - **Kept** as a `shape.npz` of about 25 KB (offsets, bones, coefficients,
   scale, residuals; no pickles, no photos): beside a created character's
   `character.json`, and for a known face of the fair in its folder under
-  `faces/.headtex/`. The known faces of the fair and created characters wear
-  their fitted heads; characters saved before keep the avatar's head.
+  `faces/.headtex/`. The known faces of the fair, the character creator's
+  person (a face from two or more photos) and created characters wear their
+  fitted heads; characters saved before keep the avatar's head.
 
 ```python
 from bifold_demo.characters.headshape import fitted_person

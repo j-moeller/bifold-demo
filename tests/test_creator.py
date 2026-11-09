@@ -501,7 +501,7 @@ def test_the_creator_in_the_demo_saves_a_character_who_joins_the_fair(tmp_path, 
 def test_the_face_comes_from_the_head_texture_pipeline_or_the_simple_painting(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
-    from bifold_demo.characters import face_photo, headtex
+    from bifold_demo.characters import face_photo, headshape
 
     model = MODELS["Tube_Woman"]
     photos = []
@@ -512,10 +512,14 @@ def test_the_face_comes_from_the_head_texture_pipeline_or_the_simple_painting(mo
     textures = {HEAD: np.zeros((4, 4, 4), np.uint8), "p000_body": np.ones((4, 4, 4), np.uint8)}
     made = SimpleNamespace(textures=textures, body=textures["p000_body"], result=SimpleNamespace(projections=[1]),
                            warnings=["dim"])
-    monkeypatch.setattr(headtex, "person_textures", lambda photos, model: made)  # (all the stages)
-    result = C.face_texture(photos, model)
+    monkeypatch.setattr(headshape, "fitted_person", lambda photos, model: SimpleNamespace(person=made, shape=None))
+    result = C.face_texture(photos, model)  # (the shape and all the stages; no shape: the avatar's own head)
     assert result.textures == textures and result.method == "head and body textures from 1 of 2 photos"
-    assert result.notes == ["dim"]
+    assert result.notes == ["dim"] and result.shape is None
+    shape = object()
+    monkeypatch.setattr(headshape, "fitted_person", lambda photos, model: SimpleNamespace(person=made, shape=shape))
+    result = C.face_texture(photos, model)
+    assert result.shape is shape and result.method == "the head's shape and head and body textures from 1 of 2 photos"
 
     def fails(photos, model):
         raise RuntimeError("no usable photo")
@@ -527,7 +531,7 @@ def test_the_face_comes_from_the_head_texture_pipeline_or_the_simple_painting(mo
 
     from bifold_demo.recognition import engine
 
-    monkeypatch.setattr(headtex, "person_textures", fails)
+    monkeypatch.setattr(headshape, "fitted_person", fails)
     monkeypatch.setattr(engine, "FaceEngine", Engine)
     monkeypatch.setattr(face_photo, "head_layout", lambda model: SimpleNamespace(primitive=1))
     painted = []

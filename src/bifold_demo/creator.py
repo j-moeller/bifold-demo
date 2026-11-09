@@ -31,10 +31,12 @@ tailor made, the head texture of the face). :class:`~.scenes.created_cast.Create
 the fair, and the demo says so. Loading one restores all of it for editing; its saved textures are used until
 something changes.
 
-:func:`face_texture` is the one place that makes a face, so that it can be switched: the head textures from photos
+:func:`face_texture` is the one place that makes a face, so that it can be switched: the head's shape fitted to the
+photos (:mod:`.characters.headshape`; with two or more photos) and the head textures from photos made on it
 (:mod:`.characters.headtex`, all stages: the head, and the body's skin and the hair matched to the face) when
 MediaPipe is installed, else the simple painting of the person's best photo
-(:func:`~.characters.face_photo.paint_face`). A body texture the face comes with is what the outfit goes on; it is
+(:func:`~.characters.face_photo.paint_face`). The person on the turntable wears the fitted head, and the character is
+saved with it (``shape.npz``). A body texture the face comes with is what the outfit goes on; it is
 saved with the character (:attr:`~.characters.created.CreatedCharacter.bases`), so a loaded character's outfit can
 change and keep the skin.
 """
@@ -89,11 +91,13 @@ AVATARS_EVERY = 2.0  # seconds between looks at the prepared avatars
 class FaceTextures:
     """What :func:`face_texture` made: ``textures`` by primitive name (RGBA ``uint8``, row 0 at the top): the head's,
     and a body texture beside it when the face's skin was matched on the body too (the outfit then goes on that);
-    ``method``: how, in a few words; ``notes``: warnings."""
+    ``method``: how, in a few words; ``notes``: warnings; ``shape``: the head fitted to the person (a
+    :class:`~.characters.headshape.rig.Shape`; ``None``: the avatar's own head)."""
 
     textures: dict
     method: str
     notes: list = field(default_factory=list)
+    shape: object = None
 
 
 def _headtex_missing() -> str | None:
@@ -121,13 +125,16 @@ def face_texture(photos, model) -> FaceTextures:
     why = _headtex_missing()
     if why is None:
         try:
-            from .characters.headtex import person_textures
+            from .characters.headshape import fitted_person
 
-            person = person_textures(photos, model)
+            fitted = fitted_person(photos, model)
+            person = fitted.person
             used = len(person.result.projections) if person.result is not None else len(photos)
             parts = "head and body textures" if person.body is not None else "head texture"
+            if fitted.shape is not None:
+                parts = f"the head's shape and {parts}"
             return FaceTextures(dict(person.textures), f"{parts} from {used} of {len(photos)} photos",
-                                list(person.warnings))
+                                list(person.warnings), fitted.shape)
         except Exception as exc:  # noqa: BLE001 - the simple painting instead, saying why
             why = f"the head texture failed: {type(exc).__name__}: {exc}"
     return _painted(photos, model, why)
@@ -343,6 +350,8 @@ class Creator:
         self._face_result: tuple | None = None  # ((avatar, face), FaceTextures)
         self._body_result: tuple | None = None  # (body key, RGBA or None)
         self._kept: tuple | None = None  # (avatar, {primitive: RGBA}): a loaded character's other textures
+        self._loaded_shape = None  # the head shape of the loaded character (with its face)
+        self._worn_shape = None  # the head shape the person on the turntable wears
         self._textures: dict = {}  # primitive -> (RGBA, Texture) on the person
         self._fabric_run: _FabricRun | None = None
         self._save_wanted: str | None = None
@@ -636,6 +645,7 @@ class Creator:
 
         self.person = Character(self.prepared.model, behaviour=self._pose, name="creator", shadow=False)
         self._textures = {}
+        self._worn_shape = None
         self._refresh_person()
         for item in ITEMS:
             self._wear(item)
@@ -659,6 +669,19 @@ class Creator:
             overrides[name] = known[1]
         self._textures = {name: self._textures[name] for name in overrides}
         self.person.texture_overrides = overrides
+        face = self._face()
+        shape = face.shape if face is not None else None
+        if shape is not self._worn_shape:  # the head fitted to the face's person, or the avatar's own
+            model = self.prepared.model
+            if shape is not None:
+                from .characters.headshape import apply_shape
+
+                try:
+                    model = apply_shape(model, shape)
+                except ValueError as exc:
+                    print(f"[creator] the avatar's own head: {exc}")
+            self.person.use_model(model)
+            self._worn_shape = shape
 
     def _current_textures(self, exact: bool = True) -> dict:
         """The textures by primitive name: kept from a loaded character, the face's, the body's. ``exact``: only those
@@ -940,8 +963,10 @@ class Creator:
         outfit = self.outfit().spec() if self.fills else {}
         base, p = self._base(), self.prepared
         bases = {p.body: base} if base is not None else {}  # the face's skin on the body: the outfit goes on it
+        face = self._face()
         return CreatedCharacter(self.name.strip(), self.avatar or "", self.face, outfit, items,
-                                self._current_textures(), created=self._created_at, bases=bases)
+                                self._current_textures(), created=self._created_at, bases=bases,
+                                shape=face.shape if face is not None else None)
 
     def save(self) -> str:
         """Save the character as soon as its textures are made (on the worker); :meth:`update` says when it is."""
@@ -1067,6 +1092,7 @@ class Creator:
         self.items = {k: v for k, v in created.items.items() if k in ITEMS and v is not None and v is not False}
         self._other_items = {k: v for k, v in created.items.items() if k not in ITEMS}
         self._loaded, self._created_at = created.name, created.created
+        self._loaded_shape = created.shape
         self._outfit_changed()
         self._start("load", (created.name, self.avatar, self.face, self._outfit_version), _read_textures, created,
                     self.library)
@@ -1083,7 +1109,8 @@ class Creator:
         body = textures.pop(body_name, None)
         base = bases.get(body_name) if face and face == self.face else None  # the face's body: the outfit's base
         if face and face == self.face and textures:
-            self._face_result = ((avatar, face), FaceTextures({**textures, **bases}, "as saved"))
+            self._face_result = ((avatar, face), FaceTextures({**textures, **bases}, "as saved",
+                                                              shape=self._loaded_shape))
         elif textures:
             self._kept = (avatar, textures)
         if body is not None:

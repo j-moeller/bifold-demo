@@ -30,7 +30,10 @@ itself (it keys them by object).
 :mod:`~bifold_demo.characters.faces` (the tongue among them) and seen from the front and the side (z-buffers); the
 fitted head must not show more of the eyeballs through the lids or of the teeth and tongue through the lips than the
 avatar's own does, the neck's edge must not move, and nothing may jump (no offset beyond :data:`MAX_OFFSET`, no
-flipped or degenerate triangle).
+flipped or degenerate triangle). In detail: no lid over an eyeball's cap sinks into it more than 1 mm further than
+the avatar's (:data:`LID_TOLERANCE`); a face that shuts an eye shows no more of it; the front teeth come no nearer the
+lips' front than the avatar's do (:data:`TEETH_TOLERANCE`); and where the avatar's mouth is shut (it shows fewer than
+:data:`CLOSED_MOUTH` pixels of its teeth), the fitted head's shows no more of them.
 """
 
 from __future__ import annotations
@@ -377,9 +380,10 @@ def rig_checks(model, fitted, hs, size: int = CHECK_SIZE) -> RigCheck:
     frame = face_frame(model)
     cameras = {"front": PhotoCamera.around(frame.centre, 0.45, 0.0, 0.0, fov=24.0, size=(size, size)),
                "side": PhotoCamera.around(frame.centre, 0.45, 75.0, 0.0, fov=24.0, size=(size, size))}
-    eye_tri = (hs.eye > 0)[tri].all(axis=1)
+    eye_tri = [(hs.eye == e)[tri].all(axis=1) for e in (1, 2)]
     inner_tri = (hs.inner > 0)[tri].all(axis=1)
     lids = [_lids(hs, old, e) for e in range(2)]
+    teeth, lips = _teeth_and_lips(model, hs, old)
     shown = {}
     for face in (None, *EXPRESSIONS):
         posed = {"avatar": posed_head(model, primitive, face), "fitted": posed_head(fitted, primitive, face)}
@@ -392,16 +396,24 @@ def rig_checks(model, fitted, hs, size: int = CHECK_SIZE) -> RigCheck:
                 side = ("right", "left")[e]
                 problems.append(f"{key}: the {side} eyeball comes through the lid ({theirs * 1000:.1f} mm, the "
                                 f"avatar's {own * 1000:.1f} mm)")
+        if len(teeth) and len(lips):  # the teeth stay behind the lips (as far as the avatar's do)
+            own, theirs = (float(posed[w][teeth, 2].max() - posed[w][lips, 2].max()) for w in ("avatar", "fitted"))
+            if theirs > max(own, -TEETH_TOLERANCE) + TEETH_TOLERANCE:
+                problems.append(f"{key}: the teeth come through the lips ({theirs * 1000:.1f} mm from the lips' front, "
+                                f"the avatar's {own * 1000:.1f} mm)")
         for view, camera in cameras.items():
             counts = {}
             for which, points in posed.items():
                 r = raster.rasterise(camera, points[tri], cull=True)
                 seen = r.triangle[r.triangle >= 0]
-                counts[which] = (int(eye_tri[seen].sum()), int(inner_tri[seen].sum()))
+                counts[which] = (int(eye_tri[0][seen].sum()), int(eye_tri[1][seen].sum()),
+                                 int(inner_tri[seen].sum()))
             shown[f"{key}, {view}"] = (counts["avatar"], counts["fitted"])
-            parts = (("the teeth and tongue", 1),) + ((("the eyeballs", 0),) if face in CLOSED_EYES else ())
-            for part, k in parts:
-                own, theirs = counts["avatar"][k], counts["fitted"][k]
+            parts = [("the teeth and tongue", (2,))] if counts["avatar"][2] < CLOSED_MOUTH else []
+            if face in CLOSED_EYES:
+                parts.append(("the eyeballs", tuple(e - 1 for e in CLOSED_EYES[face])))
+            for part, ks in parts:
+                own, theirs = (sum(counts[w][k] for k in ks) for w in ("avatar", "fitted"))
                 if theirs > own * (1.0 + SHOW_TOLERANCE) + SHOW_PIXELS:
                     problems.append(f"{key}, {view}: the fitted head shows more of {part} ({theirs} pixels against "
                                     f"{own})")
@@ -409,7 +421,9 @@ def rig_checks(model, fitted, hs, size: int = CHECK_SIZE) -> RigCheck:
 
 
 LID_TOLERANCE = 0.001  # metres: a lid may sink this much further into its eyeball than the avatar's does
-CLOSED_EYES = ("scrunch", "wink")  # expressions with (nearly) shut eyes: no more eyeball may show than the avatar's
+CLOSED_EYES = {"scrunch": (1, 2), "wink": (2,)}  # the eyes (1 right, 2 left) these faces shut: no more of them may show
+CLOSED_MOUTH = 2 * SHOW_PIXELS  # pixels: where the avatar shows fewer of its teeth its mouth is shut: no more may show
+TEETH_TOLERANCE = 0.0015  # metres: the teeth may come this much nearer the lips' front than the avatar's do
 LID_REACH = 0.006  # metres outside an eyeball: the skin there is its lids
 LID_MARGIN = 5.0  # degrees: the lids within this of the eyeball cap's edge are not over it (the eye's corners)
 
@@ -430,6 +444,21 @@ def _lids(hs, points, e) -> tuple[np.ndarray, np.ndarray]:
     cap = np.degrees(np.arccos(np.clip(directions[eyeball] @ axis, -1.0, 1.0))).max()
     over = np.degrees(np.arccos(np.clip(directions @ axis, -1.0, 1.0))) < cap - LID_MARGIN  # over the eyeball's cap
     return np.nonzero((hs.parts == SKIN) & (d < LID_REACH) & over)[0], eyeball
+
+
+def _teeth_and_lips(model, hs, points) -> tuple[np.ndarray, np.ndarray]:
+    """The teeth and gums (the mouth's inside but the tongue) and the lips (the skin within 2 cm of the mouth's
+    corners, in front of them)."""
+    from .head import SKIN
+
+    teeth = np.nonzero((hs.inner == 1) | (hs.inner == 2))[0]
+    skeleton = model.skeleton
+    corners = [skeleton.find(n) for n in ("Bip01 RMouthCorner", "Bip01 LMouthCorner")]
+    if any(c is None for c in corners) or not len(teeth):
+        return np.zeros(0, np.int64), np.zeros(0, np.int64)
+    mouth = np.mean([skeleton.rest_global[c, :3, 3] for c in corners], axis=0)
+    near = (hs.parts == SKIN) & (np.linalg.norm(points - mouth, axis=1) < 0.02) & (points[:, 2] > mouth[2])
+    return teeth, np.nonzero(near)[0]
 
 
 def _clearance(points, lid, eyeball) -> float:

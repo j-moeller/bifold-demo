@@ -105,7 +105,7 @@ class Photo:
 
     name: str
     size: tuple
-    points: np.ndarray  # (478, 2) MediaPipe's landmarks, pixels
+    points: np.ndarray | None  # (478, 2) MediaPipe's landmarks, pixels; None: a photo placed by its outline
     camera: PhotoCamera  # the registration's camera (the avatar's own head)
     focal_known: bool
     blendshapes: dict = field(default_factory=dict)
@@ -114,12 +114,23 @@ class Photo:
 
     @property
     def eye_distance(self) -> float:
+        if self.points is None:
+            return 0.0
         return float(np.linalg.norm(self.points[cf.LEFT_IRIS[0]] - self.points[cf.RIGHT_IRIS[0]]))
 
 
+OUTLINE_MIN_IOU = 0.6  # a photo without a face (a profile) counts for its outline when the registration placed it so
+
+
 def fitted_view(view) -> bool:
-    """Whether the fit uses a registered view: a usable one placed by its face's landmarks."""
-    return bool(view.usable and view.marks is not None and view.camera is not None and view.method == "landmarks")
+    """Whether the fit uses a registered view: a usable one placed by its face's landmarks, or one placed by the
+    head's outline with the segmenter's masks (a profile, for its outline only; the registration's overlap
+    :data:`OUTLINE_MIN_IOU` at least: another person's hair rarely lets it reach the 0.8 the textures need)."""
+    if view.camera is None:
+        return False
+    if view.method == "landmarks":
+        return bool(view.usable and view.marks is not None)
+    return bool(view.method == "silhouette" and view.masks is not None and view.iou >= OUTLINE_MIN_IOU)
 
 
 def photos_from_views(views) -> list[Photo]:
@@ -137,8 +148,10 @@ def photos_from_views(views) -> list[Photo]:
         else:
             group = ("shape", round(max(w, h) / min(w, h), 2))
         g = groups.setdefault(group, len(groups))
-        out.append(Photo(view.source or view.name, (w, h), np.asarray(view.marks.points, np.float64), view.camera,
-                         bool(view.focal_known), dict(view.marks.blendshapes or {}), view.masks, g))
+        face = view.method == "landmarks"
+        out.append(Photo(view.source or view.name, (w, h),
+                         np.asarray(view.marks.points, np.float64) if face else None, view.camera,
+                         bool(view.focal_known), dict(view.marks.blendshapes or {}) if face else {}, view.masks, g))
     return out
 
 
@@ -376,6 +389,14 @@ def _residuals(state: _State, free_modes: int, weights=None, with_jacobian: bool
         r, t = state.rotations[i], state.translations[i]
         f = math.exp(state.log_focal[photo.group])
         centre = np.array([(photo.size[0] - 1) / 2.0, (photo.size[1] - 1) / 2.0])
+        if photo.points is None:  # a profile placed by its outline: the outline alone
+            robust.append(None)
+            got = _outline_rows(state, m, i, delta, e, r, t, f, centre, cols, n, free_modes, with_jacobian)
+            if got is not None:
+                rows_r.append(got[0])
+                if with_jacobian:
+                    rows_j.append(got[1])
+            continue
         xc = x @ r.T + t
         u, du = _project(xc, f, centre)
         sigma = max(options.landmark_noise * max(photo.eye_distance, 5.0), 0.5)
@@ -441,16 +462,11 @@ def _residuals(state: _State, free_modes: int, weights=None, with_jacobian: bool
                     jac[:, a + photo.group] = np.einsum("ld,ld->l", uv - centre, normal2d) / sigma * swc
                 rows_j.append(jac)
         # the outline against the photo's face-skin mask
-        outline = state.outline[i]
-        if options.outline and outline is not None:
-            from .outline import outline_rows
-
-            got = outline_rows(outline, m, state, i, delta, e, r, t, f, centre, sigma, cols, n, free_modes,
-                               with_jacobian)
-            if got is not None:
-                rows_r.append(got[0])
-                if with_jacobian:
-                    rows_j.append(got[1])
+        got = _outline_rows(state, m, i, delta, e, r, t, f, centre, cols, n, free_modes, with_jacobian)
+        if got is not None:
+            rows_r.append(got[0])
+            if with_jacobian:
+                rows_j.append(got[1])
         # the irises
         if options.iris and _iris_usable(photo, state.camera(i)):
             iris_photos += 1
@@ -525,6 +541,15 @@ def _residuals(state: _State, free_modes: int, weights=None, with_jacobian: bool
     return r, j, robust, iris_photos
 
 
+def _outline_rows(state, m, i, delta, e, r, t, f, centre, cols, n, free_modes, with_jacobian):
+    outline = state.outline[i]
+    if not state.options.outline or outline is None:
+        return None
+    from .outline import outline_rows
+
+    return outline_rows(outline, m, state, i, delta, e, r, t, f, centre, 1.0, cols, n, free_modes, with_jacobian)
+
+
 def _size_rows(state, free_modes, cols, n, with_jacobian):
     m = state.m
     delta = state.beta - m.alpha
@@ -572,6 +597,8 @@ def _iris_radius(photo: Photo) -> float:
 
 
 def _iris_usable(photo: Photo, camera: PhotoCamera) -> bool:
+    if photo.points is None:
+        return False
     yaw = camera.angles()[0]
     shut = max(photo.blendshapes.get("eyeBlinkLeft", 0.0), photo.blendshapes.get("eyeBlinkRight", 0.0))
     return abs(yaw) < IRIS_YAW and shut < 0.5 and _iris_radius(photo) >= IRIS_MIN
@@ -583,6 +610,8 @@ def _assign_contours(state: _State) -> None:
     m = state.m
     delta = state.beta - m.alpha
     for i, photo in enumerate(state.photos):
+        if photo.points is None:
+            continue
         camera = state.camera(i)
         x = m.points + m.vertex_offsets(delta, state.expressions[i])
         normal2d = _outward(photo.points, LOWER_OVAL)
@@ -672,6 +701,8 @@ def _robust_error(state: _State, offsets=None) -> float:
         marks = m.mark_base + (np.einsum("k,kld->ld", delta, m.mark_modes) if m.k else 0.0)
     losses, weights = [], []
     for i, photo in enumerate(state.photos):
+        if photo.points is None:
+            continue
         x = marks + (np.einsum("e,eld->ld", state.expressions[i], m.mark_expr) if m.e else 0.0)
         camera = state.camera(i)
         u = camera.project(x)
@@ -695,8 +726,9 @@ def fit_person(photos, model, head, hs: HeadSpace, space=None, options: FitOptio
     timings = {}
     start = time.perf_counter()
     photos = list(photos)
-    if len(photos) < options.min_photos:
-        what = "no photo shows" if not photos else f"only {len(photos)} photo shows"
+    faces = sum(p.points is not None for p in photos)
+    if faces == 0 or len(photos) < options.min_photos:
+        what = "no photo shows" if not faces else f"only {len(photos)} photo shows"
         return ShapeFit(False, f"{what} a usable face; fitting the shape needs {options.min_photos} or more "
                         "(a frontal one, and turned ones, best with profiles)", photos=len(photos))
     use_space = space is not None and options.space
@@ -780,6 +812,8 @@ def free_form(state: _State, offsets, smooth: float, cap: float) -> np.ndarray:
     weight_sum = np.zeros(cf.COUNT)
     per_photo = []
     for i, photo in enumerate(state.photos):
+        if photo.points is None:
+            continue
         camera = state.camera(i)
         e = state.expressions[i]
         xi = marks + (np.einsum("e,eld->ld", e, m.mark_expr) if m.e else 0.0)

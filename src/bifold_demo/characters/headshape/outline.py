@@ -24,7 +24,9 @@ from ..headtex.detect import mask_at
 from . import mesh
 from .head import SKIN
 
-WORK_SIZE = 400  # pixels: the face's crop is scaled to about this height
+WORK_SIZE = 240  # pixels: the face's crop is scaled to about this height
+TURNED = 40.0  # degrees: the photos with a face turned at least this far count for their outline (from the front the
+# jaw line's landmarks tell the outline already)
 OUTLINE_NOISE = 0.02  # of the face's size: the masks' outline error
 REACH = 0.07  # of the face's size: outline points further from a trusted edge do not count
 ROBUST = 3.0
@@ -91,10 +93,30 @@ def _sample(image, points):
 
 
 def prepare_outlines(state) -> None:
-    """The trusted outline of every photo of the fit's ``state`` that has masks."""
+    """The trusted outline of the photos of the fit's ``state`` that have masks and show the face turned
+    :data:`TURNED` or more (or no face: a profile placed by its outline)."""
     for i, photo in enumerate(state.photos):
-        lo, hi = photo.points.min(axis=0), photo.points.max(axis=0)
+        if photo.points is not None:
+            if abs(photo.camera.angles()[0]) < TURNED:
+                continue
+            lo, hi = photo.points.min(axis=0), photo.points.max(axis=0)
+        else:
+            head = _head_box(photo)
+            if head is None:
+                continue
+            lo, hi = head
         state.outline[i] = trusted_outline(photo.masks, photo.size, (lo[0], lo[1], hi[0], hi[1]))
+
+
+def _head_box(photo):
+    """The face skin's box in a photo without a face's landmarks, from its mask."""
+    if not photo.masks or "face" not in photo.masks:
+        return None
+    face = mask_at(photo.masks["face"], photo.size) > 0.5
+    ys, xs = np.nonzero(face)
+    if len(xs) < 50:
+        return None
+    return np.array([xs.min(), ys.min()], np.float64), np.array([xs.max(), ys.max()], np.float64)
 
 
 def _face_vertices(m) -> np.ndarray:
