@@ -8,7 +8,17 @@ import numpy as np
 import pytest
 
 from bifold_demo.recognition.detect import Face
+from bifold_demo.recognition.evidence import (
+    Candidate,
+    EmbeddingBudget,
+    EmbeddingScheduler,
+    FrameEvidence,
+    QualityGate,
+    TrackEvidence,
+    rate_for,
+)
 from bifold_demo.recognition.heads import BOX_PER_EYES, FaceSighting, HeadModel, assign_faces, face_size, find_faces
+from bifold_demo.recognition.quality import Quality
 
 
 def _face(middle, eyes, score=0.9):
@@ -21,7 +31,10 @@ def _face(middle, eyes, score=0.9):
     return Face(box, marks, score)
 
 
-def _head_face(box, head=HeadModel(), dx=0.0, dy=0.0, scale=1.0):
+HEAD = HeadModel()
+
+
+def _head_face(box, head=HEAD, dx=0.0, dy=0.0, scale=1.0):
     """The face of a person in ``box``, where the head model expects it (moved by ``dx``, ``dy`` eye distances)."""
     (x, y), eyes = head.expected(box)
     return _face((x + dx * eyes, y + dy * eyes), eyes * scale)
@@ -142,3 +155,92 @@ def test_faces_are_found_in_windows_and_crops_and_mapped_to_the_frame():
     engine.calls.clear()
     find_faces(engine, frame, {1: (-50.0, -50.0, 40.0, 40.0), 2: (1300.0, 0.0, 1400.0, 50.0)})
     assert [call[1] for call in engine.calls] == [(0.0, 0.0, 40.0, 40.0)]
+
+
+# -- the evidence -----------------------------------------------------------------------------------------------------
+
+def _quality(ied=30.0, yaw=0.0, sharpness=1.0, outside=0.0, detector=0.9, fiqa=None):
+    return Quality(ied, yaw, 0.0, 0.0, sharpness, 120.0, 40.0, 0.0, outside, detector, fiqa)
+
+
+def test_the_gate_lets_through_only_faces_worth_embedding():
+    gate = QualityGate()
+    assert gate.check(_quality(), 30.0) is None
+    assert gate.check(_quality(fiqa=0.6), 30.0) is None
+    assert gate.check(_quality(), 6.0) == "small"
+    assert gate.check(_quality(yaw=-70.0), 30.0) == "turned"
+    assert gate.check(_quality(sharpness=0.02), 30.0) == "blurred"
+    assert gate.check(_quality(outside=0.5), 30.0) == "cut off"
+    assert gate.check(_quality(detector=0.3), 30.0) == "unsure"
+    assert gate.check(_quality(fiqa=0.2), 30.0) == "hard"
+    assert rate_for("adaface_ir101_wf12m") < rate_for("buffalo_l_r50") < rate_for("sface_2021dec")
+
+
+def test_the_budget_allows_its_rate_by_the_frames_clock():
+    budget = EmbeddingBudget(1.0)
+    made = 0
+    for k in range(300):  # ten seconds at 30 frames a second
+        if budget.available(k / 30) >= 1:
+            budget.take()
+            made += 1
+    assert made == 10  # one at once, then one a second
+    assert budget.available(9.99) == 0 and budget.spent == 10
+    fast = EmbeddingBudget(20.0)
+    assert fast.available(0.0) == 1 and fast.available(10.0) == 20  # never more than a second's worth at once
+    assert EmbeddingBudget(0.5).available(1.0) == 1 and EmbeddingBudget(0.5).burst == 1.0
+    with pytest.raises(ValueError):
+        EmbeddingBudget(0.0)
+
+
+def test_undecided_tracks_and_better_faces_come_first():
+    s = EmbeddingScheduler(recheck=5.0, per_track=2.0, median_after=4)
+    faces = [Candidate(1, 0.9, "a", decided=True, last=0.0), Candidate(2, 0.3, "b"), Candidate(3, 0.6, "c"),
+             Candidate(3, 0.8, "c2"), Candidate(4, 0.95, "d", decided=True, last=9.0)]
+    chosen = s.choose(faces, 10, now=10.0)
+    assert [c.key for c in chosen] == ["c2", "b", "a"]  # undecided first (the better of track 3's two), then the
+    # decided track due for a check; track 4 was checked a second ago
+    assert [c.key for c in s.choose(faces, 1, now=10.0)] == ["c2"]
+    assert s.choose([Candidate(5, 0.9, last=9.8)], 1, now=10.0) == []  # at most twice a second
+    assert s.choose([Candidate(5, 0.4, median=0.5)], 1, now=10.0) == []  # no better than its median: not worth it
+    assert s.choose([Candidate(5, 0.6, median=0.5)], 1, now=10.0)
+
+
+def _frame(vector, weight=1.0, t=0.0, size=30.0, yaw=0.0, model="m"):
+    v = np.asarray(vector, float)
+    return FrameEvidence(v / np.linalg.norm(v), weight, t, size, yaw, model)
+
+
+def test_a_tracks_evidence_is_the_quality_weighted_mean_of_its_frames():
+    evidence = TrackEvidence("m", keep=3, half_life=10.0)
+    assert evidence.aggregate() is None
+    evidence.add(_frame([1, 0, 0], 1.0, 0.0, size=40.0, yaw=10.0))
+    evidence.add(_frame([0, 1, 0], 0.25, 0.0, size=10.0, yaw=-30.0))
+    agg = evidence.aggregate(0.0)
+    expected = np.array([1.0, 0.25, 0.0])
+    assert np.allclose(agg.vector, expected / np.linalg.norm(expected))
+    assert agg.weight == pytest.approx(1.25) and agg.frames == 2 and agg.best == 1.0
+    assert agg.size == pytest.approx((40 + 0.25 * 10) / 1.25) and agg.yaw == pytest.approx((10 + 0.25 * 30) / 1.25)
+    # time decay: ten seconds on, the first frame counts half
+    assert evidence.aggregate(10.0).weight == pytest.approx(0.625)
+    # the same frame many times is no more evidence of who it is: the mean's direction does not change
+    same = TrackEvidence("m")
+    for t in range(5):
+        same.add(_frame([1, 1, 0], 0.5, float(t)))
+    assert np.allclose(same.aggregate().vector, [2 ** -0.5, 2 ** -0.5, 0])
+    with pytest.raises(ValueError):
+        evidence.add(_frame([1, 0, 0], model="other"))
+
+
+def test_a_track_keeps_its_best_frames_and_can_start_over():
+    evidence = TrackEvidence("m", keep=3, half_life=100.0)
+    for t, w in enumerate([0.2, 0.9, 0.1, 0.8, 0.7]):
+        evidence.add(_frame([1, t, 0], w, float(t)))
+    assert sorted(f.weight for f in evidence.frames) == [0.7, 0.8, 0.9]
+    assert [f.time for f in evidence.frames] == sorted(f.time for f in evidence.frames)
+    assert evidence.median_weight(after=3) == pytest.approx(0.8) and evidence.median_weight(after=4) is None
+    left = evidence.frames[0]
+    assert np.allclose(evidence.aggregate(without=left).vector, evidence.aggregate(4.0, without=left).vector)
+    evidence.reset(10.0, keep_after=4.0)
+    assert [f.time for f in evidence.frames] == [4.0] and evidence.started == 4.0
+    evidence.reset(12.0)
+    assert evidence.frames == [] and evidence.started == 12.0
