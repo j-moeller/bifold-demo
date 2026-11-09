@@ -630,6 +630,17 @@ def test_one_identity_per_track_and_one_track_per_identity(calibration):
     assert set(policy.tracks) == {3}
 
 
+def test_a_new_face_is_judged_against_its_track_only_where_the_calibration_can_tell(calibration):
+    policy, _ = _policy(calibration)
+    big = calibration.curve(40.0, 0.0)
+    floor = big.mated_quantile(policy.settings.switch_miss)
+    assert big.rarity(floor) >= policy.settings.decisive  # (a big face: known and unknown faces apart)
+    assert policy.consistent(floor + 0.01, 40.0, 0.0) and not policy.consistent(floor - 0.01, 40.0, 0.0)
+    tiny = calibration.curve(9.0, 0.0)
+    assert tiny.rarity(tiny.mated_quantile(policy.settings.switch_miss)) < policy.settings.decisive
+    assert policy.consistent(-0.5, 9.0, 0.0)  # a tiny face proves nothing: it may be the same person
+
+
 def test_a_track_found_to_show_someone_else_loses_its_name_at_once(calibration):
     policy, people = _policy(calibration, sustain=1.0)
     policy.decide({1: _agg({"Ada": 0.5}, people)}, 0.0)
