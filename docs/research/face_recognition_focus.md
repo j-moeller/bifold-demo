@@ -278,3 +278,27 @@ branch and pushed; its results go into the progress log.
     - finish the review (its notes: `scratchpad/steps/S2_review/notes.txt`) or send these findings to the S2
       builder;
     - then switch the shared avatar library to the 2048 one, run the full suite and report.
+- **9 November, 02:00 UTC: resumed on request ("Continue"); S2's review finished.**
+  - **Verdict:** accept with required fixes. 1 high, 2 medium and 7 low findings.
+  - **High:** faces from photos are drawn with the avatar's maps (the entry above).
+  - **Medium:** the detail-cache thrash; 16 of 42 mutations surviving the tests.
+  - **Low:**
+    - documentation numbers measured under other settings;
+    - photo faces always drawn with 1024 maps;
+    - a one-off hitch while a 2048 photo face is prepared;
+    - `memory()` leaves out 32 MiB of CPU copies per near head;
+    - no hint for libraries still in the old format, and stale photo-face caches after an upgrade;
+    - painted hair turning glossy;
+    - small latent issues.
+  - **Checked and found true** beyond the entry above:
+    - the touched and real-avatar tests on the old library: 697 passed, 15 skipped;
+    - the results note's recognition table, within 0.1 d';
+    - harder cases (the `good 4K` and `budget 1080p` cameras, heads turned 40 degrees or lowered 20): every face is
+      found, and the maps raise AdaFace's d' by 0.5-0.65;
+    - the detail streaming does no GL work off the render thread.
+  - **For later steps:**
+    - F2 should record the quality and the hemisphere with every calibration;
+    - E1 should keep `detail_wait` and set `detail_heads` to the near avatars per frame;
+    - S3 needs tangents recomputed after fitting and its own maps for fitted photo heads;
+    - S4 needs the 2048 maps for photo faces.
+  - **The S2 builder** is fixing all findings forward on top of the branch.
