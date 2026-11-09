@@ -109,3 +109,23 @@ def test_the_fair_end_to_end_names_the_known_people_and_nobody_else(world):
     first = [[(p.id, p.state, p.name, round(p.decision.raw or 0.0, 6)) for p in r.people] for r in results]
     second = [[(p.id, p.state, p.name, round(p.decision.raw or 0.0, 6)) for p in r.people] for r in again]
     assert first == second
+
+
+def test_the_calibration_renders_an_avatars_gallery_and_its_faces_through_windows_of_the_asked_size(world, tmp_path):
+    """The calibration's renders (``calibrate.render``) for one avatar: its gallery photos, its faces found at about
+    the eye distance asked for, and how they were drawn recorded (kept by every calibration made from them)."""
+    from bifold_demo.characters.library import CharacterLibrary
+    from bifold_demo.recognition import calibrate as cal
+
+    _scene, engine, _folder, audience = world
+    name = min(audience.values())
+    key = engine.detector_spec.id
+    probes = cal.render(CharacterLibrary(CHARACTERS), [name], {key: engine.detector}, tmp_path / "gallery",
+                        eye_px=(16.0, 32.0), yaws=(0.0, 20.0), presets=("ideal",), progress=None)[key]
+    assert sorted(p.name for p in (tmp_path / "gallery" / name).iterdir()) == ["yaw+0.png", "yaw+25.png", "yaw-25.png"]
+    assert len(probes.found) == 4 and probes.found.all()
+    assert np.allclose(probes.sizes / probes.eye_px, 1.0, atol=0.15)  # the face's size from its box
+    rendered = probes.rendering()
+    assert rendered["hemisphere"] == pytest.approx(0.3) and rendered["quality"] == "high"
+    again = cal.Probes.load(probes.save(tmp_path / "probes.npz"))
+    assert again.rendering() == rendered and np.array_equal(again.crops, probes.crops)

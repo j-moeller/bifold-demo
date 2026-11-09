@@ -35,7 +35,8 @@ from its registered threshold (one false match in a thousand LFW stranger pairs)
 **Score normalisation** (:class:`Cohort`): a face's score against a person can be measured against how the face
 scores against a **cohort** of other faces that are not in the gallery: T-norm (the probe's mean and spread over the
 cohort) or AS-norm (the mean and spread of the top ``k`` cohort scores of the probe and of the gallery photo,
-averaged). A calibration records which normalisation its scores had; the decisions apply the same one.
+averaged). A calibration records which normalisation its scores had and the cohort's :attr:`~Cohort.digest`; the
+decisions apply the same normalisation with that cohort and refuse another.
 """
 
 from __future__ import annotations
@@ -336,8 +337,9 @@ class Cohort:
 
     @property
     def digest(self) -> str:
-        """A short hash of the cohort (kept with a calibration made with it)."""
-        return hashlib.sha256(np.ascontiguousarray(self.vectors.astype(np.float32)).tobytes()).hexdigest()[:16]
+        """A short hash of the cohort as it is saved (half precision), recorded by the calibration made with it
+        (``made["cohort"]``)."""
+        return hashlib.sha256(np.ascontiguousarray(self.vectors.astype(np.float16)).tobytes()).hexdigest()[:16]
 
     def _rows(self, leave_out=()) -> np.ndarray:
         if not leave_out or not self.people:
@@ -393,9 +395,15 @@ def cohort_path(model_id: str, models_folder=None) -> Path:
     return models_dir(models_folder) / "calibration" / f"{model_id}.cohort.npz"
 
 
-def find_cohort(model_id: str, models_folder=None) -> Cohort | None:
-    """``model_id``'s cohort: ``<models>/calibration/<model id>.cohort.npz``, else the package's, else ``None``."""
-    for path in (cohort_path(model_id, models_folder), PACKAGED / f"{model_id}.cohort.npz"):
+def find_cohort(model_id: str, models_folder=None, calibration: Calibration | None = None) -> Cohort | None:
+    """``model_id``'s cohort: the one beside ``calibration``'s file when given (a cohort belongs to the calibration
+    made with it), else ``<models>/calibration/<model id>.cohort.npz``, else the package's; ``None`` when there is
+    none."""
+    if calibration is not None and calibration.path:
+        paths = (Path(calibration.path).with_name(f"{model_id}.cohort.npz"),)
+    else:
+        paths = (cohort_path(model_id, models_folder), PACKAGED / f"{model_id}.cohort.npz")
+    for path in paths:
         if path.is_file():
             cohort = Cohort.load(path)
             if cohort.model != model_id:

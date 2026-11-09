@@ -2,6 +2,7 @@
 evidence per track, calibration, open-set decisions and the pipeline. (The real models and avatars:
 ``test_identity_real.py``.)"""
 
+import dataclasses
 import json
 import math
 import threading
@@ -17,6 +18,7 @@ from bifold_demo.recognition.calibration import (
     Curve,
     calibration_path,
     find_calibration,
+    find_cohort,
     per_person,
 )
 from bifold_demo.recognition.decision import (
@@ -365,6 +367,40 @@ def test_calibrations_are_found_per_model_and_a_model_without_one_gets_a_provisi
     (tmp_path / "packaged" / "other.json").write_text((tmp_path / "packaged" / "adaface_ir101_wf12m.json").read_text())
     with pytest.raises(ValueError):
         find_calibration("other", models)
+    # a cohort belongs to the calibration made with it: it is looked for beside that calibration only
+    rng = np.random.default_rng(6)
+    cohort = Cohort("adaface_ir101_wf12m", rng.normal(size=(8, 4)), tuple("abcdefgh"))
+    cohort.save(tmp_path / "packaged" / "adaface_ir101_wf12m.cohort.npz")
+    mine = find_calibration("adaface_ir101_wf12m", models)
+    assert find_cohort("adaface_ir101_wf12m", models, mine) is None  # the package's is not the models folder's
+    assert find_cohort("adaface_ir101_wf12m", models).digest == cohort.digest  # (without a calibration: any)
+    (tmp_path / "packaged" / "adaface_ir101_wf12m.json").unlink()
+    (models / "calibration" / "adaface_ir101_wf12m.json").rename(tmp_path / "packaged" / "adaface_ir101_wf12m.json")
+    packaged = find_calibration("adaface_ir101_wf12m", models)
+    assert find_cohort("adaface_ir101_wf12m", models, packaged).digest == cohort.digest
+
+
+@pytest.mark.parametrize("model", ["adaface_ir101_wf12m", "buffalo_l_r50", "sface_2021dec"])
+def test_the_package_ships_a_calibration_for_each_recogniser_made_from_avatars(model):
+    """The recognisers of the three profiles (as far as they run here) each have the package's calibration, made from
+    38 avatars (those showing one face counted once), with the cohort it was made with when it normalises."""
+    from bifold_demo.recognition.calibration import PACKAGED
+
+    calibration = Calibration.load(PACKAGED / f"{model}.json")
+    made = calibration.made
+    assert calibration.model == model and not calibration.is_provisional
+    assert len(made["avatars"]) == 38 and made["same_faces"] == {"Security_Male_01": "Male_Adult_03"}
+    assert made["rendered"]["hemisphere"] == pytest.approx(0.3) and made["rendered"]["quality"] == "high"
+    assert made["check"][calibration.normalisation]["0.01"]["fpir"] <= 0.02  # held out: within twice the target
+    cohort = find_cohort(model, Path("/nonexistent"), calibration)
+    if calibration.normalisation == "none":
+        assert cohort is None and "cohort" not in made
+    else:
+        assert cohort.digest == made["cohort"]["digest"] and len(cohort) == made["cohort"]["faces"]
+    # a threshold per face size: a known person's big frontal face scores higher against their photos than a small one
+    small, big = calibration.curve(12.0, 0.0), calibration.curve(48.0, 0.0)
+    assert big.mated_quantile(0.02) > small.mated_quantile(0.02)
+    assert big.fnmr_at(big.threshold(per_person(0.01, 10))) <= small.fnmr_at(small.threshold(per_person(0.01, 10)))
 
 
 def test_cohort_normalisation_takes_out_a_faces_pull_towards_everyone():
@@ -398,6 +434,22 @@ def test_cohort_normalisation_takes_out_a_faces_pull_towards_everyone():
     assert len(cohort._rows({"c0", "c1"})) == 294  # a person's own faces can be left out
     with pytest.raises(ValueError):
         cohort.normalise(gallery @ plain, plain, gallery, "znorm")
+
+
+def test_a_calibration_records_its_cohort_and_refuses_another(tmp_path, calibration):
+    rng = np.random.default_rng(5)
+    vectors = rng.normal(size=(40, DIM))
+    cohort = Cohort("m", vectors / np.linalg.norm(vectors, axis=1, keepdims=True), tuple(f"c{k}" for k in range(40)))
+    again = Cohort.load(cohort.save(tmp_path / "m.cohort.npz"))
+    assert again.digest == cohort.digest  # saved in half precision: the digest is of what is saved
+    normalised = dataclasses.replace(calibration, normalisation="tnorm",
+                                     made={"cohort": {"faces": 40, "digest": cohort.digest}})
+    assert IdentityPolicy(_Gallery(_people()), normalised, again).cohort is again
+    other = Cohort("m", np.roll(cohort.vectors, 1, axis=0), cohort.people)
+    with pytest.raises(ValueError, match="made with"):
+        IdentityPolicy(_Gallery(_people()), normalised, other)
+    with pytest.raises(ValueError, match="no cohort"):
+        IdentityPolicy(_Gallery(_people()), normalised)
 
 
 # -- open-set decisions -----------------------------------------------------------------------------------------------
@@ -946,6 +998,32 @@ def test_the_calibration_builder_scores_faces_against_galleries_with_their_own_l
     assert big.mated_quantile(0.5) > small.mated_quantile(0.5)  # bigger faces score higher against their own
 
 
+def test_avatars_showing_the_same_face_count_as_one_identity(monkeypatch):
+    from bifold_demo.recognition import calibrate
+    from bifold_demo.recognition.calibrate import Faces, GalleryRows, as_one, same_faces
+
+    faces, gallery = _avatar_world()
+    assert same_faces(faces, gallery) == {}
+    monkeypatch.setattr(calibrate, "KNOWN_SAME_FACES", {"A05": "A01", "Nobody": "A02"})  # known whatever the scores
+    assert same_faces(faces, gallery) == {"A05": "A01"}
+    monkeypatch.setattr(calibrate, "KNOWN_SAME_FACES", {})
+    # A07 wears A02's face (its own faces and photos: A02's identity, with their own noise), A09 wears it too
+    rng = np.random.default_rng(8)
+    vectors, rows = faces.vectors.copy(), gallery.rows.copy()
+    for twin in ("A07", "A09"):
+        mine, theirs = faces.people == twin, faces.people == "A02"
+        noise = rng.normal(size=(int(mine.sum()), vectors.shape[1])) * 0.02
+        vectors[mine] = vectors[theirs] + noise
+        rows[gallery.owners == twin] = rows[gallery.owners == "A02"]
+    vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+    twins = Faces(vectors, faces.people, faces.sizes, faces.yaws, faces.single, faces.eye_px)
+    alias = same_faces(twins, GalleryRows(rows, gallery.owners))
+    assert alias == {"A07": "A02", "A09": "A02"}
+    merged, merged_gallery = as_one(twins, GalleryRows(rows, gallery.owners), alias)
+    assert sorted(set(merged.people.tolist())) == sorted(set(faces.people.tolist()) - {"A07", "A09"})
+    assert (merged_gallery.owners == "A02").sum() == 6 and len(merged_gallery.rows) == len(gallery.rows)
+
+
 def test_the_held_out_check_measures_the_false_alarm_rate_asked_for(monkeypatch):
     from bifold_demo.recognition import calibration as calibration_module
     from bifold_demo.recognition.calibrate import check, choose
@@ -960,6 +1038,8 @@ def test_the_held_out_check_measures_the_false_alarm_rate_asked_for(monkeypatch)
         assert entry["strangers"] + entry["known"] == 4 * 8 * 42  # only the held-out half's faces are searched
         assert entry["fpir"] <= 0.3, (kind, entry)  # near the target (few identities: a coarse check)
         assert entry["tpir"] > 0.3 and entry["wrong"] <= entry["named"]
+        assert len(entry["fpir_by_split"]) == 4  # each halving's own rate (a stranger's lookalike shows there)
+        assert min(entry["fpir_by_split"]) <= entry["fpir"] <= max(entry["fpir_by_split"])
     assert choose(results, 0.1, kinds=("none", "tnorm")) in ("none", "tnorm")
     worse = {"none": {"0.01": {"fpir": 0.01, "tpir": 0.8}}, "tnorm": {"0.01": {"fpir": 0.01, "tpir": 0.805}},
              "asnorm": {"0.01": {"fpir": 0.05, "tpir": 0.95}}}

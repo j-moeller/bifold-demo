@@ -565,7 +565,8 @@ class DemoApp:
         if people is not None and people.source == frame.source:
             counts = people.counts()
             names = sorted(p.name for p in people.people if p.name)
-            target = f"FPIR {self.config.fpir:.0%}" if people.calibrated else "provisional thresholds"
+            norm = {"tnorm": ", T-norm", "asnorm": ", AS-norm"}.get(recognizer.calibration.normalisation, "")
+            target = f"FPIR {self.config.fpir:.0%}{norm}" if people.calibrated else "provisional thresholds"
             lines.append(f"{len(people.people)} tracks: {counts['named']} named ({', '.join(names) or '-'}), "
                          f"{counts['unknown']} unknown, {counts['undecided']} not decided; {target}; "
                          f"{people.inference_ms:.0f} ms")

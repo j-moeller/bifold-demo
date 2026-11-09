@@ -4,9 +4,10 @@ Calibrations must be made from data that may be shipped: renders of the Rocketbo
 people and LFW may check a calibration, never make one. The data:
 
 * **Who.** The avatars of a character library (``--characters``; by default every prepared avatar). Each avatar is
-  one identity: mated pairs are the same avatar, non-mated pairs different avatars. The shipped calibrations come
-  from 38 avatars that are *not* in the fair's library, so that the fair can check them (its people are strangers to
-  the calibration).
+  one identity: mated pairs are the same avatar, non-mated pairs different avatars; except that avatars showing the
+  same face count as one (:func:`same_faces`: Rocketbox reuses a face, Security_Male_01 wears Male_Adult_03's).
+  The shipped calibrations come from 38 avatars that are *not* in the fair's library, so that the fair can check
+  them (its people are strangers to the calibration).
 * **Their gallery.** Each avatar's "photos": windows of the virtual sensor on its head in the fair's hall, 2 m from
   the camera, 100 pixels between the eyes, the head turned -25, 0 and 25 degrees, enrolled by the
   :class:`~.gallery.Gallery` as photos are (the same checks, templates per pose).
@@ -27,8 +28,9 @@ templates); the scores give each bin's non-mated and mated curves (:meth:`.calib
 half the avatars are known (their gallery) and half strangers. On those held-out searches the false-alarm rate asked
 for (0.1 %, 1 %, 10 % per decision) is compared with the one measured, and the share of known faces named correctly
 at it. Done without normalisation and with T-norm and AS-norm against a cohort of the calibrating half's faces (up to
-:data:`COHORT_KEEP` single faces of each avatar, each face's own avatar and the gallery person left out); a
-normalisation is kept only when it names more at the same false-alarm rate (``--normalisation auto``). The final
+:data:`COHORT_KEEP` single faces of each avatar, each face's own avatar and the gallery person left out). Kept
+(``--normalisation auto``, :func:`choose`) is the one naming the most among those whose measured rate at 1 % stays
+within twice the target: no normalisation unless another names at least a point more. The final
 calibration uses every avatar; with a normalisation, its cohort is kept beside it (``<model id>.cohort.npz``), the
 very faces its scores were normalised with.
 
@@ -59,8 +61,16 @@ TARGETS = (0.001, 0.01, 0.1)  # false-alarm rates per decision checked
 SPLITS = 10  # random halvings of the avatars for the check
 KINDS = ("none", "tnorm", "asnorm")
 COHORT_KEEP = 16  # faces per avatar kept in a shipped cohort
+# two avatars show the same face when one's faces score at least this share of their own median against the other's
+# photos (AdaFace and the ResNet-50: Security_Male_01 and Male_Adult_03 0.80-0.85 of it, the next most alike pair
+# 0.52-0.55; SFace tells faces apart less well: 0.75 for them, 0.69-0.72 for two different men)
+SAME_FACE = 0.8
+# Rocketbox avatars that wear another's face (their renders and head textures show it), counted as one whatever the
+# model's scores say
+KNOWN_SAME_FACES = {"Security_Male_01": "Male_Adult_03"}
 
-__all__ = ["AGGREGATES", "DISTANCES", "EYE_PX", "PRESETS", "YAWS", "Probes", "check", "fit", "render", "scores"]
+__all__ = ["AGGREGATES", "DISTANCES", "EYE_PX", "PRESETS", "YAWS", "Probes", "as_one", "check", "fit", "render",
+           "same_faces", "scores"]
 
 
 @dataclass
@@ -69,7 +79,9 @@ class Probes:
     ``eye_px`` asked, the ``yaw`` asked, the ``preset``, the ``distance``; ``found``: whether the face was found;
     ``crops``: the aligned faces (``(n, 112, 112, 3)``, black where none was found); ``sizes``: the face's eye distance
     turned to the camera (from its box, window pixels); ``yaws``: the yaw its landmarks give; ``weights``: its
-    quality weight without eDifFIQA; ``detector``: the detector's id."""
+    quality weight without eDifFIQA; ``detector``: the detector's id; ``rendered``: how the windows were drawn (JSON:
+    the renderer's quality and light model, the hall's hemisphere light, the heads' textures), recorded with every
+    calibration made from them (scores depend on it)."""
 
     detector: str
     avatar: np.ndarray
@@ -85,6 +97,7 @@ class Probes:
     outside: np.ndarray = field(repr=False)
     ied: np.ndarray = field(repr=False)
     score: np.ndarray = field(repr=False)
+    rendered: str = "{}"
 
     def save(self, path) -> Path:
         path = Path(path)
@@ -97,7 +110,12 @@ class Probes:
         with np.load(path, allow_pickle=False) as data:
             values = {k: data[k] for k in data.files}
         values["detector"] = str(values["detector"])
+        values["rendered"] = str(values.get("rendered", "{}"))
         return cls(**values)
+
+    def rendering(self) -> dict:
+        """How the windows were drawn (see the class docs; ``{}`` when not recorded)."""
+        return json.loads(self.rendered)
 
     def weights(self, fiqa=None) -> np.ndarray:
         """The quality weights (:attr:`~.quality.Quality.weight`), with eDifFIQA-T's scores when given."""
@@ -124,6 +142,7 @@ def render(library, names, detectors: dict, gallery_folder, eye_px=EYE_PX, yaws=
 
     from ..characters.character import Character
     from ..characters.model import CharacterState
+    from ..characters.rocketbox import FORMAT
     from ..scene.renderer import Renderer
     from ..scenes import fair
     from ..sensor.geometry import Sensor
@@ -147,6 +166,13 @@ def render(library, names, detectors: dict, gallery_folder, eye_px=EYE_PX, yaws=
     renderer = Renderer(*view)
     renderer.detail_wait = True
     sensor = Sensor.scaled(6, view)
+    available = library.available()
+    rendered = json.dumps({"quality": renderer.window_quality, "linear": renderer.linear,
+                           "hemisphere": scene.hemisphere, "specular": renderer.specular,
+                           "normal_strength": renderer.normal_strength,
+                           "heads": "2048 textures and maps" if all(available.get(n, {}).get("format") == FORMAT
+                                                                     for n in names) else "some without maps",
+                           "sensor": f"{sensor.width}x{sensor.height}", "presets": list(presets)})
     rows = {key: {k: [] for k in ("avatar", "eye_px", "yaw", "preset", "distance", "found", "crops", "sizes",
                                   "yaws", "sharpness", "outside", "ied", "score")} for key in detectors}
     started = time.perf_counter()
@@ -214,7 +240,7 @@ def render(library, names, detectors: dict, gallery_folder, eye_px=EYE_PX, yaws=
                           np.array(r["preset"], str), np.array(r["distance"]), np.array(r["found"], bool),
                           np.array(r["crops"], np.uint8).reshape(-1, 112, 112, 3), np.array(r["sizes"]),
                           np.array(r["yaws"]), np.array(r["sharpness"]), np.array(r["outside"]), np.array(r["ied"]),
-                          np.array(r["score"]))
+                          np.array(r["score"]), rendered)
     return out
 
 
@@ -370,11 +396,13 @@ def check(model: str, probe: Faces, gallery: GalleryRows, kinds=KINDS, splits: i
           targets=TARGETS, margin: float = 1.0) -> dict:
     """The held-out check (see the module docs): per normalisation and target false-alarm rate, the rate measured on
     strangers' faces (``fpir``, single faces and averages apart) and the share of known people's faces named
-    correctly (``tpir``), pooled over ``splits`` random halvings of the avatars."""
+    correctly (``tpir``), pooled over ``splits`` random halvings of the avatars; ``fpir_by_split``: each halving's
+    own rate (they differ much: a stranger alike to a known person names many of their faces)."""
     rng = np.random.default_rng(seed)
     avatars = np.array(sorted(set(probe.people.tolist())))
     out = {kind: {str(t): {"strangers": 0, "false": 0, "known": 0, "named": 0, "wrong": 0,
-                           "false_single": 0, "strangers_single": 0} for t in targets} for kind in kinds}
+                           "false_single": 0, "strangers_single": 0, "fpir_by_split": []} for t in targets}
+           for kind in kinds}
     for _ in range(splits):
         order = rng.permutation(avatars)
         half = len(order) // 2
@@ -401,6 +429,7 @@ def check(model: str, probe: Faces, gallery: GalleryRows, kinds=KINDS, splits: i
                 entry["false"] += int((named & is_stranger).sum())
                 entry["strangers_single"] += int((is_stranger & test_faces.single).sum())
                 entry["false_single"] += int((named & is_stranger & test_faces.single).sum())
+                entry["fpir_by_split"].append(round(float((named & is_stranger).sum() / max(1, is_stranger.sum())), 5))
                 is_known = ~is_stranger
                 right = np.array([people[i] for i in order_[:, 0]]) == test_faces.people
                 entry["known"] += int(is_known.sum())
@@ -413,6 +442,50 @@ def check(model: str, probe: Faces, gallery: GalleryRows, kinds=KINDS, splits: i
             e["fpir_single"] = e["false_single"] / max(1, e["strangers_single"])
             e["tpir"] = e["named"] / max(1, e["known"])
     return out
+
+
+def same_faces(probe: Faces, gallery: GalleryRows, share: float = SAME_FACE) -> dict[str, str]:
+    """Avatars that show the same face as another, ``{avatar: the avatar it counts as}`` (the first by name of each
+    group): those of :data:`KNOWN_SAME_FACES`, and those the scores show, judged on single faces of at least 20 pixels
+    between the eyes turned less than 25 degrees: the median of an avatar's scores against the other's photos reaches
+    ``share`` of the lower of the two avatars' medians against their own."""
+    s, people = scores(probe, gallery)
+    big = (probe.sizes >= 20) & (probe.yaws < 25) & probe.single
+    own = {}
+    for j, person in enumerate(people):
+        mine = big & (probe.people == person)
+        if mine.any():
+            own[person] = float(np.median(s[mine, j]))
+    parent = {person: person for person in people}
+
+    def root(person):
+        while parent[person] != person:
+            person = parent[person]
+        return person
+
+    for a, b in KNOWN_SAME_FACES.items():
+        if a in parent and b in parent:
+            first, second = sorted((root(a), root(b)))
+            parent[second] = first
+    for a in sorted(own):
+        mine = big & (probe.people == a)
+        for j, b in enumerate(people):
+            if b != a and b in own and float(np.median(s[mine, j])) >= share * min(own[a], own[b]):
+                first, second = sorted((root(a), root(b)))
+                parent[second] = first
+    return {person: root(person) for person in people if root(person) != person}
+
+
+def as_one(faces_: Faces, gallery: GalleryRows, alias: dict) -> tuple[Faces, GalleryRows]:
+    """``faces_`` and ``gallery`` with each avatar of ``alias`` (:func:`same_faces`) counted as the one it shows."""
+    if not alias:
+        return faces_, gallery
+
+    def renamed(names):
+        return np.array([alias.get(n, n) for n in names.tolist()], str)
+
+    return (Faces(faces_.vectors, renamed(faces_.people), faces_.sizes, faces_.yaws, faces_.single, faces_.eye_px),
+            GalleryRows(gallery.rows, renamed(gallery.owners)))
 
 
 def _subset(faces_: Faces, people) -> Faces:
@@ -440,8 +513,9 @@ def cohort_faces(faces_: Faces, keep: int = COHORT_KEEP, seed: int = 0) -> Faces
         mine = np.flatnonzero((faces_.people == avatar) & faces_.single)
         rows += sorted(rng.choice(mine, size=min(keep, len(mine)), replace=False).tolist())
     rows = np.array(rows, int)
-    return Faces(faces_.vectors[rows], faces_.people[rows], faces_.sizes[rows], faces_.yaws[rows],
-                 faces_.single[rows], faces_.eye_px[rows])
+    vectors = faces_.vectors[rows].astype(np.float16).astype(np.float64)  # as a cohort is saved
+    return Faces(vectors, faces_.people[rows], faces_.sizes[rows], faces_.yaws[rows], faces_.single[rows],
+                 faces_.eye_px[rows])
 
 
 def cohort_of(model: str, faces_: Faces) -> Cohort:

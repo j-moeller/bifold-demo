@@ -222,29 +222,39 @@ def cmd_calibrate(args) -> int:
         gallery = Gallery(data / "gallery", engine)
         gallery.refresh(force=True)
         rows = cal.GalleryRows.of(gallery)
+        avatars = sorted(set(faces.people.tolist()))
         print(f"[calibrate] {model_id}: {int(faces.single.sum())} faces and {int((~faces.single).sum())} averages of "
-              f"{len(set(faces.people.tolist()))} avatars ({found.found.mean():.0%} of the windows' faces found); "
+              f"{len(avatars)} avatars ({found.found.mean():.0%} of the windows' faces found); "
               f"{len(rows.rows)} gallery photos and templates")
+        alias = cal.same_faces(faces, rows)
+        if alias:
+            print("[calibrate] the same face, counted as one identity: "
+                  + ", ".join(f"{a} as {b}" for a, b in sorted(alias.items())))
+            faces, rows = cal.as_one(faces, rows, alias)
         kinds = cal.KINDS if args.normalisation == "auto" else ("none", args.normalisation)
         results = cal.check(model_id, faces, rows, kinds=tuple(dict.fromkeys(kinds)), splits=args.splits,
                             seed=args.seed)
         kind = cal.choose(results, kinds=tuple(dict.fromkeys(kinds))) if args.normalisation == "auto" \
             else args.normalisation
         for k, by_target in results.items():
-            cells = ", ".join(f"{float(t):.1%}: {e['fpir']:.2%} ({e['fpir_single']:.2%} single), named "
+            cells = ", ".join(f"{float(t):.1%}: {e['fpir']:.2%} ({e['fpir_single']:.2%} single; halvings "
+                              f"{min(e['fpir_by_split']):.2%}-{max(e['fpir_by_split']):.2%}), named "
                               f"{e['tpir']:.1%}" for t, e in by_target.items())
             print(f"  held out, {k:>6}: target {cells}{'   <- kept' if k == kind else ''}")
         made = {"by": "bifold-faces calibrate", "date": datetime.date.today().isoformat(),
-                "avatars": sorted(set(faces.people.tolist())), "detector": engine.detector_spec.id,
+                "avatars": avatars, "same_faces": alias, "detector": engine.detector_spec.id,
                 "sha256": engine.embedder_spec.file.sha256, "eye_px": list(cal.EYE_PX), "yaws": list(cal.YAWS),
                 "presets": list(cal.PRESETS), "gallery": {"yaws": list(cal.GALLERY_YAWS),
                                                           "eye_px": cal.GALLERY_EYE_PX},
+                "rendered": found.rendering(),
                 "faces": int(faces.single.sum()), "averages": int((~faces.single).sum()),
                 "check": {k: {t: {m: round(v, 5) if isinstance(v, float) else v for m, v in e.items()}
                               for t, e in by_target.items()} for k, by_target in results.items()}}
         cohort_set = cal.cohort_faces(faces, seed=args.seed) if kind != "none" else None
-        calibration = cal.fit(model_id, faces, rows, kind, cohort_set, made)
         cohort = cal.cohort_of(model_id, cohort_set) if cohort_set is not None else None
+        if cohort is not None:
+            made["cohort"] = {"faces": len(cohort), "digest": cohort.digest}
+        calibration = cal.fit(model_id, faces, rows, kind, cohort_set, made)
         for path in cal.write(model_id, calibration, cohort, args.models):
             print(f"[calibrate] wrote {path}")
         for line in cal.bins_table(calibration):

@@ -907,12 +907,17 @@ measured by the face's height, which a turned head does not shrink) and yaw: a
 score becomes a *rarity*, how rarely strangers reach it (`-log10` of their
 rate), the same currency for every model, so the same target gives the same
 behaviour in every profile. A calibration is kept per model in
-`models/calibration/<model>.json` (else the package's own, in
-`recognition/calibrations/`), and without any a model gets provisional
-thresholds from its LFW threshold (one false match in a thousand pairs of
-strangers), which never say "unknown". Scores can be normalised
-against a *cohort* of faces that are not in the gallery (T-norm, AS-norm),
-when the calibration says so.
+`models/calibration/<model>.json`, else the package's own: it ships one for
+each profile's recogniser that runs here (`recognition/calibrations/`: AdaFace,
+the ResNet-50 and SFace, each with T-norm and its cohort), made from renders of
+38 Rocketbox avatars that are not in the fair's library. A model with neither
+gets provisional thresholds from its LFW threshold (one false match in a
+thousand pairs of strangers), which never say "unknown": so does AuraFace,
+which the commercial profile uses where it can be fetched, until `bifold-faces
+calibrate --profiles commercial` has run there. Scores can be
+normalised against a *cohort* of faces that are not in the gallery (T-norm,
+AS-norm), when the calibration says so; the calibration records which cohort
+it was made with, and no other is used with it.
 
 **Making a calibration.** Calibrations are made only from data that may be
 shipped: renders of the Rocketbox avatars (MIT), never photos of people (those
@@ -924,28 +929,37 @@ bifold-faces calibrate --profiles licensed --characters ~/avatars   # one profil
 bifold-faces calibrate --refit                 # again from the faces rendered before (no rendering)
 ```
 
-Each avatar is one identity. Its "photos" for the gallery are windows of the
-virtual sensor on its head in the fair's hall (100 pixels between the eyes,
-the head turned -25, 0 and 25 degrees); its faces as the live pipeline sees
-them are windows with 8 to 64 pixels between the eyes, the head turned up to
-40 degrees, through an ideal camera and the `budget 1080p` preset, at a few
-places in the hall, found, aligned and embedded as live, singly and averaged
-in twos and threes as a track's evidence is. Every face is scored against every
+Each avatar is one identity, except that avatars showing the same face count
+as one (Rocketbox reuses a face: Security_Male_01 wears Male_Adult_03's; the
+command also finds others by their scores, and says so). An avatar's "photos" for
+the gallery are windows of the virtual sensor on its head in the fair's hall
+(100 pixels between the eyes, the head turned -25, 0 and 25 degrees); its
+faces as the live pipeline sees them are windows with 8 to 64 pixels between
+the eyes, the head turned up to 40 degrees, through an ideal camera and the
+`budget 1080p` preset, at a few places in the hall, found, aligned and
+embedded as live, singly and averaged in twos and threes as a track's evidence
+is. Every face is scored against every
 avatar's gallery: the same avatar gives the mated scores, the others the
 non-mated ones. The command also checks itself: the avatars are halved again
 and again, one half calibrates, the other is split into known people and
 strangers, and the false-alarm rate asked for is compared with the one
-measured, without normalisation and with T-norm and AS-norm (a normalisation
-is kept only when it names more people at the same rate). Calibrations made
-from avatars that are not in the fair's library (`--characters`) keep the
-fair a fair check of them. The renders and embeddings are kept in
-`models/calibration/data/` (about 300 MB) for `--refit`.
+measured, without normalisation and with T-norm and AS-norm. Kept is the one
+that names the most people among those whose measured rate at 1 % stays within
+twice the target (no normalisation, unless another names a point more).
+Calibrations made from avatars that are not in the fair's library
+(`--characters`) keep the fair a fair check of them. Each calibration records
+how it was made: the avatars (and which count as one), the detector, the model
+file's SHA-256, the sizes, yaws and cameras, how the faces were drawn (the
+renderer's quality, the hall's hemisphere light, the heads' textures; scores
+depend on them) and the check's numbers. The renders and embeddings are kept
+in `models/calibration/data/` (about 200 MB) for `--refit`.
 
 **The budget per profile** (embeddings a second for everyone, on a four-core
 CPU like the development machine's; `--embed-rate` sets another): `best`
 (AdaFace) 1, `licensed` (ResNet-50) 4, `commercial` (SFace) 20. A person is
-embedded at most twice a second. On a Mac with CoreML the rates can be raised
-about tenfold.
+embedded at most twice a second. On a Mac with CoreML the models should run
+several times faster (not measured yet): measure there with `bifold-faces check
+--speed` and raise the rates with `--embed-rate`.
 
 ```python
 from bifold_demo.recognition import FaceEngine, Gallery

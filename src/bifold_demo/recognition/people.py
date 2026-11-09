@@ -3,9 +3,9 @@
 :class:`PeopleRecognizer` runs the whole chain on a frame (on a worker thread in the demo; its :meth:`~PeopleRecognizer.
 detect_frame` is what :class:`~bifold_demo.detection.worker.AsyncDetector` calls):
 
-1. **People.** The person detector's boxes (YOLO), down to a low score, go to the person tracker
-   (:class:`~bifold_demo.detection.tracker.PersonTracker`, ByteTrack): each person keeps a number while they move,
-   turn away or are hidden for a moment.
+1. **People.** The person detector's boxes (YOLO; the commercial profile's YOLOX), down to a low score, go to the
+   person tracker (:class:`~bifold_demo.detection.tracker.PersonTracker`, ByteTrack): each person keeps a number while
+   they move, turn away or are hidden for a moment.
 2. **Faces in their head regions** (:mod:`.heads`). Each track's head region is looked at: in a high-resolution
    window of the virtual sensor when one came with the frame for it (the tracker asks for them, below), else in a
    crop of the frame. A frame's crops are limited (``searches``): tracks not decided yet first, then those looked at
@@ -168,7 +168,7 @@ class PeopleRecognizer:
         if calibration is None:
             calibration = find_calibration(self.model, models_folder, getattr(self.engine, "threshold", None))
         if cohort is None and calibration.normalisation != "none":
-            cohort = find_cohort(self.model, models_folder)
+            cohort = find_cohort(self.model, models_folder, calibration)
         self.calibration = calibration
         log = DecisionLog(keep=2000) if log is None else log
         self.policy = IdentityPolicy(gallery, calibration, cohort, settings, log)

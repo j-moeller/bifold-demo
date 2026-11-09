@@ -228,6 +228,10 @@ class IdentityPolicy:
         if calibration.normalisation != "none" and cohort is None:
             raise ValueError(f"the calibration of {calibration.model} normalises scores ({calibration.normalisation})"
                              " but no cohort was given")
+        made_with = (calibration.made.get("cohort") or {}).get("digest")
+        if cohort is not None and made_with and cohort.digest != made_with:
+            raise ValueError(f"the cohort given ({cohort.digest}) is not the one the calibration of "
+                             f"{calibration.model} was made with ({made_with})")
         self.tracks: dict[int, _Track] = {}
         self._gallery_stats = None  # (gallery rows id, means, spreads) for AS-norm
 
