@@ -601,13 +601,14 @@ class StrangerTracks:
 
 def stranger_tracks(calibration: Calibration, probe: Faces, gallery: GalleryRows, strangers, kind: str = "none",
                     cohort: Faces | None = None, seed: int = 0, split: int = 0, margin: float = 1.0,
-                    min_weight: float = 0.5, min_frames: int = 2, top: int = 50) -> StrangerTracks:
+                    min_weight: float = 0.5, min_frames: int = 2, top: int = 50,
+                    sizes=TRACK_SIZES) -> StrangerTracks:
     """Strangers' tracks as the live decisions see them: each stranger's single faces at one camera preset and one
     class of sizes (:data:`TRACK_SIZES`; all their yaws) arrive one by one in a random order; after each (from the
     ``min_frames``-th, once their quality weights reach ``min_weight``) the running quality-weighted mean of the faces
     so far is scored against ``gallery`` (normalised by ``kind`` against ``cohort``'s single faces, which hold none of
     these people) and decided as live: the best person's rarity in the mean's bin, and whether it beats the
-    runner-up's by ``margin``. ``probe`` must carry its faces' ``weights`` and ``presets``."""
+    runner-up's by ``margin``. ``probe`` must carry its faces' ``weights`` and ``presets``; ``sizes``: the classes."""
     people = sorted(set(gallery.owners.tolist()))
     owner = np.searchsorted(np.array(people), gallery.owners)
     order = np.argsort(owner, kind="stable")
@@ -626,7 +627,7 @@ def stranger_tracks(calibration: Calibration, probe: Faces, gallery: GalleryRows
     for avatar in sorted(strangers):
         mine = single & (probe.people == avatar)
         for preset in sorted(set(probe.presets[mine].tolist())):
-            for group in TRACK_SIZES:
+            for group in sizes:
                 idx = np.flatnonzero(mine & (probe.presets == preset) & np.isin(probe.eye_px, group))
                 if len(idx) < min_frames:
                     continue

@@ -332,6 +332,31 @@ def test_with_n_on_the_tracks_own_the_window_requests_also_when_a_result_is_too_
     assert len(app.window_service.calls) == 1
 
 
+def test_where_faces_are_real_the_target_is_stricter_unless_one_is_asked_for():
+    """The calibrations are made from avatars; on real faces they let more strangers through. So without --fpir the
+    webcam and photos cast on the 3D people get the stricter target; switching the source changes it at once."""
+    from types import SimpleNamespace
+
+    from bifold_demo.app import REAL_FPIR, SCENE_FPIR, DemoApp, DemoConfig, parse_args
+    from bifold_demo.recognition.decision import DecisionSettings
+
+    app = object.__new__(DemoApp)
+    app.config, app.cast = DemoConfig(), None
+    app.switcher = SimpleNamespace(active_name="scene")
+    app.people = SimpleNamespace(policy=SimpleNamespace(settings=DecisionSettings(fpir=0.5)))
+    assert app.target() == SCENE_FPIR == 0.01 and REAL_FPIR < SCENE_FPIR
+    app._apply_target()
+    assert app.people.policy.settings.fpir == SCENE_FPIR and app.people.policy.settings.margin == 1.0
+    app.switcher.active_name = "webcam"
+    app._apply_target()
+    assert app.people.policy.settings.fpir == REAL_FPIR
+    app.switcher.active_name, app.cast = "scene", object()  # (photos of real people on the 3D people)
+    assert app.target() == REAL_FPIR
+    app.config = DemoConfig(fpir=0.02)
+    assert app.target() == 0.02
+    assert parse_args([]).fpir is None and parse_args(["--fpir", "0.003"]).fpir == 0.003
+
+
 def test_n_switches_the_recognition_of_people(gl, tmp_path, monkeypatch):
     from test_pipeline import FakeDetector
 

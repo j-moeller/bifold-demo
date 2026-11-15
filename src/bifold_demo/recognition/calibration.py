@@ -1,10 +1,13 @@
 """Calibration: one false-alarm rate the user sets, turned into each model's own score thresholds per face size.
 
-**The target.** The user sets one thing, the **false positive identification rate per decision** (FPIR, for example
-1 %): how often a decision about a stranger names somebody. A stranger is compared with every known person, so with
-``n`` known people the false-match rate allowed per person is ``1 - (1 - FPIR) ** (1 / n)`` (about ``FPIR / n``;
-:func:`per_person`). Each model's calibration turns that rate into a score threshold for the face's quality, so that
-the same target gives the same behaviour whichever profile runs.
+**The target.** The user sets one thing, the **false positive identification rate per stranger track** (FPIR, for
+example 1 %): how often a stranger's track is named somebody, at any of its decisions. A single decision compares a
+stranger with every known person, so with ``n`` known people the false-match rate allowed per person is
+``1 - (1 - FPIR) ** (1 / n)`` (about ``FPIR / n``; :func:`per_person`); and a track is decided again after every new
+face, so each accept threshold is raised by the calibration's offset for that target (:meth:`Calibration.
+track_offset`, measured on simulated stranger tracks with a margin for the uncertainty: :mod:`.calibrate`; a
+calibration made without offsets counts per decision). Each model's calibration turns that rate into a score
+threshold for the face's quality, so that the same target gives the same behaviour whichever profile runs.
 
 **What a calibration holds** (:class:`Calibration`, one per model): for each **bin** of face quality (the face's eye
 distance turned to the camera, :func:`~.heads.face_size`, and how far the head is turned; :data:`SIZE_EDGES`,

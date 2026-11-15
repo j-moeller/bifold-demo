@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import math
 import sys
 import time
@@ -23,6 +24,10 @@ from .sources import FixedStepClock, Frame, SceneSource, SimulationClock, Source
 HELP = ("S source | D detect | N who | W windows | Space pause | R reset | [ ] confidence | Y / click people | "
         "C creator | F fullscreen | P screenshot | H hide | Q quit")
 STALE_AFTER = 1.0  # seconds after which old detections are no longer drawn
+# the recognition's targets (false-alarm rate per stranger track) without --fpir: for the 3D scene's avatars, and
+# where faces are real (the webcam, photos cast on the 3D people): the calibrations are made from avatars, and on
+# real faces (LFW) they let more strangers through than asked (see the README)
+SCENE_FPIR, REAL_FPIR = 0.01, 0.001
 
 
 @dataclass
@@ -54,7 +59,8 @@ class DemoConfig:
     faces: str = "faces"  # photos of the people the face recognition knows (see recognition.gallery)
     face_profile: str | None = None  # the face models: best, licensed, commercial (None: $BIFOLD_FACE_PROFILE / best)
     recognize: bool = False  # start with the recognition of people on (N toggles it; see recognition.people)
-    fpir: float = 0.01  # the target false-alarm rate per decision of the recognition (see recognition.calibration)
+    fpir: float | None = None  # the recognition's target false-alarm rate per stranger track (None: SCENE_FPIR,
+    # REAL_FPIR where faces are real; see recognition.calibration)
     embed_rate: float | None = None  # face embeddings a second for everyone (None: the model's, recognition.evidence)
     cast: bool = True  # put the known people's faces on 3D people (when the faces folder has photos)
     created: str | None = "created"  # characters made in the character creator, shown in the fair (None: not)
@@ -211,6 +217,20 @@ class DemoApp:
         self.gallery = gallery
         return gallery
 
+    def target(self) -> float:
+        """The recognition's target false-alarm rate per stranger track now: ``--fpir``, else :data:`REAL_FPIR` where
+        faces are real (the webcam, or photos cast on the 3D people), else :data:`SCENE_FPIR`."""
+        if self.config.fpir is not None:
+            return float(self.config.fpir)
+        real = self.switcher.active_name == "webcam" or self.cast is not None
+        return REAL_FPIR if real else SCENE_FPIR
+
+    def _apply_target(self) -> None:
+        """Give the recognition the target for the source shown now (see :meth:`target`)."""
+        people = self.people
+        if people is not None and people.policy.settings.fpir != self.target():
+            people.policy.settings = dataclasses.replace(people.policy.settings, fpir=self.target())
+
     def _load_people(self) -> bool:
         """Who the people are (``N``): person tracks from the person detector (loaded here if detection is off),
         faces in their head regions, decisions (see recognition.people). On failure the video goes on and the error
@@ -229,7 +249,7 @@ class DemoApp:
             self._face_error = "the recognition needs the person class: leave out --classes or include person"
             return False
         try:
-            self.people = PeopleRecognizer(gallery, self.detector, settings=DecisionSettings(fpir=self.config.fpir),
+            self.people = PeopleRecognizer(gallery, self.detector, settings=DecisionSettings(fpir=self.target()),
                                            windows=self.window_service if self.windows_on else None,
                                            rate=self.config.embed_rate)
         except Exception as exc:  # noqa: BLE001 - e.g. a damaged calibration file: the video goes on
@@ -238,12 +258,12 @@ class DemoApp:
             return False
         calibration = self.people.calibration
         if calibration.is_provisional:
-            print(f"[faces] no calibration for {self.people.model}: thresholds from its LFW threshold, no 'unknown' "
-                  f"(bifold-faces calibrate makes one)")
+            print(f"[faces] no calibration for {self.people.model}: it names nobody until one is made "
+                  f"(bifold-faces calibrate)")
         else:
             print(f"[faces] calibration: {calibration.path} ({calibration.normalisation} normalisation); target "
-                  f"false-alarm rate {self.config.fpir:.1%} per decision; {self.people.budget.rate:g} embeddings a "
-                  f"second")
+                  f"false-alarm rate {self.target():.1%} per stranger track; {self.people.budget.rate:g} "
+                  f"embeddings a second")
         if not self.sync:
             self.face_worker = AsyncDetector(self.people).start()
         return True
@@ -405,6 +425,7 @@ class DemoApp:
         if cfg.windows:
             print(f"[demo] {self._show_windows(True)}")
         self._load_cast()
+        self._apply_target()  # (real faces cast on the 3D people: the stricter target)
         self._update_created(wait=True)  # the first frame has them
         window = None if cfg.headless else Window(cfg.title, cfg.fullscreen)
         if window:
@@ -413,6 +434,7 @@ class DemoApp:
         try:
             while self._running:
                 frame = self.switcher.active.read(timeout=0.5)
+                self._apply_target()  # (a source that fell back to the scene: its target)
                 if frame is not None:
                     if frame.source == "scene":
                         self._update_created()
@@ -573,7 +595,8 @@ class DemoApp:
             counts = people.counts()
             names = sorted(p.name for p in people.people if p.name)
             norm = {"tnorm": ", T-norm", "asnorm": ", AS-norm"}.get(recognizer.calibration.normalisation, "")
-            target = f"FPIR {self.config.fpir:.0%}{norm}" if people.calibrated else "no calibration"
+            target = f"FPIR {recognizer.policy.settings.fpir:.1%} per track{norm}" if people.calibrated else \
+                "no calibration"
             lines.append(f"{len(people.people)} tracks: {counts['named']} named ({', '.join(names) or '-'}), "
                          f"{counts['unknown']} unknown, {counts['undecided']} not decided; {target}; "
                          f"{people.inference_ms:.0f} ms")
@@ -603,6 +626,7 @@ class DemoApp:
             target = "webcam" if self.switcher.active_name == "scene" else "scene"
             if self.switcher.switch(target):
                 self.selection.leave()
+                self._apply_target()
                 self.notify(f"source: {target}")
             else:
                 self.notify(self.switcher.last_error, 5, error=True)
@@ -784,8 +808,10 @@ def parse_args(argv=None) -> DemoConfig:
                         "commercial with a licence from InsightFace) or commercial (default: $BIFOLD_FACE_PROFILE)")
     g.add_argument("--recognize", action="store_true",
                    help="start with the recognition of people on: person tracks, faces, names (N toggles it)")
-    g.add_argument("--fpir", type=_rate, default=0.01, metavar="RATE",
-                   help="the recognition's target false-alarm rate per decision, e.g. 0.01 for 1 %% (default 0.01)")
+    g.add_argument("--fpir", type=_rate, default=None, metavar="RATE",
+                   help="the recognition's target false-alarm rate per stranger track, e.g. 0.01 for 1 %% (default: "
+                        f"{SCENE_FPIR} for the 3D scene, {REAL_FPIR} where faces are real: the webcam, photos cast "
+                        "on the 3D people)")
     g.add_argument("--embed-rate", type=_per_second, default=None, metavar="N",
                    help="face embeddings a second for everyone (default: the model's: 1 for AdaFace, 4 for the "
                         "ResNet-50, 20 for SFace, as a four-core CPU allows)")

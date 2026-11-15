@@ -6,8 +6,9 @@ every known person (:meth:`~.gallery.Gallery.raw_scores`, each person's best pho
 against a cohort when the calibration says so (:class:`~.calibration.Cohort`), and turned into **rarities** by the
 model's calibration for the aggregate's face size and yaw (:class:`~.calibration.Calibration`): ``-log10`` of how
 often a stranger scores that high, the same currency for every model and face size. With ``n`` known people and the
-user's target false-alarm rate per decision ``fpir``, a name needs the rarity ``accept = -log10(per-person rate)``
-(about ``log10(n / fpir)``: 3 for 10 people at 1 %).
+user's target false-alarm rate per stranger track ``fpir``, a name needs the rarity ``accept = -log10(per-person
+rate)`` (about ``log10(n / fpir)``: 3 for 10 people at 1 %), plus the calibration's offset for that target (a track
+is decided again after every face: :meth:`~.calibration.Calibration.track_offset`).
 
 **Three states** (:data:`NAMED`, :data:`UNKNOWN`, :data:`UNDECIDED`):
 
@@ -73,7 +74,8 @@ __all__ = ["NAMED", "UNDECIDED", "UNKNOWN", "Decision", "DecisionLog", "Decision
 
 @dataclass(frozen=True)
 class DecisionSettings:
-    """The policy's settings (see the module docs). ``fpir``: the target false-alarm rate per decision; ``margin``,
+    """The policy's settings (see the module docs). ``fpir``: the target false-alarm rate per stranger track (per
+    decision with a calibration made without track offsets); ``margin``,
     ``keep``: decades of rarity; ``reject_miss``: how often a known person's face may score below the reject
     threshold; ``switch_miss``: how often a new face of the same person may score below the floor that says the track
     shows someone else; ``decisive``: the rarity the reject threshold (and that floor) needs among strangers' scores;
