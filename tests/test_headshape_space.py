@@ -108,6 +108,36 @@ def test_fetching_checks_every_file_converts_and_deletes_the_downloads(tiny, tmp
     assert space.fetch(dest, progress=None) == path
 
 
+def test_obj_files_of_other_writers_are_read_or_refused():
+    data = b"v 0 0 0 1.0\nv\t1 0 0\nv 0 1 0\nvt 0 0\nf 1/1 2/1 3/1\nf -3 -2 -1\n"
+    assert space.obj_vertices(data).tolist() == [[0, 0, 0], [1, 0, 0], [0, 1, 0]]  # (a w left out; a tab)
+    assert space.obj_faces(data) == [[0, 1, 2], [0, 1, 2]]  # (negative: counted back from the last vertex)
+    for bad in (b"v 0 0 nan\n", b"v 0 0\n", b"v 0 0 0\nf 1 2 3\n", b"v 0 0 0\nf -2 1 1\n"):
+        with pytest.raises(ValueError):
+            space.obj_vertices(bad)
+            space.obj_faces(bad)
+
+
+def test_a_space_without_its_licence_is_made_again(tiny, tmp_path):
+    dest = tmp_path / "identity"
+    path = space.fetch(dest, progress=None, jobs=2)
+    (dest / space.LICENSE_FILE).unlink()  # (as after a crash between the two before)
+    messages = []
+    assert space.fetch(dest, progress=messages.append, jobs=2) == path
+    assert (dest / space.LICENSE_FILE).is_file() and not any("there already" in m for m in messages)
+
+
+def test_the_command_reports_a_space_that_does_not_convert(tiny, tmp_path, monkeypatch, capsys):
+    from bifold_demo.characters import cli
+
+    def broken(*args, **kwargs):
+        raise ValueError("an OBJ vertex that is not a number")
+
+    monkeypatch.setattr(space, "fetch", broken)
+    assert cli.main(["identity-space", "--dest", str(tmp_path)]) == 1
+    assert "not a number" in capsys.readouterr().err
+
+
 def test_a_changed_file_upstream_is_refused(tiny, tmp_path):
     source, _shapes = tiny
     path = source / "FaceXModel" / "identity001.obj"

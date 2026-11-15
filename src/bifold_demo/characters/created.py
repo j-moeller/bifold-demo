@@ -22,8 +22,9 @@ makes its 3D person. Files in a character's folder are hand-editable, so nothing
 book (:attr:`CharacterBook.problems`), and a character that could be read before stays as it was until its file
 reads well again. Face photos and the textures made from them are personal data, and so is a head shape fitted to a
 person's photos: the folder stays on this computer (it is ignored by git) and :meth:`CharacterBook.delete` removes
-everything of a character. A character's 3D person wears its shape (:func:`wearing`); one saved before shapes, or
-whose shape was made for another version of its avatar, keeps the avatar's own head.
+everything of a character. A character's 3D person wears its shape (:func:`wearing`); one saved before shapes,
+whose shape was made for another version of its avatar, or whose shape file cannot be read, keeps the avatar's own
+head (with a note).
 """
 
 from __future__ import annotations
@@ -69,6 +70,7 @@ class CreatedCharacter:
     folder: Path | None = None  # where it is saved, once it is
     bases: dict = field(default_factory=dict)  # primitive name -> what its look was made on, if not the avatar's own
     shape: object = None  # the head fitted to the person whose face it wears (a headshape.rig.Shape), or None
+    shape_note: str = ""  # why a listed shape is not there (its file damaged): the avatar's own head is worn
 
     def describe(self) -> str:
         parts = [self.avatar]
@@ -117,7 +119,7 @@ def save(character: CreatedCharacter, folder) -> Path:
     for kept in _own_files(target, {*files.values(), *bases.values(), SHAPE_FILE}):  # an item's picture: kept
         shutil.copy2(kept, tmp / kept.name)
     data = {f.name: copy.deepcopy(getattr(character, f.name)) for f in fields(character)
-            if f.name not in ("textures", "folder", "bases", "shape")}
+            if f.name not in ("textures", "folder", "bases", "shape", "shape_note")}
     data.update(format=FORMAT, textures=files, created=character.created or now, updated=now)
     if bases:
         data["bases"] = bases
@@ -273,27 +275,32 @@ def _load(path: Path, raw: bytes, lazy: bool) -> CreatedCharacter:
         raise ValueError(f"the face is not a name: {face!r}")
     files, bases = _files(path, data, "textures"), _files(path, data, "bases")
     items = _check_items(data.get("items"))
-    shape = _shape(path, data.get("shape"))
+    shape, shape_note = _shape(path, data.get("shape"))
 
     def images(found):
         return Textures(found) if lazy else {primitive: _read(file, max_texture(primitive))
                                              for primitive, file in found.items()}
 
     return CreatedCharacter(name, avatar, face, _mapping(data, "outfit"), items, images(files),
-                            _seconds(data, "created"), _seconds(data, "updated"), path, images(bases), shape)
+                            _seconds(data, "created"), _seconds(data, "updated"), path, images(bases), shape,
+                            shape_note)
 
 
-def _shape(path: Path, name):
-    """The head shape a ``character.json`` lists (a :class:`~.headshape.rig.Shape`), or ``None`` without one. Raises
-    ``ValueError`` for a name that leads out of the folder or a file that is not a shape, ``OSError`` for one that
-    is not there."""
+def _shape(path: Path, name) -> tuple:
+    """The head shape a ``character.json`` lists (a :class:`~.headshape.rig.Shape`) and a note: ``(None, "")``
+    without one, ``(None, why)`` when its file cannot be read or is not a shape (the character then wears its avatar's
+    own head, as with a shape made for another version of the avatar). Raises ``ValueError`` for a name that leads out
+    of the folder."""
     if name is None:
-        return None
+        return None, ""
     if not isinstance(name, str) or not _in_folder(name):
         raise ValueError(f"the head shape is not a file of the folder: {name!r}")
     from .headshape.rig import Shape
 
-    return Shape.load(path / name)
+    try:
+        return Shape.load(path / name), ""
+    except (OSError, ValueError) as exc:
+        return None, f"its head shape cannot be read ({exc})"
 
 
 def _files(path: Path, data: dict, key: str) -> dict:
@@ -487,7 +494,8 @@ def wearing(created: CreatedCharacter, model):
     apply_shape`), and a note; ``(model, "")`` as it is without a shape, ``(model, why)`` when the shape does not fit
     it (made for another version of the avatar: the avatar's own head is kept)."""
     if created.shape is None:
-        return model, ""
+        note = f"{created.name} keeps {model.name}'s own head: {created.shape_note}" if created.shape_note else ""
+        return model, note
     from .headshape.rig import apply_shape
 
     try:

@@ -75,15 +75,19 @@ def test_a_shape_made_for_another_version_of_the_avatar_is_left_off(fitted, tmp_
     assert worn is other and "keeps Synthetic's own head" in note and "another version" in note
 
 
-def test_a_damaged_shape_file_is_a_problem_of_the_book(fitted, tmp_path):
+def test_a_damaged_shape_file_leaves_the_avatars_own_head_with_a_note(fitted, tmp_path):
+    """Like a shape made for another version of the avatar: the character is there, on its avatar's own head."""
     model, shape, _wearing = fitted
     character = created_module.CreatedCharacter("Cleo", model.name, shape=shape)
     folder = created_module.save(character, tmp_path)
     (folder / created_module.SHAPE_FILE).write_bytes(b"not a shape")
     book = created_module.CharacterBook(tmp_path)
     book.refresh(force=True)
-    assert "Cleo" in book.problems and book.get("Cleo") is None
-    assert book.delete("Cleo") and not folder.exists()  # deleted with the character
+    cleo = book.get("Cleo")
+    assert "Cleo" not in book.problems and cleo is not None and cleo.shape is None
+    worn, note = created_module.wearing(cleo, model)
+    assert worn is model and "keeps Synthetic's own head" in note and "cannot be read" in note
+    assert book.delete("Cleo") and not folder.exists()  # deleted with the character, its shape file too
 
 
 def test_known_faces_wear_their_fitted_heads_and_give_them_back(cast_scene, monkeypatch, tmp_path):  # noqa: F811
@@ -159,3 +163,52 @@ def test_the_creators_person_wears_the_fitted_head_and_saves_it(tmp_path, monkey
     creator.set_face(None)
     creator.update()
     assert creator.person.skinned_model is MODELS["Tube_Woman"] and creator.character().shape is None
+
+
+def test_a_fitted_persons_cache_key_follows_the_fit(fitted, tmp_path, monkeypatch):
+    """A fitted person is kept by its photos and by everything that changes the head: the fit's code version, its
+    options, the identity space and the data shipped with the code. Changing any of them makes the head again."""
+    from bifold_demo.characters.headshape import fit as shapefit
+    from bifold_demo.characters.headshape import fitted as fitted_module
+    from bifold_demo.characters.headtex.person import PersonCache
+
+    model = fitted[0]
+    store = PersonCache(tmp_path)
+    photos = [np.zeros((8, 8, 3), np.uint8)]
+
+    def space(commit):
+        return type("Space", (), {"commit": commit})()
+
+    def key(**changes):
+        given = {"space": space("abc"), "options": None, **changes}
+        return fitted_module.cache_key(store, photos, model, **given)
+
+    base = key()
+    assert key() == base and key(options=shapefit.FitOptions()) == base  # (the defaults are the defaults)
+    assert key(options=shapefit.FitOptions(turned=None)) != base
+    assert key(options=shapefit.FitOptions(damping=1.0)) != base
+    assert key(space=space("def")) != base and key(space=None) != base
+    monkeypatch.setattr(fitted_module, "FIT_VERSION", shapefit.FIT_VERSION + 1)
+    assert key() != base
+    monkeypatch.undo()
+    monkeypatch.setattr(identity, "shipped_digest", lambda: "other trust")
+    assert key() != base
+
+
+def test_the_shape_is_in_the_cache_entry_when_it_appears(fitted, tmp_path):
+    """The textures and the head they were made on are written as one: an entry never shows without its shape, and
+    a shape that cannot be written leaves no entry (made again next time)."""
+    from bifold_demo.characters.headtex.person import PersonCache, PersonTextures
+
+    model, shape, _wearing = fitted
+    store = PersonCache(tmp_path)
+    person = PersonTextures(model.name, {"s_head": np.full((8, 8, 4), 9, np.uint8)}, "s_head")
+    store.put("k1", person, files={rig.FILE: shape.save})
+    assert store.get("k1") is not None and rig.Shape.load(tmp_path / "k1" / rig.FILE).head == shape.head
+
+    def broken(path):
+        raise OSError("the disk is full")
+
+    store.put("k2", person, files={rig.FILE: broken})
+    assert store.get("k2") is None and not (tmp_path / "k2").exists()
+    assert not list(tmp_path.glob(".k2*"))  # nothing half-written left behind

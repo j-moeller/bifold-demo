@@ -9,8 +9,9 @@
   names, as MediaPipe's blendshape scores have them: ``eyeBlinkLeft`` is the person's left, like ICT's
   ``eyeBlink_L``), started from MediaPipe's scores and pulled towards them and towards a neutral face, kept between
   0 and 1; the eyes' gaze shapes are left out (the irises do not take part);
-* per camera session (photos of one picture shape without EXIF data) the focal length, free with a prior around
-  the registration's (:data:`FOCAL_SPREAD`); with EXIF data it is held;
+* per camera session (photos of one picture shape without EXIF data) the focal length relative to the picture's
+  size (``log(f / max(w, h))``, so that photos of one camera at two resolutions share it), free with a prior around
+  the registration's (:data:`FOCAL_SPREAD`); with EXIF data (or one given) it is held, per photo;
 * the size, apart from the shape: the landmarks cannot tell a head from a larger one farther away, so the face's
   overall size (the spread of its landmarks) is held (:data:`SIZE_HOLD`) at a target, with a uniform scale of the
   head as an extra unknown, and the coefficients shape it. The target is set every round: the irises are a ruler
@@ -23,7 +24,9 @@
 
 **Residuals**: MediaPipe's landmarks against the avatar's stage-0 landmarks as the shape and the camera put them,
 weighted by their reliability on the mesh, by how squarely the surface faces the camera (MediaPipe only guesses the
-far side of a turned face) and by a robust (Cauchy) weight; the jaw line and the cheeks' outline (MediaPipe's face
+far side of a turned face) and by a robust (Cauchy) weight; the landmarks of photos turned more than
+:attr:`FitOptions.turned` place their camera but do not shape the head (MediaPipe guesses the far half of such
+faces: with them the cheeks got worse), their outline does; the jaw line and the cheeks' outline (MediaPipe's face
 oval below the ears) are not points on the mesh but where the head's outline is in that view, so each such landmark
 is re-assigned every round to the vertex of the current head that is outermost there (along its marching line, after
 Zhu et al.) and only its distance across the outline counts; the head's outline against the photo's face-skin mask
@@ -57,6 +60,7 @@ from .head import SKIN, HeadSpace
 
 LOWER_OVAL = (454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234)
 UPPER_OVAL = tuple(sorted(set(cf.FACE_OVAL) - set(LOWER_OVAL)))  # on the forehead under the hair: left out
+FIT_VERSION = 2  # bumped whenever the fit changes what it makes (it is in the fitted people's cache keys)
 IRISES = tuple(range(468, 478))
 POINTS = tuple(k for k in range(cf.MESH_COUNT) if k not in set(cf.FACE_OVAL))  # landmarks fitted as points
 LANDMARK_NOISE = 0.03  # of the eye distance in pixels: MediaPipe's error per landmark (about 2.5-3.2 %)
@@ -78,6 +82,7 @@ MIN_GAIN = 0.03  # the fitted head must lower the robust landmark error by this 
 MIN_GAIN_ABSOLUTE = 0.02  # ... and by this much (landmark noises): photos the avatar explains need no new head
 MAX_MAHALANOBIS = 6.0  # ... and its coefficients' RMS (per mode, in standard deviations) stay below this
 FACING_LOW, FACING_HIGH = 0.05, 0.3  # cosines: landmarks count from 0 to fully between these
+TURN_BAND = 5.0  # degrees: a photo's landmarks stop shaping the head over this much either side of FitOptions.turned
 MARCH_BAND, MARCH_REACH = 0.006, 0.045  # metres: a contour landmark's marching line: across, along
 
 
@@ -98,6 +103,8 @@ class FitOptions:
     contour: bool = True
     outline: bool = True
     iris: bool = True
+    turned: float | None = 45.0  # degrees: the landmarks of photos turned further do not shape the head (None: all)
+    damping: float = 0.85  # the share of the fitted change of shape kept (the full fit overshoots); the size is kept
     free: bool = False  # the free-form correction after the space's fit (always in the fallback without the space)
     free_cap: float = FREE_CAP
     min_photos: int = 2
@@ -350,10 +357,11 @@ class _State:
         self.log_focal = np.zeros(groups)
         self.focal_prior = np.zeros(groups)
         self.focal_free = np.zeros(groups, bool)
-        for p in photos:
-            self.log_focal[p.group] = math.log(p.camera.focal)
-            self.focal_prior[p.group] = math.log(p.camera.focal)
+        for p in photos:  # (relative to the picture's size: one camera's photos at two resolutions share it)
+            self.log_focal[p.group] = math.log(p.camera.focal / max(p.size))
+            self.focal_prior[p.group] = math.log(p.camera.focal / max(p.size))
             self.focal_free[p.group] |= not p.focal_known
+        self.turn = np.ones(len(photos))  # per photo: how much its landmarks shape the head (_turn_weight)
         self.measured = [_mediapipe_expressions(p.blendshapes, m.expression_names) for p in photos]
         self.active = [e >= options.expression_gate for e in self.measured]  # the expressions fitted per photo
         self.expressions = [np.where(a, np.clip(e, 0.0, 1.0), 0.0) for e, a in zip(self.measured, self.active)]
@@ -361,9 +369,14 @@ class _State:
         self.contours = [{} for _ in photos]  # landmark -> vertex, per photo
         self.outline = [None for _ in photos]  # per photo: (vertices, gradients, values) of the outline term
 
+    def focal(self, i) -> float:
+        """Photo ``i``'s focal length in pixels."""
+        p = self.photos[i]
+        return math.exp(self.log_focal[p.group]) * max(p.size)
+
     def camera(self, i) -> PhotoCamera:
         p = self.photos[i]
-        f = math.exp(self.log_focal[p.group])
+        f = self.focal(i)
         k = PhotoCamera.intrinsics(f, p.size)
         return PhotoCamera(k, self.rotations[i], self.translations[i], p.size)
 
@@ -407,7 +420,7 @@ def _residuals(state: _State, free_modes: int, weights=None, with_jacobian: bool
         e = state.expressions[i]
         x = marks + (np.einsum("e,eld->ld", e, m.mark_expr) if m.e else 0.0)
         r, t = state.rotations[i], state.translations[i]
-        f = math.exp(state.log_focal[photo.group])
+        f = state.focal(i)
         centre = np.array([(photo.size[0] - 1) / 2.0, (photo.size[1] - 1) / 2.0])
         if photo.points is None:  # a profile placed by its outline: the outline alone
             robust.append(None)
@@ -425,7 +438,7 @@ def _residuals(state: _State, free_modes: int, weights=None, with_jacobian: bool
                                                                                1e-9)
         visible = mesh.smoothstep((facing - FACING_LOW) / (FACING_HIGH - FACING_LOW))
         w = np.zeros(cf.COUNT)
-        w[list(POINTS)] = (m.weight[list(POINTS)] * visible[list(POINTS)])
+        w[list(POINTS)] = m.weight[list(POINTS)] * visible[list(POINTS)] * state.turn[i]
         res = (u - photo.points) / sigma
         if weights is None:
             cauchy = 1.0 / (1.0 + (np.linalg.norm(res, axis=1) / ROBUST) ** 2)
@@ -459,7 +472,7 @@ def _residuals(state: _State, free_modes: int, weights=None, with_jacobian: bool
             xv = m.points[verts] + m.vertex_offsets(delta, e)[verts]
             uv, duv = _project(xv @ r.T + t, f, centre)
             normal2d = _outward(photo.points, ks)
-            cw = np.ones(len(ks))
+            cw = np.full(len(ks), state.turn[i])
             res_c = np.einsum("ld,ld->l", uv - photo.points[ks], normal2d) / sigma
             cauchy_c = 1.0 / (1.0 + (res_c / ROBUST) ** 2)
             swc = np.sqrt(cw * cauchy_c)
@@ -593,6 +606,34 @@ def _outward(points, ks) -> np.ndarray:
     return np.array(out)
 
 
+def _damp(state: _State, damping: float) -> None:
+    """The fitted coefficients' change from the avatar's kept at ``damping``, the uniform scale solved again so that
+    the face's size stays at its target (the fit overshoots: on the tuning avatars the head kept at 85 % was nearer
+    the person's in the cheeks, the surface and the size)."""
+    m = state.m
+    delta = state.beta - m.alpha
+    delta[m.extra:] *= damping
+    if m.extra and state.size is not None:
+        modes = m.mark_modes[:, m.sized]
+        for _ in range(4):  # Newton on the uniform scale's coefficient
+            marks = m.mark_base[m.sized] + np.einsum("k,kld->ld", delta, modes)
+            centred = marks - marks.mean(axis=0)
+            size = float(np.sqrt(np.mean(np.sum(centred ** 2, axis=1))))
+            slope = float(np.einsum("ld,ld->", centred, modes[0])) / (len(marks) * size)
+            if abs(slope) < 1e-12:
+                break
+            delta[0] -= (size - state.size) / slope
+    state.beta = m.alpha + delta
+
+
+def _turn_weight(yaw: float, options: FitOptions) -> float:
+    """How much the landmarks of a photo turned ``yaw`` degrees shape the head: 1 up to
+    ``options.turned - TURN_BAND``, 0 from ``options.turned + TURN_BAND``."""
+    if options.turned is None:
+        return 1.0
+    return float(mesh.smoothstep((options.turned + TURN_BAND - abs(yaw)) / (2.0 * TURN_BAND)))
+
+
 def _iris_radius(photo: Photo) -> float:
     """Half the mean horizontal diameter of the irises in pixels (rim points 469/471 and 474/476)."""
     p = photo.points
@@ -713,6 +754,7 @@ def _robust_error(state: _State, offsets=None) -> float:
         to_camera = camera.position - x
         facing = np.einsum("lk,lk->l", m.mark_normals, to_camera) / np.linalg.norm(to_camera, axis=1)
         w = (m.weight * mesh.smoothstep((facing - FACING_LOW) / (FACING_HIGH - FACING_LOW)))[list(POINTS)]
+        w = w * state.turn[i]
         loss = np.log1p((res[list(POINTS)] / ROBUST) ** 2) * ROBUST ** 2
         losses.append(loss * w)
         weights.append(w)
@@ -742,6 +784,12 @@ def fit_person(photos, model, head, hs: HeadSpace, space=None, options: FitOptio
     if options.contour:
         _assign_contours(state)
     _solve(state, 0, options.iterations)
+    state.turn = np.array([_turn_weight(state.camera(i).angles()[0], options) if p.points is not None else 0.0
+                           for i, p in enumerate(photos)])
+    if not state.turn.any():
+        return ShapeFit(False, "no photo shows the face from closer to the front than "
+                        f"{options.turned:.0f} degrees: their landmarks cannot shape the head", photos=len(photos),
+                        timings=timings)
     before = _robust_error(state)
     scale_from, iris_radius = "the avatar's own size", math.nan
     timings["cameras"] = time.perf_counter() - start
@@ -765,6 +813,8 @@ def fit_person(photos, model, head, hs: HeadSpace, space=None, options: FitOptio
                 _solve(state, free_modes, options.iterations)
     timings["shape"] = time.perf_counter() - start
     after = _robust_error(state)
+    if use_space and options.damping < 1.0:
+        _damp(state, options.damping)
     delta = state.beta - m.alpha
     model_offsets = m.vertex_offsets(delta) if use_space else np.zeros_like(m.points)
     beta = state.beta[m.extra:]  # the identity coefficients (the uniform scale apart)
@@ -783,7 +833,7 @@ def fit_person(photos, model, head, hs: HeadSpace, space=None, options: FitOptio
                    cameras=[state.camera(i) for i in range(len(photos))],
                    expressions=[{n: round(float(v), 3) for n, v in zip(m.expression_names, e) if v > 0.05}
                                 for e in state.expressions],
-                   focal=[float(math.exp(state.log_focal[p.group])) for p in photos],
+                   focal=[state.focal(i) for i in range(len(photos))],
                    scale_from=scale_from, scale=scale, iris_radius=iris_radius, error_before=before,
                    error_after=after,
                    photos=len(photos), mahalanobis=mahalanobis,

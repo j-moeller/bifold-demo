@@ -8,8 +8,9 @@
   directions around it, the body closing the open neck, as :mod:`~bifold_demo.characters.headtex.fuse` finds the
   inner texels), moved by similarity transforms that follow the lips and the jaw.
 
-The skin's offsets fade out towards the neck's open edge (:data:`NECK_FADE`: from the edge, and from what the spine,
-the clavicles and the arms move), so the head stays joined to the body. The avatar's other parts that the head moves
+The skin's offsets fade out towards the neck's open edge (:data:`NECK_FADE` along the surface: from the edge, and
+from what the spine, the clavicles and the arms move; done by the jaw line at the latest, so that a short neck does
+not hold the jaw), so the head stays joined to the body. The avatar's other parts that the head moves
 (the lashes and hair cards of the ``*_opacity`` primitive, glasses, a keffiyeh) follow the nearest skin.
 
 **Alignment.** ICT's neutral head is put on the avatar's head by the similarity transform (Umeyama) that best lines
@@ -52,9 +53,11 @@ import numpy as np
 from ..headtex import canonical as cf
 from . import mesh
 
-VERSION = 4
+VERSION = 5
 SKIN, EYE, INNER = 1, 2, 3
-NECK_FADE = 0.05  # metres from the neck's edge over which the skin's offsets fade in
+NECK_FADE = 0.05  # metres from the neck's edge (along the surface) over which the skin's offsets fade in
+JAW_LINE = (454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234)
+# (the face oval below the ears: the fade is done by these at the latest)
 MATCH_DISTANCE = (0.02, 0.008)  # metres: the registration's closest points further than this (first, last) are left out
 STIFFNESS = (40.0, 15.0, 6.0, 2.5, 1.0, 0.5)  # the registration's Laplacian weights, step by step
 ICP_ROUNDS = 3  # closest-point rounds per stiffness step
@@ -169,17 +172,21 @@ class HeadSpace:
 
     # -- moving the rest of the head with the skin ----------------------------------------------------------------
 
-    def transfer(self, model, offsets) -> Transfer:
+    def transfer(self, model, offsets, keep_skin: bool = False) -> Transfer:
         """What skin ``offsets`` (``(N, 3)``, bind pose; their values on the skin are used as given) do to the whole
         head: the eyeballs and the mouth's inside moved rigidly with their surroundings, the face bones' rest
-        positions, the other parts' offsets (see the module docs)."""
+        positions, the other parts' offsets (see the module docs). The closed lips' ties and the skin with no
+        counterpart in the space take their partners' offsets, unless ``keep_skin`` (the skin as given: untangled)."""
         head = np.array(offsets, np.float64)
         prim = model.primitives[self.primitive]
         points = np.asarray(prim.positions, np.float64)
         head[~self.skin] = 0.0
-        head = _tied(head[None], self.tie)[0]
+        if not keep_skin:
+            head = _tied(head[None], self.tie)[0]
         if self.hidden_weights is not None and self.hidden_weights.any():
             hidden = self.hidden_weights.sum(axis=1) > 0
+            if keep_skin:
+                hidden &= ~self.skin
             head[hidden] = np.einsum("nk,nkd->nd", self.hidden_weights[hidden],
                                      head[np.maximum(self.hidden_nearest[hidden], 0)])
         eyes = []
@@ -296,8 +303,10 @@ def _translation_scale(points, offsets, weights, centre, limit) -> tuple[np.ndar
 
 def space_key(model, head, primitive: int, space_commit: str) -> str:
     """The cache key: the head's geometry and skinning, the other parts, the stage-0 landmarks, the face bones, the
-    space and this code's version."""
-    h = hashlib.blake2b(f"headspace-{VERSION}-{space_commit}".encode(), digest_size=12)
+    space, this code's version and the data shipped with it (:func:`~.space.shipped_digest`)."""
+    from . import space as identity
+
+    h = hashlib.blake2b(f"headspace-{VERSION}-{space_commit}-{identity.shipped_digest()}".encode(), digest_size=12)
     prim = model.primitives[primitive]
     arrays = [prim.positions, prim.indices, prim.joints, prim.weights, head.points, head.reliability]
     arrays += [model.skeleton.rest_global[:, :3, 3]]
@@ -394,9 +403,11 @@ def head_parts(model, primitive: int) -> np.ndarray:
     return parts
 
 
-def neck_fade(model, primitive: int, parts: np.ndarray, distance: float = NECK_FADE) -> np.ndarray:
+def neck_fade(model, primitive: int, parts: np.ndarray, distance: float = NECK_FADE, jaw=None) -> np.ndarray:
     """``(N,)`` 0-1 per vertex: 0 at the neck's open edge and on what bones outside the head and neck move (the
-    spine, the clavicles, the arms), rising smoothly to 1 ``distance`` away."""
+    spine, the clavicles, the arms), rising smoothly to 1 ``distance`` away: along the skin (a chin over a short neck
+    is near the edge in space, not on the skin), straight for the other parts. ``jaw``: points of the jaw line
+    (character space; e.g. stage 0's landmarks :data:`JAW_LINE`) where the fade is done at the latest."""
     prim = model.primitives[primitive]
     points = np.asarray(prim.positions, np.float64)
     skeleton = model.skeleton
@@ -428,7 +439,41 @@ def neck_fade(model, primitive: int, parts: np.ndarray, distance: float = NECK_F
     d = np.full(len(points), np.inf)
     for s in range(0, len(points), 512):
         d[s:s + 512] = np.min(np.linalg.norm(points[s:s + 512, None] - base[None], axis=2), axis=1)
+    skin = parts == SKIN
+    along = _along_surface(points, skin_tri, node, count, anchored)  # (inf where no skin leads to an anchor)
+    d[skin] = np.where(np.isfinite(along[skin]), along[skin], d[skin])
+    if jaw is not None and len(jaw):
+        near = np.argmin(np.linalg.norm(points[None] - np.asarray(jaw, np.float64)[:, None], axis=2), axis=1)
+        distance = float(np.clip(d[near].min(), 0.01, distance))  # (a fade done by the jaw line)
     return mesh.smoothstep(d / distance).astype(np.float32)
+
+
+def _along_surface(points, triangles, node, count, sources) -> np.ndarray:
+    """``(N,)`` the shortest distance along the edges of ``triangles`` (welded by ``node``) from the vertices
+    ``sources`` (a mask), Dijkstra's; ``inf`` where no edge leads."""
+    import heapq
+
+    weld_points = np.zeros((count, 3))
+    weld_points[node] = points
+    edges = mesh.edges(node[triangles])
+    length = np.linalg.norm(weld_points[edges[:, 0]] - weld_points[edges[:, 1]], axis=1)
+    neighbours = [[] for _ in range(count)]
+    for (a, b), w in zip(edges.tolist(), length.tolist()):
+        neighbours[a].append((b, w))
+        neighbours[b].append((a, w))
+    best = np.full(count, np.inf)
+    best[np.unique(node[sources])] = 0.0
+    queue = [(0.0, int(n)) for n in np.nonzero(best == 0.0)[0]]
+    heapq.heapify(queue)
+    while queue:
+        dist, n = heapq.heappop(queue)
+        if dist > best[n]:
+            continue
+        for m, w in neighbours[n]:
+            if dist + w < best[m]:
+                best[m] = dist + w
+                heapq.heappush(queue, (dist + w, m))
+    return best[node]
 
 
 def _mouth_height(model) -> float:
@@ -449,7 +494,7 @@ def make_head_space(model, head, space, progress=None) -> HeadSpace:
     points = np.asarray(prim.positions, np.float64)
     tri = np.asarray(prim.indices, np.int64).reshape(-1, 3)
     parts = head_parts(model, primitive)
-    fade = neck_fade(model, primitive, parts)
+    fade = neck_fade(model, primitive, parts, jaw=np.asarray(head.points, np.float64)[list(JAW_LINE)])
     timings["parts"] = time.perf_counter() - start
     if space is None:  # the free-form fallback: the parts and the regressors only
         n = len(points)

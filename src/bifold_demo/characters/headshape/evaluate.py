@@ -146,10 +146,12 @@ def measure(person: Person, points, triangles, marks, skin) -> dict:
 
 
 def run(person: Person, model, head, hs: HeadSpace, space, options=None, picks=None, focal_known: bool = False,
-        registered=None) -> dict:
+        registered=None, applied: bool = False) -> dict:
     """Fit ``model``'s head (``head``, ``hs``, ``space``) to the person's photos and measure it and the unfitted head
-    against the person: ``{"before": ..., "after": ..., "fit": ShapeFit, "seconds": ...}`` (``after`` is ``None``
-    when the fit was not usable)."""
+    against the person: ``{"before": ..., "after": ..., "fit": ShapeFit, "seconds": ...}`` (``after``, the fit's
+    offsets as they are, is ``None`` when the fit was not usable). With ``applied`` also the shape as it goes on the
+    rig (:func:`~.fitted.put_on`: untangled, moved onto the whole head, kept smaller where it fails the rig's checks):
+    ``"applied"`` (``None`` when no shape passes them) and ``"shrink"``."""
     prim = model.primitives[hs.primitive]
     points = np.asarray(prim.positions, np.float64)
     triangles = np.asarray(prim.indices, np.int64).reshape(-1, 3)
@@ -165,18 +167,28 @@ def run(person: Person, model, head, hs: HeadSpace, space, options=None, picks=N
     seconds = time.perf_counter() - start
     before = measure(person, points, triangles, marks(points), skin)
     after = None
-    if result.offsets is not None:
+    if result.offsets is not None and result.usable:
         fitted = points + result.offsets
         after = measure(person, fitted, triangles, marks(fitted), skin)
-    return {"before": before, "after": after, "fit": result, "seconds": seconds, "photos": len(photos)}
+    out = {"before": before, "after": after, "fit": result, "seconds": seconds, "photos": len(photos)}
+    if applied:
+        from .fitted import put_on
+
+        out["applied"], out["shrink"] = None, {}
+        if after is not None:
+            shape, _fitted, _checks, out["shrink"] = put_on(model, hs, result.offsets, result)
+            if shape is not None:
+                fitted = points + np.asarray(shape.offsets, np.float64)
+                out["applied"] = measure(person, fitted, triangles, marks(fitted), skin)
+    return out
 
 
 def summary(results, kind: str = "similarity") -> dict:
     """Medians over ``results`` (of :func:`run`) of the landmark and surface medians and the regions, before and
-    after (``nan`` where a fit was not usable)."""
+    after (where a fit was not usable, after is the avatar's own head: what is worn then)."""
     out = {}
     for when in ("before", "after"):
-        rows = [r[when][kind] if r[when] is not None else None for r in results]
+        rows = [(r[when] if r[when] is not None else r["before"])[kind] for r in results]
         keys = ["median", "mean", *compare.REGIONS]
         out[when] = {f"landmarks {k}": float(np.nanmedian([row["landmarks"][k] if row else math.nan for row in rows]))
                      for k in keys}

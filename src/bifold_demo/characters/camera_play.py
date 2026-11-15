@@ -1300,9 +1300,12 @@ class PlayPose:
 
     def __init__(self, play: CameraPlay, model: CharacterModel):
         self.play, self.fig = play, figure(model)
-        self.rig = faces.face_rig(model)
+        self.model, self.rig = model, faces.face_rig(model)
 
     def __call__(self, local: np.ndarray, character, t: float) -> None:
+        model = getattr(character, "skinned_model", None)
+        if model is not None and model is not self.model:  # (a head fitted to a person since: its own face rig)
+            self.model, self.rig = model, faces.face_rig(model)
         found = self.play.posed(character, t)
         if found is None:
             return

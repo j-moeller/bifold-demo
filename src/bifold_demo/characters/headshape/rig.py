@@ -11,7 +11,9 @@ scalp, the bones by their regressors) and kept in a ``shape.npz`` of about 30 KB
 * ``format``, ``avatar``, ``base`` (the head's geometry fingerprint: a shape made for another version of the avatar is
   refused), ``head`` (its primitive's name);
 * ``offsets`` ``(N, 3)``; ``other_names`` and ``other_<k>`` ``(M, 3)``; ``bone_names`` and ``bones`` ``(B, 3)``;
-* ``beta``, ``space``, ``method``, ``scale_from``, ``iris``, ``focal``, ``error`` (before, after), ``photos``.
+* ``beta``, ``space``, ``method``, ``scale_from``, ``iris``, ``focal``, ``error`` (before, after), ``photos``;
+* ``shrink``: where the fitted offsets were kept smaller to pass the checks (JSON: ``{"left eye": 0.75}``; ``"all"``
+  for the whole head). Format 1 (before the shrink was kept) is still read.
 
 A fitted face shape is biometric data like the photos it comes from: it is kept only in git-ignored folders (a
 created character's, the known faces' cache) and deleted with the person or character.
@@ -31,13 +33,18 @@ itself (it keys them by object).
 fitted head must not show more of the eyeballs through the lids or of the teeth and tongue through the lips than the
 avatar's own does, the neck's edge must not move, and nothing may jump (no offset beyond :data:`MAX_OFFSET`, no
 flipped or degenerate triangle). In detail: no lid over an eyeball's cap sinks into it more than 1 mm further than
-the avatar's (:data:`LID_TOLERANCE`); a face that shuts an eye shows no more of it; the front teeth come no nearer the
-lips' front than the avatar's do (:data:`TEETH_TOLERANCE`); and where the avatar's mouth is shut (it shows fewer than
-:data:`CLOSED_MOUTH` pixels of its teeth), the fitted head's shows no more of them.
+the avatar's (:data:`LID_TOLERANCE`); a face that shuts an eye shows no more of that eye; the front teeth come no
+nearer the lips' front than the avatar's do (:data:`TEETH_TOLERANCE`); no lip vertex comes nearer the tooth behind
+it (seen from the front) than the avatar's does by more than :data:`LIP_TOLERANCE` (a lip pulled behind the teeth);
+and where the avatar's mouth is shut seen from the front (fewer than :data:`CLOSED_MOUTH` pixels of its teeth), the
+fitted head shows no more of them from either side. Each problem is put down to a part of the head
+(:attr:`RigCheck.where`: an eye, the mouth, a fold, the neck, the size), so that a shape can be kept smaller there
+only (:func:`~.fitted.fit_shape`).
 """
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -48,7 +55,8 @@ import numpy as np
 from ..model import CharacterModel, Skeleton, SkinnedPrimitive
 from . import mesh
 
-FORMAT = 1
+FORMAT = 2  # 2: with the shrink (format 1 is still read)
+FORMATS = (1, 2)
 FILE = "shape.npz"
 MAX_OFFSET = 0.05  # metres: no vertex of a fitted head moves further (a stylised avatar to a person: up to 35 mm)
 CHECK_SIZE = 256  # pixels: the z-buffers of the checks
@@ -75,6 +83,7 @@ class Shape:
     error: tuple = (float("nan"), float("nan"))
     photos: int = 0
     created: float = 0.0
+    shrink: dict = field(default_factory=dict)  # part of the head (or "all") -> the share of the offsets kept there
 
     def save(self, path) -> Path:
         """Write the shape (``path`` a file, or a folder that gets :data:`FILE`)."""
@@ -92,7 +101,8 @@ class Shape:
                   "method": np.array(self.method), "scale_from": np.array(self.scale_from),
                   "iris": np.array(self.iris, np.float32), "focal": np.asarray(self.focal, np.float32),
                   "error": np.asarray(self.error, np.float32), "photos": np.array(self.photos),
-                  "created": np.array(self.created or time.time())}
+                  "created": np.array(self.created or time.time()),
+                  "shrink": np.array(json.dumps({str(k): float(v) for k, v in self.shrink.items()}))}
         for k, name in enumerate(names):
             values[f"other_{k}"] = np.asarray(self.others[name], np.float32)
         tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp.npz")
@@ -109,8 +119,8 @@ class Shape:
             path = path / FILE
         try:
             with np.load(path, allow_pickle=False) as data:
-                if int(data["format"]) != FORMAT:
-                    raise ValueError(f"{path}: a shape of format {int(data['format'])}, not {FORMAT}")
+                if int(data["format"]) not in FORMATS:
+                    raise ValueError(f"{path}: a shape of format {int(data['format'])}, not one of {FORMATS}")
                 names = [str(n) for n in data["other_names"]]
                 others = {name: np.asarray(data[f"other_{k}"], np.float32) for k, name in enumerate(names)}
                 bone_names = [str(n) for n in data["bone_names"]]
@@ -120,10 +130,18 @@ class Shape:
                             np.asarray(data["beta"], np.float32), str(data["space"]), str(data["method"]),
                             str(data["scale_from"]), float(data["iris"]), np.asarray(data["focal"], np.float32),
                             tuple(float(v) for v in data["error"]), int(data["photos"]), float(data["created"]))
-        except (KeyError, TypeError) as exc:
+                if "shrink" in data.files:
+                    shape.shrink = {str(k): float(v) for k, v in json.loads(str(data["shrink"])).items()}
+        except (KeyError, TypeError, json.JSONDecodeError, AttributeError) as exc:
             raise ValueError(f"{path}: not a head shape ({exc})") from None
         if shape.offsets.ndim != 2 or shape.offsets.shape[1] != 3 or not np.isfinite(shape.offsets).all():
             raise ValueError(f"{path}: the head's offsets are not N x 3 numbers")
+        for name, values in shape.others.items():
+            if values.ndim != 2 or values.shape[1] != 3 or not np.isfinite(values).all():
+                raise ValueError(f"{path}: the offsets of {name} are not M x 3 numbers")
+        for name, value in shape.bones.items():
+            if value.shape != (3,) or not np.isfinite(value).all():
+                raise ValueError(f"{path}: the move of bone {name} is not 3 numbers")
         return shape
 
     def problems(self, model) -> list[str]:
@@ -155,8 +173,10 @@ class Shape:
 
     def describe(self) -> str:
         moved = np.linalg.norm(self.offsets, axis=1) * 1000.0
+        kept = "".join(f"; kept at {100 * v:.0f} % near {'the whole head' if k == 'all' else 'the ' + k}"
+                       for k, v in self.shrink.items())
         return (f"{self.method or 'shape'} from {self.photos} photos, scale from {self.scale_from or '?'}; head moved "
-                f"up to {moved.max(initial=0.0):.1f} mm (mean {moved.mean() if len(moved) else 0.0:.1f})")
+                f"up to {moved.max(initial=0.0):.1f} mm (mean {moved.mean() if len(moved) else 0.0:.1f}){kept}")
 
 
 def base_key(model) -> str:
@@ -169,8 +189,9 @@ def base_key(model) -> str:
 def untangle(points, triangles, skin, offsets, tie=None, rounds: int = 40) -> np.ndarray:
     """``offsets`` (``(N, 3)``) smoothed where they would turn a skin triangle inside out or squash or stretch it
     beyond :data:`AREA_LIMITS`: the offsets of such triangles' vertices and their neighbours are averaged with their
-    neighbours', round by round, until none is left (at most ``rounds`` rounds). Elsewhere they stay as they are.
-    ``tie``: groups of vertices that move as one (:attr:`~.head.HeadSpace.tie`)."""
+    neighbours', round by round, until none is left (at most ``rounds`` rounds); a fold that stays (its surroundings
+    hold it) widens the smoothed region by a ring every :data:`UNTANGLE_GROW` rounds. Elsewhere the offsets stay as
+    they are. ``tie``: groups of vertices that move as one (:attr:`~.head.HeadSpace.tie`)."""
     points = np.asarray(points, np.float64)
     tri = np.asarray(triangles, np.int64).reshape(-1, 3)
     tri = tri[np.asarray(skin)[tri].all(axis=1)]
@@ -192,7 +213,7 @@ def untangle(points, triangles, skin, offsets, tie=None, rounds: int = 40) -> np
     before = np.cross(points[tri[:, 1]] - points[tri[:, 0]], points[tri[:, 2]] - points[tri[:, 0]])
     area = np.linalg.norm(before, axis=1)
     usable = area > 1e-12
-    for _ in range(rounds):
+    for k in range(rounds):
         moved = points + out
         after = np.cross(moved[tri[:, 1]] - moved[tri[:, 0]], moved[tri[:, 2]] - moved[tri[:, 0]])
         ratio = np.linalg.norm(after, axis=1) / np.maximum(area, 1e-30)
@@ -201,7 +222,8 @@ def untangle(points, triangles, skin, offsets, tie=None, rounds: int = 40) -> np
         if not bad.any():
             break
         nodes = np.unique(node[tri[bad]])
-        nodes = np.unique(np.concatenate([nodes] + [np.asarray(neighbours[n], np.int64) for n in nodes]))
+        for _ring in range(1 + k // UNTANGLE_GROW):
+            nodes = np.unique(np.concatenate([nodes] + [np.asarray(neighbours[n], np.int64) for n in nodes]))
         node_offsets = np.zeros((count, 3))
         np.add.at(node_offsets, node, out)
         node_offsets /= np.maximum(np.bincount(node, minlength=count), 1)[:, None]
@@ -214,6 +236,7 @@ def untangle(points, triangles, skin, offsets, tie=None, rounds: int = 40) -> np
 
 
 AREA_LIMITS = (0.15, 8.0)  # a skin triangle's area may shrink or grow this much
+UNTANGLE_GROW = 10  # rounds: a fold still there after so many smooths a ring more round it
 
 
 def make_shape(model, hs, offsets, fit=None) -> Shape:
@@ -223,8 +246,12 @@ def make_shape(model, hs, offsets, fit=None) -> Shape:
     from .head import SKIN
 
     prim = model.primitives[hs.primitive]
-    offsets = untangle(prim.positions, prim.indices, hs.parts == SKIN, offsets, hs.tie)
+    skin = hs.parts == SKIN
+    offsets = untangle(prim.positions, prim.indices, skin, offsets, hs.tie)
     moved = hs.transfer(model, offsets)
+    again = untangle(prim.positions, prim.indices, skin, moved.head, hs.tie)  # what the ties and the skin with no
+    if not np.allclose(again[skin], moved.head[skin], atol=1e-9):  # counterpart folded again, smoothed; the rest
+        moved = hs.transfer(model, again, keep_skin=True)  # (eyes, mouth, bones, parts) from that skin
     skeleton = model.skeleton
     head = model.primitives[hs.primitive]
     others = {model.primitives[k].name: v.astype(np.float32) for k, v in moved.others.items()}
@@ -325,6 +352,9 @@ class RigCheck:
     ok: bool
     problems: list = field(default_factory=list)
     shown: dict = field(default_factory=dict)
+    where: dict = field(default_factory=dict)  # part of the head -> its problems: "right eye", "left eye", "mouth",
+    # "fold", "neck", "size"
+    folds: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int64))  # the vertices of folded triangles
 
 
 def posed_head(model, primitive: int, face: str | None) -> np.ndarray:
@@ -353,30 +383,38 @@ def rig_checks(model, fitted, hs, size: int = CHECK_SIZE) -> RigCheck:
     from ..headtex.landmarks import face_frame
     from .head import SKIN
 
-    problems = []
+    where = {}
+
+    def problem(part, text):
+        where.setdefault(part, []).append(text)
+
     primitive = hs.primitive
     old = np.asarray(model.primitives[primitive].positions, np.float64)
     new = np.asarray(fitted.primitives[primitive].positions, np.float64)
     tri = np.asarray(model.primitives[primitive].indices, np.int64).reshape(-1, 3)
     if not np.isfinite(new).all():
-        return RigCheck(False, ["the fitted head has points that are not numbers"])
+        return RigCheck(False, ["the fitted head has points that are not numbers"],
+                        where={"size": ["the fitted head has points that are not numbers"]})
     moved = np.linalg.norm(new - old, axis=1)
     if moved.max() > MAX_OFFSET:
-        problems.append(f"a vertex moves {moved.max() * 1000:.0f} mm (at most {MAX_OFFSET * 1000:.0f})")
+        problem("size", f"a vertex moves {moved.max() * 1000:.0f} mm (at most {MAX_OFFSET * 1000:.0f})")
     edge = hs.fade <= 0.0
     if edge.any() and moved[edge].max() > 1e-5:
-        problems.append(f"the neck's edge moves {moved[edge].max() * 1000:.2f} mm: a gap to the body")
+        problem("neck", f"the neck's edge moves {moved[edge].max() * 1000:.2f} mm: a gap to the body")
     skin_tri = tri[(hs.parts[tri] == SKIN).all(axis=1)]
     before = np.cross(old[skin_tri[:, 1]] - old[skin_tri[:, 0]], old[skin_tri[:, 2]] - old[skin_tri[:, 0]])
     after = np.cross(new[skin_tri[:, 1]] - new[skin_tri[:, 0]], new[skin_tri[:, 2]] - new[skin_tri[:, 0]])
     area_b, area_a = np.linalg.norm(before, axis=1), np.linalg.norm(after, axis=1)
     usable = area_b > 1e-12
-    flipped = int(((np.einsum("tk,tk->t", before, after) <= 0) & usable).sum())
-    ratio = area_a[usable] / area_b[usable]
-    if flipped:
-        problems.append(f"{flipped} triangles of the skin are turned inside out")
-    if len(ratio) and (ratio.min() < 0.1 or ratio.max() > 10.0):
-        problems.append(f"a triangle of the skin grows or shrinks too much ({ratio.min():.2f} to {ratio.max():.1f})")
+    flips = (np.einsum("tk,tk->t", before, after) <= 0) & usable
+    ratio = np.where(usable, area_a / np.maximum(area_b, 1e-30), 1.0)
+    squashed = usable & ((ratio < 0.1) | (ratio > 10.0))
+    if flips.any():
+        problem("fold", f"{int(flips.sum())} triangles of the skin are turned inside out")
+    if squashed.any():
+        problem("fold", f"a triangle of the skin grows or shrinks too much ({ratio[usable].min():.2f} to "
+                f"{ratio[usable].max():.1f})")
+    folds = np.unique(skin_tri[flips | squashed])
     frame = face_frame(model)
     cameras = {"front": PhotoCamera.around(frame.centre, 0.45, 0.0, 0.0, fov=24.0, size=(size, size)),
                "side": PhotoCamera.around(frame.centre, 0.45, 75.0, 0.0, fov=24.0, size=(size, size))}
@@ -394,36 +432,50 @@ def rig_checks(model, fitted, hs, size: int = CHECK_SIZE) -> RigCheck:
             own, theirs = (_clearance(posed[which], lid, eyeball) for which in ("avatar", "fitted"))
             if theirs < min(own, 0.0) - LID_TOLERANCE:
                 side = ("right", "left")[e]
-                problems.append(f"{key}: the {side} eyeball comes through the lid ({theirs * 1000:.1f} mm, the "
-                                f"avatar's {own * 1000:.1f} mm)")
+                problem(f"{side} eye", f"{key}: the {side} eyeball comes through the lid ({theirs * 1000:.1f} mm, the "
+                        f"avatar's {own * 1000:.1f} mm)")
         if len(teeth) and len(lips):  # the teeth stay behind the lips (as far as the avatar's do)
             own, theirs = (float(posed[w][teeth, 2].max() - posed[w][lips, 2].max()) for w in ("avatar", "fitted"))
             if theirs > max(own, -TEETH_TOLERANCE) + TEETH_TOLERANCE:
-                problems.append(f"{key}: the teeth come through the lips ({theirs * 1000:.1f} mm from the lips' front, "
-                                f"the avatar's {own * 1000:.1f} mm)")
+                problem("mouth", f"{key}: the teeth come through the lips ({theirs * 1000:.1f} mm from the lips' "
+                        f"front, the avatar's {own * 1000:.1f} mm)")
+        lip, tooth = _lips_before_teeth(posed["avatar"], teeth, lips)  # (paired in this face: the jaw moves)
+        if len(lip):  # each lip vertex stays in front of the tooth behind it (as far as the avatar's does)
+            own, theirs = (posed[w][lip, 2] - posed[w][tooth, 2] for w in ("avatar", "fitted"))
+            worst = np.argmin(theirs - np.minimum(own, 0.0))
+            if theirs[worst] < min(own[worst], 0.0) - LIP_TOLERANCE:
+                problem("mouth", f"{key}: a lip comes behind the teeth ({theirs[worst] * 1000:.1f} mm in front of "
+                        f"them, the avatar's {own[worst] * 1000:.1f} mm)")
+        counts = {}
         for view, camera in cameras.items():
-            counts = {}
+            counts[view] = {}
             for which, points in posed.items():
                 r = raster.rasterise(camera, points[tri], cull=True)
                 seen = r.triangle[r.triangle >= 0]
-                counts[which] = (int(eye_tri[0][seen].sum()), int(eye_tri[1][seen].sum()),
-                                 int(inner_tri[seen].sum()))
-            shown[f"{key}, {view}"] = (counts["avatar"], counts["fitted"])
-            parts = [("the teeth and tongue", (2,))] if counts["avatar"][2] < CLOSED_MOUTH else []
-            if face in CLOSED_EYES:
-                parts.append(("the eyeballs", tuple(e - 1 for e in CLOSED_EYES[face])))
-            for part, ks in parts:
-                own, theirs = (sum(counts[w][k] for k in ks) for w in ("avatar", "fitted"))
+                counts[view][which] = (int(eye_tri[0][seen].sum()), int(eye_tri[1][seen].sum()),
+                                       int(inner_tri[seen].sum()))
+            shown[f"{key}, {view}"] = (counts[view]["avatar"], counts[view]["fitted"])
+        shut = counts["front"]["avatar"][2] < CLOSED_MOUTH  # (seen from the front: from the side an open mouth hides)
+        for view in cameras:
+            parts = [("mouth", "the teeth and tongue", 2)] if shut else []
+            for e in CLOSED_EYES.get(face, ()):
+                side = ("right", "left")[e - 1]
+                parts.append((f"{side} eye", f"the {side} eyeball", e - 1))
+            for part, words, k in parts:
+                own, theirs = (counts[view][w][k] for w in ("avatar", "fitted"))
                 if theirs > own * (1.0 + SHOW_TOLERANCE) + SHOW_PIXELS:
-                    problems.append(f"{key}, {view}: the fitted head shows more of {part} ({theirs} pixels against "
-                                    f"{own})")
-    return RigCheck(not problems, problems, shown)
+                    problem(part, f"{key}, {view}: the fitted head shows more of {words} ({theirs} pixels against "
+                            f"{own})")
+    problems = [text for texts in where.values() for text in texts]
+    return RigCheck(not problems, problems, shown, where, folds)
 
 
 LID_TOLERANCE = 0.001  # metres: a lid may sink this much further into its eyeball than the avatar's does
 CLOSED_EYES = {"scrunch": (1, 2), "wink": (2,)}  # the eyes (1 right, 2 left) these faces shut: no more of them may show
 CLOSED_MOUTH = 2 * SHOW_PIXELS  # pixels: where the avatar shows fewer of its teeth its mouth is shut: no more may show
 TEETH_TOLERANCE = 0.0015  # metres: the teeth may come this much nearer the lips' front than the avatar's do
+LIP_TOLERANCE = 0.0005  # metres: a lip vertex may come this much nearer the tooth behind it than the avatar's does
+LIP_REACH = 0.002  # metres across (seen from the front): the frontmost tooth this near a lip vertex is behind it
 LID_REACH = 0.006  # metres outside an eyeball: the skin there is its lids
 LID_MARGIN = 5.0  # degrees: the lids within this of the eyeball cap's edge are not over it (the eye's corners)
 
@@ -459,6 +511,19 @@ def _teeth_and_lips(model, hs, points) -> tuple[np.ndarray, np.ndarray]:
     mouth = np.mean([skeleton.rest_global[c, :3, 3] for c in corners], axis=0)
     near = (hs.parts == SKIN) & (np.linalg.norm(points - mouth, axis=1) < 0.02) & (points[:, 2] > mouth[2])
     return teeth, np.nonzero(near)[0]
+
+
+def _lips_before_teeth(points, teeth, lips) -> tuple[np.ndarray, np.ndarray]:
+    """The lip vertices with a tooth behind them in the pose ``points`` (seen from the front, within
+    :data:`LIP_REACH`), and for each the frontmost such tooth vertex."""
+    if not len(teeth) or not len(lips):
+        return np.zeros(0, np.int64), np.zeros(0, np.int64)
+    across = np.linalg.norm(points[lips, None, :2] - points[None, teeth, :2], axis=2)  # (L, T)
+    depth = np.where((across < LIP_REACH) & (points[None, teeth, 2] < points[lips, None, 2]),
+                     points[None, teeth, 2], -np.inf)
+    front = depth.argmax(axis=1)
+    keep = np.isfinite(depth[np.arange(len(lips)), front])
+    return lips[keep], teeth[front[keep]]
 
 
 def _clearance(points, lid, eyeball) -> float:

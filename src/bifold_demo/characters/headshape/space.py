@@ -28,6 +28,8 @@ way, once, on shaded renders of the neutral head (:func:`find_landmarks`), and s
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import json
 import os
 import shutil
@@ -55,6 +57,16 @@ MULTI_PIE = (1225, 1888, 1052, 367, 1719, 1722, 2199, 1447, 966, 3661, 4390, 392
              1507, 1542, 1537, 1528, 1518, 1511, 3742, 3751, 3756, 3721, 3725, 3732, 5708, 5695, 2081, 0, 4275, 6200,
              6213, 6346, 6461, 5518, 5957, 5841, 5702, 5711, 5533, 6216, 6207, 6470, 5517, 5966)
 _HERE = Path(__file__).resolve().parent
+
+
+@functools.lru_cache(maxsize=1)
+def shipped_digest() -> str:
+    """A fingerprint of the data shipped with the code that the head spaces and the fits depend on (ICT's MediaPipe
+    landmarks, the landmarks' trust), for the cache keys."""
+    h = hashlib.blake2b(digest_size=8)
+    for name in ("ict_landmarks.json", "landmark_trust.json"):
+        h.update(Path(__file__).with_name(name).read_bytes())
+    return h.hexdigest()
 
 
 def files() -> dict:
@@ -196,20 +208,42 @@ def load(path=None) -> IdentitySpace:
 
 
 def obj_vertices(data: bytes) -> np.ndarray:
-    """``(V, 3)`` float64: the ``v`` lines of an OBJ file."""
-    rows = [line[2:] for line in data.split(b"\n") if line.startswith(b"v ")]
-    values = np.array(b" ".join(rows).split(), dtype=np.float64)
-    if len(values) % 3:
-        raise ValueError("an OBJ vertex without three coordinates")
-    return values.reshape(-1, 3)
+    """``(V, 3)`` float64: the ``v`` lines of an OBJ file (their first three numbers: a fourth, ``w``, is left out;
+    any whitespace between them). Raises ``ValueError`` for a vertex with fewer than three numbers, or not numbers."""
+    rows = []
+    for line in data.splitlines():
+        words = line.split()
+        if words and words[0] == b"v":
+            if len(words) < 4:
+                raise ValueError("an OBJ vertex without three coordinates")
+            rows.append(words[1:4])
+    values = np.array(rows, dtype=np.float64).reshape(-1, 3)
+    if not np.isfinite(values).all():
+        raise ValueError("an OBJ vertex that is not a number")
+    return values
 
 
 def obj_faces(data: bytes) -> list[list[int]]:
-    """The ``f`` lines of an OBJ file: 0-based vertex indices per polygon (texture and normal indices dropped)."""
+    """The ``f`` lines of an OBJ file: 0-based vertex indices per polygon (texture and normal indices dropped; a
+    negative index counts back from the last vertex before it, as OBJ has it). Raises ``ValueError`` for an index
+    of no vertex."""
     out = []
-    for line in data.split(b"\n"):
-        if line.startswith(b"f "):
-            out.append([int(item.split(b"/")[0]) - 1 for item in line.split()[1:]])
+    vertices = 0
+    for line in data.splitlines():
+        words = line.split()
+        if not words:
+            continue
+        if words[0] == b"v":
+            vertices += 1
+        elif words[0] == b"f":
+            polygon = []
+            for item in words[1:]:
+                k = int(item.split(b"/")[0])
+                k = vertices + k if k < 0 else k - 1
+                if not 0 <= k < vertices:
+                    raise ValueError(f"an OBJ face with a vertex {item.decode(errors='replace')} of {vertices}")
+                polygon.append(k)
+            out.append(polygon)
     return out
 
 
@@ -265,7 +299,7 @@ def fetch(path=None, *, progress=print, jobs: int = 8, keep_raw: bool = False, f
 
     dest = folder(path)
     target = dest / FILE
-    if target.is_file() and not force:
+    if target.is_file() and (dest / LICENSE_FILE).is_file() and not force:
         if progress:
             progress(f"[identity] {target} is there already")
         return target
@@ -300,8 +334,9 @@ def fetch(path=None, *, progress=print, jobs: int = 8, keep_raw: bool = False, f
     if errors:
         raise downloads.DownloadError(f"cannot download {len(errors)} of ICT-FaceKit's files: " + "; ".join(errors[:3]),
                                       {e.split(':')[0]: [e] for e in errors})
-    convert(raw, target, progress=progress)
+    dest.mkdir(parents=True, exist_ok=True)  # (the licence first: the space is never there without it)
     (dest / LICENSE_FILE).write_text((raw / "LICENSE").read_text(encoding="utf-8"), encoding="utf-8")
+    convert(raw, target, progress=progress)
     if not keep_raw:
         shutil.rmtree(raw, ignore_errors=True)
     if progress:

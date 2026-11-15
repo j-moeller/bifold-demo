@@ -113,18 +113,20 @@ def test_the_space_on_an_avatars_head(heads, space):
 
 def test_renders_of_one_avatar_fitted_onto_anothers_head(heads, space, mediapipe, renderer):
     """D1: six renders of Male_Adult_04 (front, 30 and 60 degrees each way, nodded) fitted onto Male_Adult_10's
-    head come closer to Male_Adult_04 than Male_Adult_10's own head (measured: the landmark median 3.75 -> 2.6 mm,
-    the surface median 1.8 -> 1.3 mm), and the fitted head passes the rig's checks."""
+    head come closer to Male_Adult_04 than Male_Adult_10's own head (measured: the landmark median 3.75 -> 2.5 mm,
+    the surface median 1.8 -> 1.3 mm), as fitted and as it goes on the rig, and the fitted head passes the rig's
+    checks."""
     landmarker, segmenter = mediapipe
     model_a, head_a, _hs_a = heads[PERSON]
     model_b, head_b, hs_b = heads[HEAD]
     person = ev.Person.of(model_a, head_a).photograph(ev.views("three-quarter"), renderer, landmarker, segmenter)
-    result = ev.run(person, model_b, head_b, hs_b, space)
+    result = ev.run(person, model_b, head_b, hs_b, space, applied=True)
     fit = result["fit"]
     assert fit.usable, fit.reason
-    before, after = result["before"]["similarity"], result["after"]["similarity"]
-    assert after["landmarks"]["median"] < before["landmarks"]["median"] - 0.5
-    assert after["surface"]["median"] < before["surface"]["median"]
+    before = result["before"]["similarity"]
+    for after in (result["after"]["similarity"], result["applied"]["similarity"]):
+        assert after["landmarks"]["median"] < before["landmarks"]["median"] - 0.5
+        assert after["surface"]["median"] < before["surface"]["median"]
     assert "irises" in fit.scale_from or "avatar" in fit.scale_from
     shape = rig.make_shape(model_b, hs_b, fit.offsets, fit)
     fitted = rig.apply_shape(model_b, shape)
@@ -141,3 +143,117 @@ def test_one_photo_keeps_the_avatars_head(heads, space, mediapipe, renderer):
     result = ev.run(person, model_b, head_b, hs_b, space)
     assert not result["fit"].usable and "needs 2" in result["fit"].reason and result["after"] is None
     _ = shapefit
+
+
+def _broken(model, hs, offsets):
+    """``model`` with its head moved by ``offsets`` as they are (not through make_shape, which mends some)."""
+    from dataclasses import replace
+
+    from bifold_demo.characters.model import CharacterModel
+
+    prim = model.primitives[hs.primitive]
+    prims = list(model.primitives)
+    prims[hs.primitive] = replace(prim, positions=(np.asarray(prim.positions, np.float64) + offsets)
+                                  .astype(np.float32))
+    return CharacterModel(model.name, model.skeleton, prims, model.inverse_bind, dict(model.metadata))
+
+
+def test_the_rig_checks_catch_broken_heads(heads):
+    """Each check finds its defect on a real head and puts it down to the right part: an eyeball through its lid,
+    lids sunk into it, teeth through the lips, a lip pulled behind the teeth, a lip pulled down so that the teeth
+    show where the avatar's mouth is shut, a gap at the neck, a fold. The head as it is passes."""
+    model, _head, hs = heads[HEAD]
+    p = np.asarray(model.primitives[hs.primitive].positions, np.float64)
+    assert rig.rig_checks(model, model, hs).ok
+    teeth = np.nonzero((hs.inner == 1) | (hs.inner == 2))[0]
+    mouth = np.mean([model.skeleton.rest_global[model.skeleton.index(n), :3, 3]
+                     for n in ("Bip01 RMouthCorner", "Bip01 LMouthCorner")], axis=0)
+    jaw = s0._avatar_sides(model, hs.primitive)[:, 0] > 0.5
+    lower = (hs.parts == s0.SKIN) & jaw & (np.linalg.norm(p - mouth, axis=1) < 0.02) & (p[:, 2] > mouth[2] - 0.005)
+    lid, _eyeball = rig._lids(hs, p, 0)
+    tri = np.asarray(model.primitives[hs.primitive].indices, np.int64).reshape(-1, 3)
+    victim = tri[(hs.parts[tri] == s0.SKIN).all(axis=1)][500]
+
+    def moved(where, by):
+        off = np.zeros_like(p)
+        off[where] = by
+        return off
+
+    sink = np.zeros_like(p)
+    sink[lid] = -(p[lid] - hs.eye_centre[0]) / np.linalg.norm(p[lid] - hs.eye_centre[0], axis=1)[:, None] * 0.003
+    fold = np.zeros_like(p)
+    fold[victim[0]] = (p[victim[1]] - p[victim[0]]) * 2.2
+    defects = [("the right eyeball 3 mm forward", moved(hs.eye == 1, [0, 0, 0.003]), "right eye", "through the lid"),
+               ("the right lids sunk 3 mm", sink, "right eye", "through the lid"),
+               ("the teeth 8 mm forward", moved(teeth, [0, 0, 0.008]), "mouth", "teeth come through the lips"),
+               ("the lower lip 3 mm back", moved(lower, [0, 0, -0.003]), "mouth", "lip comes behind the teeth"),
+               ("the lower lip 4 mm down", moved(lower, [0, -0.004, 0]), "mouth", "shows more of the teeth"),
+               ("the neck's edge 0.5 mm up", moved(hs.fade <= 0.0, [0, 0.0005, 0]), "neck", "gap to the body"),
+               ("a fold", fold, "fold", "inside out")]
+    for label, offsets, part, words in defects:
+        check = rig.rig_checks(model, _broken(model, hs, offsets), hs)
+        assert any(words in problem for problem in check.where.get(part, [])), (label, check.where)
+
+
+def test_a_failing_part_is_kept_smaller_there_only(heads, space, tmp_path):
+    """A shape that sinks the right lids into the eyeball is kept smaller round the right eye until it passes; the
+    rest of the head keeps the full shape, and the shape says what was kept smaller."""
+    from bifold_demo.characters.headshape.fitted import put_on
+
+    model, _head, hs = heads[HEAD]
+    p = np.asarray(model.primitives[hs.primitive].positions, np.float64)
+    rng = np.random.default_rng(1)
+    offsets = np.einsum("k,knd->nd", 0.3 * rng.normal(size=len(hs.alpha)), hs.modes(space).astype(np.float64))
+    lid, _eyeball = rig._lids(hs, p, 0)
+    offsets[lid] -= (p[lid] - hs.eye_centre[0]) / np.linalg.norm(p[lid] - hs.eye_centre[0], axis=1)[:, None] * 0.004
+    assert "right eye" in rig.rig_checks(model, rig.apply_shape(model, rig.make_shape(model, hs, offsets)), hs).where
+    shape, _fitted, checks, shrink = put_on(model, hs, offsets)
+    assert shape is not None and checks.ok and list(shrink) == ["right eye"] and shrink["right eye"] < 1.0
+    assert rig.Shape.load(shape.save(tmp_path / "shrunk.npz")).shrink == shrink
+    full = rig.make_shape(model, hs, offsets)
+    far = (np.linalg.norm(p - hs.eye_centre[0], axis=1) > 0.07) & (hs.parts == s0.SKIN)
+    assert np.allclose(shape.offsets[far], full.offsets[far], atol=2e-5)
+
+
+def test_no_fold_is_left_by_the_transfer(heads, space):
+    """Two identities of the space on Male_Adult_10 that left a triangle folded at a mouth corner (one sd per mode):
+    no skin triangle is turned inside out on the shape."""
+    model, _head, hs = heads[HEAD]
+    p = np.asarray(model.primitives[hs.primitive].positions, np.float64)
+    tri = np.asarray(model.primitives[hs.primitive].indices, np.int64).reshape(-1, 3)
+    skin_tri = tri[(hs.parts[tri] == s0.SKIN).all(axis=1)]
+    before = np.cross(p[skin_tri[:, 1]] - p[skin_tri[:, 0]], p[skin_tri[:, 2]] - p[skin_tri[:, 0]])
+    modes = hs.modes(space).astype(np.float64)
+    for seed in (0, 6):
+        beta = np.random.default_rng(seed).normal(0.0, 1.0, len(hs.alpha))
+        new = p + rig.make_shape(model, hs, np.einsum("k,knd->nd", beta, modes)).offsets
+        after = np.cross(new[skin_tri[:, 1]] - new[skin_tri[:, 0]], new[skin_tri[:, 2]] - new[skin_tri[:, 0]])
+        usable = np.linalg.norm(before, axis=1) > 1e-12
+        assert not ((np.einsum("tk,tk->t", before, after) <= 0) & usable).any(), seed
+
+
+def test_the_jaw_line_is_free_of_the_neck(heads):
+    """The fade towards the neck's edge goes along the skin and is done by the jaw line: on Male_Adult_10 (a short
+    neck: straight from the edge its jaw line was within 5 cm, faded to 0.96) the jaw line moves freely."""
+    model, head, hs = heads[HEAD]
+    points = np.asarray(model.primitives[hs.primitive].positions, np.float64)
+    jaw = np.asarray(head.points, np.float64)[list(s0.JAW_LINE)]
+    near = np.argmin(np.linalg.norm(points[None] - jaw[:, None], axis=2), axis=1)
+    assert hs.fade[near].min() > 0.999
+    assert hs.fade[hs.fade <= 0.0].size > 0  # (the edge itself stays)
+
+
+def test_the_camera_plays_face_rig_follows_a_new_head(heads, space):
+    """A character that wears a fitted head since its camera play began makes its faces with the fitted head's face
+    rig (its slides scaled to the new eye distance), not the avatar's."""
+    from bifold_demo.characters import camera_play, faces
+
+    model, _head, hs = heads[HEAD]
+    offsets = np.einsum("k,knd->nd", 0.5 * np.ones(len(hs.alpha)), hs.modes(space).astype(np.float64))
+    fitted = rig.apply_shape(model, rig.make_shape(model, hs, offsets))
+    play = type("Play", (), {"posed": lambda self, character, t: None})()
+    pose = camera_play.PlayPose(play, model)
+    assert pose.rig is faces.face_rig(model)
+    character = type("Person", (), {"skinned_model": fitted, "state": None})()
+    pose(np.repeat(np.eye(4)[None], len(model.skeleton), axis=0), character, 0.0)
+    assert pose.rig is faces.face_rig(fitted) and pose.rig is not faces.face_rig(model)

@@ -364,13 +364,17 @@ class PersonCache:
             pass
         return found
 
-    def put(self, key: str, person: PersonTextures) -> None:
+    def put(self, key: str, person: PersonTextures, files: dict | None = None) -> None:
+        """Keep ``person`` under ``key``, with ``files`` (``{name: write(path)}``) beside it: all of it appears at
+        once or not at all."""
         target = self.folder / key
         tmp = self.folder / f".{key}.{os.getpid()}.tmp"
         try:
             if tmp.exists():
                 shutil.rmtree(tmp)
             person.save(tmp)
+            for name, write in (files or {}).items():
+                write(tmp / name)
             if target.exists():
                 shutil.rmtree(target)
             os.replace(tmp, target)

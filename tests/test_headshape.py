@@ -64,7 +64,8 @@ def synthetic_avatar() -> CharacterModel:
              ("Bip01 REye", "Bip01 Head", tuple(EYES[0])), ("Bip01 LEye", "Bip01 Head", tuple(EYES[1])),
              ("Bip01 RMouthCorner", "Bip01 Head", (-0.024, 1.556, 0.075)),
              ("Bip01 LMouthCorner", "Bip01 Head", (0.024, 1.556, 0.075)),
-             ("Bip01 MNose", "Bip01 Head", (0.0, 1.59, 0.09)), ("Bip01 MJaw", "Bip01 Head", (0.0, 1.57, 0.02))]
+             ("Bip01 MNose", "Bip01 Head", (0.0, 1.59, 0.09)), ("Bip01 MJaw", "Bip01 Head", (0.0, 1.56, 0.075)),
+             ("Bip01 MTongue", "Bip01 MJaw", (0.0, 1.56, 0.05))]  # (no tongue here: it stays as the jaw moves)
     names = [b[0] for b in bones]
     parents = [names.index(p) if p else -1 for _, p, _ in bones]
     position = np.array([b[2] for b in bones], float)
@@ -226,7 +227,7 @@ def test_the_fit_recovers_known_coefficients_and_cameras(made, setup):
         photos.append(shapefit.Photo(f"photo {k}", (640, 480), truth.project(points), start, True))
         truths.append(truth)
     options = shapefit.FitOptions(expressions=False, iris=False, contour=False, outline=False, free=False,
-                                  prior=1e-3, prior_high=1e-3, centre="population", trust=False)
+                                  prior=1e-3, prior_high=1e-3, centre="population", trust=False, damping=1.0)
     fit = shapefit.fit_person(photos, model, marks, made, space, options)
     assert fit.usable, fit.reason
     assert np.allclose(fit.beta, beta, atol=0.08)
@@ -234,7 +235,7 @@ def test_the_fit_recovers_known_coefficients_and_cameras(made, setup):
         assert np.allclose(camera.angles(), truth.angles(), atol=0.5)
     assert fit.error_after < 0.1 < fit.error_before
     moved = np.linalg.norm(fit.offsets - (target - model.primitives[1].positions), axis=1)
-    assert np.median(moved[made.parts == s0.SKIN]) < 3e-4
+    assert np.median(moved[made.parts == s0.SKIN]) < 5e-4  # (the size is held at the avatar's without irises)
 
 
 def test_one_photo_or_no_change_keeps_the_avatars_head(made, setup):
@@ -270,7 +271,7 @@ def test_the_size_comes_from_the_irises_and_is_held(made, setup):
     for k, (yaw, pitch) in enumerate(((0, 0), (0, 10), (0, -10), (35, 0), (-35, 0))):
         camera = PhotoCamera.around(CENTRE, 0.8, yaw, pitch, fov=35.0, size=(640, 480))
         xy = camera.project(marks.points)
-        radius = shapefit.IRIS_RADIUS / (0.9 * pupils) * np.linalg.norm(xy[cf.LEFT_IRIS[0]] - xy[cf.RIGHT_IRIS[0]])
+        radius = 0.00585 / (0.9 * pupils) * np.linalg.norm(xy[cf.LEFT_IRIS[0]] - xy[cf.RIGHT_IRIS[0]])  # 11.7 mm
         for iris in (cf.RIGHT_IRIS, cf.LEFT_IRIS):  # the rim: across, up, across, down
             xy[list(iris[1:])] = xy[iris[0]] + radius * np.array([[1, 0], [0, -1], [-1, 0], [0, 1]])
         photos.append(shapefit.Photo(f"photo {k}", (640, 480), xy, camera, True))
@@ -291,7 +292,7 @@ def test_the_size_comes_from_the_irises_and_is_held(made, setup):
     assert fit.scale == pytest.approx(expected, abs=0.003)
     assert eye_distance(fit.offsets) == pytest.approx(own * expected, abs=3e-4)
     assert np.abs(fit.beta - made.alpha).max() < 0.1  # the shape is the avatar's
-    assert fit.iris_radius == pytest.approx(shapefit.IRIS_RADIUS * expected / 0.9, rel=0.02)
+    assert fit.iris_radius == pytest.approx(0.00585 * expected / 0.9, rel=0.02)
     plain = shapefit.fit_person(photos, model, marks, made, space, shapefit.FitOptions(iris=False, **options))
     assert plain.scale_from == "the avatar's own size" and math.isnan(plain.iris_radius)
     assert plain.scale == pytest.approx(1.0, abs=0.003)
@@ -385,6 +386,26 @@ def test_the_shape_file_round_trips_and_refuses_what_is_not_one(made, setup, tmp
     np.savez(tmp_path / "bad.npz", **values)
     with pytest.raises(ValueError):
         rig.Shape.load(tmp_path / "bad.npz")  # (an object array needs pickles: never loaded)
+    shape.shrink = {"left eye": 0.75}
+    assert rig.Shape.load(shape.save(tmp_path / "shrunk.npz")).shrink == {"left eye": 0.75}
+    old = dict(np.load(path, allow_pickle=False), format=np.array(1))
+    del old["shrink"]
+    np.savez(tmp_path / "format1.npz", **old)
+    assert rig.Shape.load(tmp_path / "format1.npz").shrink == {}  # (made before the shrink was kept)
+    for name, damage in (("offsets", lambda v: v.__setitem__("offsets", np.full_like(v["offsets"], np.nan))),
+                         ("a part", lambda v: v.__setitem__("other_0", np.full_like(v["other_0"], np.nan))),
+                         ("a bone", lambda v: v.__setitem__("bones", np.full_like(v["bones"], np.inf)))):
+        broken = dict(np.load(path, allow_pickle=False))
+        damage(broken)
+        np.savez(tmp_path / f"nan_{name}.npz", **broken)
+        with pytest.raises(ValueError, match="numbers"):
+            rig.Shape.load(tmp_path / f"nan_{name}.npz")
+    short = rig.Shape.load(path)
+    short.others = {k: v[:-1] for k, v in short.others.items()}
+    assert any("no part s_opacity" in p for p in short.problems(model))
+    fewer = rig.Shape.load(path)
+    fewer.offsets, fewer.base = fewer.offsets[:-1], ""
+    assert any("made for a head" in p for p in fewer.problems(model))
     other = synthetic_avatar()
     other.name = "Another"
     assert any("made for Synthetic" in p for p in again.problems(other))
@@ -419,3 +440,210 @@ def test_mediapipes_blendshapes_name_icts_expressions():
     shapes = {"jawOpen": 0.5, "mouthSmileLeft": 0.7, "mouthSmileRight": 0.2, "browInnerUp": 0.3, "cheekPuff": 0.1,
               "eyeBlinkRight": 0.9}
     assert shapefit._mediapipe_expressions(shapes, names).tolist() == [0.5, 0.7, 0.2, 0.3, 0.1, 0.0]
+
+
+# -- the fit's choices -----------------------------------------------------------------------------------------------
+
+
+def _photos(model, marks, offsets=0.0, views=((0, 0), (30, 0), (-30, 0), (0, 15)), *, known=True, start_fov=35.0,
+            size=(640, 480)):
+    """Photos of the synthetic head moved by ``offsets``: its true landmarks seen by cameras 0.8 m away (a 35-degree
+    lens; the photos' cameras, as the registration would give them, with ``start_fov``)."""
+    head = np.asarray(model.primitives[1].positions, np.float64) + offsets
+    tri = np.asarray(model.primitives[1].indices, np.int64).reshape(-1, 3)[marks.triangle]
+    points = np.einsum("lc,lcd->ld", marks.barycentric, head[tri])
+    out = []
+    for k, (yaw, pitch) in enumerate(views):
+        truth = PhotoCamera.around(CENTRE, 0.8, yaw, pitch, fov=35.0, size=size)
+        start = PhotoCamera.around(CENTRE, 0.8, yaw, pitch, fov=start_fov, size=size)
+        out.append(shapefit.Photo(f"photo {k}", size, truth.project(points), start, known))
+    return out
+
+
+PLAIN = {"contour": False, "outline": False, "trust": False, "iris": False}  # (the synthetic photos have none)
+
+
+def _changed(made, space, beta=(0.8, -0.6, 0.5)):
+    return np.einsum("k,knd->nd", np.asarray(beta) - made.alpha, made.modes(space).astype(np.float64))
+
+
+def test_only_the_expressions_mediapipe_sees_are_fitted(made, setup):
+    """MediaPipe scores an open jaw at 0.6 in one photo: it is fitted there as the expression, not as the shape. In
+    another it scores a blink at 0.25 (below the gate of 0.3) that the landmarks cannot show (the tiny space's blink
+    moves nothing): it is held at 0, not pulled towards MediaPipe's guess."""
+    model, space, _landmarks, marks = setup
+    jaw = 0.6 * made.expressions(space)[0].astype(np.float64)
+    photos = _photos(model, marks, jaw, ((0, 0),)) + _photos(model, marks, 0.0, ((30, 0), (-30, 0), (0, 15)))
+    photos[0].blendshapes = {"jawOpen": 0.6}
+    photos[1].blendshapes = {"eyeBlinkLeft": 0.25}
+    fit = shapefit.fit_person(photos, model, marks, made, space, shapefit.FitOptions(**PLAIN))
+    assert fit.expressions[0].get("jawOpen", 0.0) > 0.45
+    assert "eyeBlink_L" not in fit.expressions[1]
+    assert np.abs(fit.beta - made.alpha).max() < 0.15
+
+
+def test_the_prior_holds_what_the_photos_barely_tell(setup, monkeypatch):
+    """With photos the fit barely trusts (landmark noise five times the usual), the prior decides. The avatar here has
+    fuller cheeks than the space's mean head: its own photos keep its coefficients (the prior's centre is the
+    avatar's, not ICT's mean head); photos of it a standard deviation fuller still take the head part of the way, not
+    all of it nor nothing (the prior's strength)."""
+    model, space, landmarks, marks = setup
+    monkeypatch.setattr(identity, "space_landmarks", lambda: landmarks)
+    shifted = identity.IdentitySpace((space.neutral - space.identity[0]).astype(np.float32), space.identity,
+                                     space.expressions, space.expression_names, space.triangles, "tiny", "MIT")
+    hs = s0.make_head_space(model, marks, shifted)
+    assert hs.alpha[0] > 0.3  # the avatar has some of mode 0's cheeks
+    weak = shapefit.FitOptions(landmark_noise=0.15, expressions=False, damping=1.0, **PLAIN)
+    own = shapefit.fit_person(_photos(model, marks), model, marks, hs, shifted, weak)
+    assert np.abs(own.beta - hs.alpha).max() < 0.05
+    fuller = shapefit.fit_person(_photos(model, marks, _changed(hs, shifted, hs.alpha + [1.0, 0.0, 0.0])), model,
+                                 marks, hs, shifted, weak)
+    assert 0.3 < fuller.beta[0] - hs.alpha[0] < 0.85  # (measured: 0.63; without a prior 1.0, 30 times it 0.05)
+
+
+def test_a_focal_length_from_exif_is_held(made, setup):
+    """Photos whose focal length is known (EXIF) keep it, even when it is 10 % off; unknown ones are fitted."""
+    model, space, _landmarks, marks = setup
+    offsets = _changed(made, space)
+    held = shapefit.fit_person(_photos(model, marks, offsets, start_fov=31.8), model, marks, made, space,
+                               shapefit.FitOptions(**PLAIN))
+    start = PhotoCamera.around(CENTRE, 0.8, 0, 0, fov=31.8, size=(640, 480)).focal
+    assert np.allclose(held.focal, start, rtol=1e-9)
+    free = shapefit.fit_person(_photos(model, marks, offsets, known=False, start_fov=31.8), model, marks, made,
+                               space, shapefit.FitOptions(**PLAIN))
+    assert abs(free.focal[0] / start - 1.0) > 0.02
+
+
+def test_one_cameras_photos_at_two_sizes_share_its_lens(made, setup):
+    """Two photos of one camera, one at twice the other's resolution (one picture shape, so one session): the fit's
+    focal lengths stay in proportion to the pictures' sizes (the session's focal length is relative to the size)."""
+    model, space, _landmarks, marks = setup
+    offsets = _changed(made, space)
+    photos = (_photos(model, marks, offsets, ((0, 0), (30, 0)), known=False, start_fov=40.0)
+              + _photos(model, marks, offsets, ((-30, 0), (0, 15)), known=False, start_fov=40.0, size=(1280, 960)))
+    fit = shapefit.fit_person(photos, model, marks, made, space, shapefit.FitOptions(**PLAIN))
+    assert fit.focal[2] / fit.focal[0] == pytest.approx(2.0, rel=1e-9)
+    truth = PhotoCamera.around(CENTRE, 0.8, 0, 0, fov=35.0, size=(640, 480)).focal
+    assert fit.focal[0] == pytest.approx(truth, rel=0.05)
+
+
+def _far_half(photo, shift):
+    """MediaPipe's guesses of one half of a turned face: the landmarks there moved by ``shift`` pixels."""
+    half = photo.points[:, 0] > np.median(photo.points[:, 0])
+    photo.points = photo.points.copy()
+    photo.points[half, 0] += shift
+
+
+def test_the_landmarks_of_photos_turned_far_do_not_shape_the_head(made, setup):
+    """A photo turned 60 degrees whose far half MediaPipe guessed wrong (moved 25 pixels): its landmarks still place
+    its camera but do not shape the head, which comes out as the other photos show it; counted (turned=None), they
+    bend it."""
+    model, space, _landmarks, marks = setup
+    beta = np.array([0.8, -0.6, 0.5])
+    photos = _photos(model, marks, _changed(made, space, beta), ((0, 0), (30, 0), (-30, 0), (60, 0)))
+    _far_half(photos[3], 25.0)
+    options = {"damping": 1.0, "prior": 1e-3, "prior_high": 1e-3, "expressions": False, **PLAIN}
+    kept = shapefit.fit_person(photos, model, marks, made, space, shapefit.FitOptions(**options))
+    counted = shapefit.fit_person(photos, model, marks, made, space, shapefit.FitOptions(turned=None, **options))
+    assert np.abs(kept.beta - beta).max() < 0.1
+    assert np.abs(counted.beta - beta).max() > 2 * np.abs(kept.beta - beta).max()
+
+
+def test_gross_landmark_errors_are_shrugged_off(made, setup):
+    """Fifteen landmarks of one photo 60 pixels off (MediaPipe on a hand or a strand of hair): the robust loss keeps
+    the fit to the others."""
+    model, space, _landmarks, marks = setup
+    beta = np.array([0.8, -0.6, 0.5])
+    photos = _photos(model, marks, _changed(made, space, beta))
+    rng = np.random.default_rng(3)
+    wrong = rng.choice(np.array(shapefit.POINTS), 15, replace=False)
+    photos[0].points = photos[0].points.copy()
+    photos[0].points[wrong] += rng.normal(0.0, 60.0, (15, 2))
+    options = shapefit.FitOptions(damping=1.0, prior=1e-3, prior_high=1e-3, expressions=False, **PLAIN)
+    fit = shapefit.fit_person(photos, model, marks, made, space, options)
+    assert np.abs(fit.beta - beta).max() < 0.06  # (measured: 0.015; without the robust loss 0.12)
+
+
+def test_landmarks_on_the_far_side_do_not_count(made, setup):
+    """In a photo turned 60 degrees (counted here: turned=None) the landmarks on surfaces facing away from the camera
+    are MediaPipe's guesses (moved 30 pixels here): the fit does not count them."""
+    model, space, _landmarks, marks = setup
+    beta = np.array([0.8, -0.6, 0.5])
+    offsets = _changed(made, space, beta)
+    photos = _photos(model, marks, offsets, ((0, 0), (30, 0), (-30, 0), (60, 0)))
+    head = np.asarray(model.primitives[1].positions, np.float64) + offsets
+    m = shapefit._Model(model, marks, made, space, shapefit.FitOptions(**PLAIN))
+    camera = PhotoCamera.around(CENTRE, 0.8, 60, 0, fov=35.0, size=(640, 480))
+    to_camera = camera.position - np.einsum("lc,lcd->ld", marks.barycentric,
+                                            head[np.asarray(model.primitives[1].indices, np.int64)
+                                                 .reshape(-1, 3)[marks.triangle]])
+    facing = np.einsum("lk,lk->l", m.mark_normals, to_camera) / np.linalg.norm(to_camera, axis=1)
+    away = facing < shapefit.FACING_LOW
+    assert away.sum() >= 10
+    photos[3].points = photos[3].points.copy()
+    photos[3].points[away] += [30.0, -10.0]
+    options = shapefit.FitOptions(turned=None, damping=1.0, prior=1e-3, prior_high=1e-3, expressions=False, **PLAIN)
+    fit = shapefit.fit_person(photos, model, marks, made, space, options)
+    assert np.abs(fit.beta - beta).max() < 0.1
+
+
+def test_the_jaw_line_goes_where_the_heads_outline_is(made, setup):
+    """Each landmark of the jaw line is put, in each photo, on the vertex of its marching line that is outermost there
+    (where the head's outline is seen), not on a fixed vertex."""
+    model, space, _landmarks, marks = setup
+    photos = _photos(model, marks, 0.0, ((0, 0), (30, 0), (-30, 0)))
+    m = shapefit._Model(model, marks, made, space, shapefit.FitOptions())
+    state = shapefit._State(m, photos, shapefit.FitOptions())
+    shapefit._assign_contours(state)
+    counted = 0
+    for i, photo in enumerate(photos):
+        camera = state.camera(i)
+        normal2d = shapefit._outward(photo.points, shapefit.LOWER_OVAL)
+        for k, n2d in zip(shapefit.LOWER_OVAL, normal2d):
+            verts = m.marches[k]
+            if len(verts) < 2:
+                continue
+            reach = camera.project(m.points[verts]) @ n2d
+            assert state.contours[i][k] == verts[int(np.argmax(reach))]
+            counted += reach.max() > reach[0] + 1e-6
+    assert counted >= 5  # (the outermost vertex is not the first of the line for many of them)
+
+
+def test_a_face_bones_child_stays_where_it_was(made, setup):
+    """The jaw bone moves with the skin around it; its child, the tongue's bone (no tongue to move it here), stays
+    where it was: its local rest transform is made again under the moved jaw, so it does not ride along."""
+    model, space, _landmarks, _marks = setup
+    fitted = rig.apply_shape(model, rig.make_shape(model, made, _changed(made, space, (1.5, -1.5, 1.5))))
+    jaw, tongue = model.skeleton.index("Bip01 MJaw"), model.skeleton.index("Bip01 MTongue")
+    assert np.linalg.norm(fitted.skeleton.rest_global[jaw, :3, 3] - model.skeleton.rest_global[jaw, :3, 3]) > 1e-5
+    assert np.allclose(fitted.skeleton.rest_global[tongue], model.skeleton.rest_global[tongue], atol=1e-9)
+    assert np.allclose(fitted.inverse_bind[tongue], model.inverse_bind[tongue])
+
+
+def test_the_free_form_correction_is_capped_and_smooth(setup):
+    """The fallback's correction for a cheek 8 mm fuller is spread smoothly over the face (a broad bump of about 1 mm,
+    not the landmarks' points) and kept under its cap (here 0.5 mm, which it then nearly reaches)."""
+    model, _space, _landmarks, marks = setup
+    hs = s0.make_head_space(model, marks, None)
+    head = np.asarray(model.primitives[1].positions, np.float64)
+    cheek = np.exp(-np.sum((head - [0.045, 1.58, 0.07]) ** 2, axis=1) / 0.02 ** 2)
+    photos = _photos(model, marks, cheek[:, None] * [0.008, 0.0, 0.0], ((0, 0), (30, 0), (-30, 0)))
+    fit = shapefit.fit_person(photos, model, marks, hs, None, shapefit.FitOptions(**PLAIN))
+    moved = np.linalg.norm(fit.offsets, axis=1)
+    assert moved.max() <= shapefit.FREE_CAP
+    broad = (moved > 0.3 * moved.max()) & (hs.parts == s0.SKIN)
+    assert broad.sum() > 200  # (measured: 337 vertices; with a tenth of the smoothing 110)
+    capped = shapefit.fit_person(photos, model, marks, hs, None, shapefit.FitOptions(free_cap=0.0005, **PLAIN))
+    assert 0.0004 < np.linalg.norm(capped.offsets, axis=1).max() <= 0.0005  # (1.3 mm without the cap)
+
+
+def test_the_head_spaces_cache_key_follows_the_code_and_its_data(setup, monkeypatch):
+    """A head space made by older code, or with other shipped landmarks or trust, is made again."""
+    model, _space, _landmarks, marks = setup
+    key = s0.space_key(model, marks, 1, "commit")
+    assert s0.space_key(model, marks, 1, "commit") == key
+    monkeypatch.setattr(s0, "VERSION", s0.VERSION + 1)
+    assert s0.space_key(model, marks, 1, "commit") != key
+    monkeypatch.undo()
+    monkeypatch.setattr(identity, "shipped_digest", lambda: "other landmarks")
+    assert s0.space_key(model, marks, 1, "commit") != key

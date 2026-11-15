@@ -436,7 +436,7 @@ def cmd_identity(args) -> int:
     target = Path(args.dest).expanduser() / "identity" if args.dest else None
     try:
         path = space.fetch(target, jobs=args.jobs, keep_raw=args.keep_raw, force=args.force)
-    except OSError as exc:  # (a DownloadError is one)
+    except (OSError, ValueError) as exc:  # (a DownloadError is an OSError; a file that does not convert a ValueError)
         return _error(str(exc), 1)
     print(f"[identity] ready: {path} (with ICT-FaceKit's licence, {space.LICENSE_FILE}, beside it)")
     return 0

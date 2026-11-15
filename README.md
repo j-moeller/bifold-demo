@@ -2060,14 +2060,15 @@ avatar's head (proportions where the photos agree, nothing where they do not).
   the 100 modes and 53 expressions as offsets of the avatar's vertices; the
   avatar's own coefficients (the rest is the artist's detail, which a fit
   keeps). The closed lips are tied so that they stay closed.
-- **The fit** (`fit_person`, about 5 s for six photos): all of a person's
+- **The fit** (`fit_person`, about 8 s for six photos): all of a person's
   photos at once, by Levenberg-Marquardt: the coefficients, per photo the
   camera and, only where MediaPipe scores one, the expression (ICT's shapes,
-  started from MediaPipe's blendshape scores), the focal length (EXIF data,
-  else free with a prior). Photos cannot tell a head from a larger one
-  farther away, so the face's overall size is held at a target while the
-  coefficients shape it: the irises (11.7 mm across people) against the
-  distance between them in the frontal photos measure the person's eye
+  started from MediaPipe's blendshape scores), the focal length (EXIF data or
+  a given one is held; else free with a prior, shared by the photos of one
+  picture shape relative to their size). Photos cannot tell a head from a
+  larger one farther away, so the face's overall size is held at a target
+  while the coefficients shape it: the irises (11.7 mm across people) against
+  the distance between them in the frontal photos measure the person's eye
   distance, which with the fitted proportions gives a size, weighed against
   the avatar's own (without irises the avatar's size; the summary says
   which); left free, the turned photos made the head 5-15 % too big.
@@ -2079,8 +2080,12 @@ avatar's head (proportions where the photos agree, nothing where they do not).
   head's outline when MediaPipe finds no face there) the face's outline
   against the segmenter's masks, where the face skin meets the background; a
   prior keeps the coefficients near the avatar's where the photos say
-  nothing. One photo, no face, or a fit no better than the avatar's own head
-  keep the avatar's head, with the reason.
+  nothing. The landmarks of photos turned more than 45° place their camera
+  but do not shape the head (MediaPipe guesses the far half of such faces:
+  with them the cheeks got worse); their outline still does. The fitted change
+  of shape is kept at 85 % (`FitOptions.damping`; the full fit overshoots),
+  the size as found. One photo, no face, or a fit no better than the
+  avatar's own head keep the avatar's head, with the reason.
 - **On the rig** (`apply_shape`): a copy of the avatar that shares everything
   but the head, the parts that move with it and the skeleton; the eyeballs
   move rigidly with their lids, the teeth, gums and tongue with the lips and
@@ -2088,17 +2093,27 @@ avatar's head (proportions where the photos agree, nothing where they do not).
   normals turn with the surface and tangents are made again, so the
   textures, the normal maps, the face rig and the animations apply as before.
   Checks in each of the 12 funny faces (the tongue among them), seen from the
-  front and the side: no eyeball through a lid, no more teeth or tongue
-  through the lips than the avatar shows, the neck's edge where it was,
-  nothing folded or exploded; a shape that fails is tried at 75 % and 50 %,
-  then dropped.
+  front and the side: no eyeball through a lid, no lip behind the teeth
+  behind it, no more teeth or tongue through the lips than the avatar shows
+  (where its mouth is shut, seen from the front), the neck's edge where it
+  was, nothing folded or exploded. Each problem is put down to a part of the
+  head: a shape that fails is kept smaller near that part (an eye, the mouth,
+  a fold: 75, 50, 25 % down to the avatar's own shape there), what no part
+  explains as a whole at 75 % and 50 %, then dropped; the shape keeps what
+  was kept smaller.
 - **The texture on the fitted head** (`fitted_person`): the head-texture
   stages run on the fitted model, the stage-0 landmarks and the head's
-  regions carried over, the registration with the fit's focal lengths.
-- **Kept** as a `shape.npz` of about 25 KB (offsets, bones, coefficients,
-  scale, residuals; no pickles, no photos): beside a created character's
-  `character.json`, and for a known face of the fair in its folder under
-  `faces/.headtex/`. The known faces of the fair, the character creator's
+  regions carried over; the registration finds the focal lengths itself
+  (only EXIF or given ones are held: the fit's are a means of the fit).
+- **Kept** as a `shape.npz` of about 25 KB (the offsets of the head and of the
+  parts that move with it, the face bones' moves, the coefficients, where the
+  size came from, the iris size, the focal lengths, the landmark errors
+  before and after, what was kept smaller; no pickles, no photos): beside a
+  created character's `character.json` (one that cannot be read leaves the
+  avatar's own head, with a note), and for a known face of the fair in its
+  folder under `faces/.headtex/`, written with its textures as one, and made
+  again when the fit changes (its code version, options or identity space
+  are in the key). The known faces of the fair, the character creator's
   person (a face from two or more photos) and created characters wear their
   fitted heads; characters saved before keep the avatar's head.
 
