@@ -89,6 +89,41 @@ def _owner(found, box):
     return ids[int(overlap.argmax())] if overlap.max() >= 0.5 else None
 
 
+def test_the_kalman_update_weighs_the_box_by_the_documented_noise_and_makes_the_track_surer():
+    """DeepSORT's filter by hand: measurement noise of a twentieth of the box's height (0.1 for the aspect)."""
+    from bifold_demo.detection.tracker import BoxKalman, to_xyah
+
+    kalman = BoxKalman()
+    z = to_xyah((100.0, 100.0, 140.0, 220.0))
+    mean, covariance = kalman.predict(*kalman.initiate(z), 1.0)
+    measured = z + np.array([6.0, -3.0, 0.02, 2.0])
+    new_mean, new_covariance = kalman.update(mean, covariance, measured)
+    h = mean[3]
+    noise = np.diag([(h / 20) ** 2, (h / 20) ** 2, 0.1 ** 2, (h / 20) ** 2])
+    project = np.hstack([np.eye(4), np.zeros((4, 4))])
+    gain = covariance @ project.T @ np.linalg.inv(project @ covariance @ project.T + noise)
+    assert np.allclose(new_mean, mean + gain @ (measured - project @ mean))
+    assert np.allclose(new_covariance, (np.eye(8) - gain @ project) @ covariance)
+    assert np.all(np.diag(new_covariance) < np.diag(covariance))  # a measurement makes the box surer
+
+
+def test_weak_boxes_keep_followed_tracks_going_but_neither_bring_lost_ones_back_nor_confirm_new_ones():
+    """ByteTrack's second pass: weak boxes (scores between ``low`` and ``high``) are matched only to the tracks followed
+    in the last frame; a lost track comes back, and a new one is confirmed, only with a confident box."""
+    tracker = PersonTracker(TrackerSettings(fps=10.0))
+    box = np.array([100.0, 100.0, 160.0, 260.0])
+    (first,) = tracker.update([box], [0.9], 0.0)
+    assert [t.id for t in tracker.update([box], [0.3], 0.1)] == [first.id]  # followed: a weak box keeps it going
+    assert tracker.update([], [], 0.2) == [] and [t.id for t in tracker.lost] == [first.id]
+    assert tracker.update([box], [0.45], 0.3) == [] and [t.id for t in tracker.lost] == [first.id]  # lost: not weak
+    assert [t.id for t in tracker.update([box], [0.9], 0.4)] == [first.id]
+    other = np.array([400.0, 100.0, 460.0, 260.0])
+    tracker.update([box, other], [0.9, 0.9], 0.5)  # someone new: a tentative track
+    assert len(tracker.tracks) == 2 and [t.id for t in tracker.active()] == [first.id]
+    tracker.update([box, other], [0.9, 0.45], 0.6)  # only a weak box where they were: not confirmed, forgotten
+    assert [t.id for t in tracker.tracks] == [first.id]
+
+
 def test_one_person_walking_keeps_one_number():
     tracker = PersonTracker()
     frames = [([_walk((100, 200), (90, 0), k / 30)], [0.9]) for k in range(60)]

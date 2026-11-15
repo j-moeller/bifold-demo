@@ -57,7 +57,10 @@ class HeadModel:
     ``region``: the square faces are looked for in (S1's); ``below``, ``across``: the point between the eyes, in box
     heights below the top and from the middle; ``eyes``: the eye distance in box heights; ``sx``, ``sy``, ``ss``: the
     spreads the fit allows (eye distances across and down, and the log of the size ratio); ``limit``: the most a face
-    may cost (about three spreads)."""
+    may cost (two and a half spreads). In the fair (faces attributed to people by the scene's truth) the faces given to
+    their own person's track cost 0.51 (median; 99 % below 5.9), the faces of people the detector missed given to a
+    neighbour's track 5.47: a limit of 6 gives half as many of those away as 12 did, and loses 0.8 % of the right
+    ones."""
 
     region: HeadRegion = field(default_factory=HeadRegion)
     below: float = 0.079
@@ -66,7 +69,7 @@ class HeadModel:
     sx: float = 1.2
     sy: float = 0.6
     ss: float = 0.4
-    limit: float = 12.0
+    limit: float = 6.0
 
     def square(self, box) -> tuple[float, float, float, float]:
         """The head region ``(x0, y0, x1, y1)``."""

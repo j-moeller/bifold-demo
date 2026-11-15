@@ -84,6 +84,13 @@ def test_a_face_fits_the_head_it_belongs_to():
     assert head.cost(_head_face(box, dy=6.0), box) > head.limit  # (on the neck: in the region, far too low)
     assert head.cost(_head_face(box, dy=8.0), box) == math.inf  # (on the chest: outside the head region)
     assert head.cost(_face((500, 500), 11.0), box) == math.inf
+    # the face of a neighbour the person detector missed, three eye distances to the side (or one and a half below):
+    # in the head region, but too far from where this person's face should be to be theirs
+    for side in (_head_face(box, dx=3.0), _head_face(box, dy=1.5), _head_face(box, dx=3.5)):
+        assert head.limit < head.cost(side, box) < 12.0
+        assert [s.track for s in assign_faces([_sighting(side)], {3: box}, head)] == [None]
+    near = _head_face(box, dx=2.0, scale=1.2)  # (a face a little off, as the detectors' boxes are: still theirs)
+    assert [s.track for s in assign_faces([_sighting(near)], {3: box}, head)] == [3]
 
 
 def test_overlapping_head_regions_give_each_face_to_its_own_person():
@@ -215,6 +222,14 @@ def test_the_budget_allows_its_rate_by_the_frames_clock():
     assert EmbeddingBudget(0.5).available(1.0) == 1 and EmbeddingBudget(0.5).burst == 1.0
     with pytest.raises(ValueError):
         EmbeddingBudget(0.0)
+    # a clock that goes back (a scene started again): the budget fills from there, not from the old time
+    back = EmbeddingBudget(1.0)
+    back.available(20.0)
+    back.take()
+    assert back.available(0.0) == 0 and back.available(1.0) == 1  # (stuck until 21 s without it)
+    for rate in (math.nan, math.inf, -1.0):
+        with pytest.raises(ValueError):
+            EmbeddingBudget(rate)
 
 
 def test_undecided_tracks_and_better_faces_come_first():
@@ -605,6 +620,13 @@ def test_a_runner_up_too_close_leaves_the_track_undecided(calibration):
     assert (close.state, close.reason) == (UNDECIDED, "too close to another")  # ... but neither beats the other
     clear = policy.decide({2: _agg({"Ada": 0.5, "Adele": 0.30}, people)}, 0.0)[2]
     assert (clear.state, clear.name) == (NAMED, "Ada")
+    # the margin is a whole decade: a runner-up 0.7 decades more common among strangers is still too close
+    curve = calibration.curve(40.0, 0.0)
+    best = curve.threshold(10.0 ** -(policy.accept_rarity(len(people)) + 0.5))
+    runner = curve.threshold(10.0 ** -(policy.accept_rarity(len(people)) - 0.2))
+    near = policy.decide({3: _agg({"Ada": best, "Adele": runner}, people)}, 0.0)[3]
+    assert near.calibrated - near.runner_up_calibrated == pytest.approx(0.7, abs=0.02)
+    assert (near.state, near.reason) == (UNDECIDED, "too close to another")
 
 
 def test_unknown_needs_good_evidence_held_below_the_reject_threshold(calibration):
@@ -1033,14 +1055,17 @@ def test_a_named_track_whose_faces_are_too_small_to_tell_a_swap_is_checked_with_
     track asks for a window again after a second (not five), whose face shows the swap: "Ada" goes."""
     service = _Service()
     recognizer, engine, detector = _recognizer(calibration, service=service, rate=5.0, sustain=1.0)
-    first = _with_windows(recognizer, engine, detector, service, [k / 10 for k in range(40)], ("Ada",))
+    first = _with_windows(recognizer, engine, detector, service, [k / 10 for k in range(80)], ("Ada",))
     assert first[-1].people[0].name == "Ada"
-    swapped = _with_windows(recognizer, engine, detector, service, [4.0 + k / 10 for k in range(40)], ("Cleo",),
-                            index0=40)
+    named = next(r.time for r in first if r.people[0].name == "Ada")
+    checks = [r.time for r in first if r.time > named and r.people[0].embedded and r.people[0].face.source == "window"]
+    assert len(checks) >= 4 and max(np.diff([named, *checks])) <= 1.6, checks  # a window face every 1.5 s (not 5)
+    swapped = _with_windows(recognizer, engine, detector, service, [8.0 + k / 10 for k in range(40)], ("Cleo",),
+                            index0=80)
     still_ada = [r.time for r in swapped if r.people[0].name == "Ada"]
     assert recognizer.tracks[1].resets >= 1
-    assert not still_ada or still_ada[-1] - 4.0 <= 1.6, still_ada  # (5 s before the fix)
-    assert not any(r.time > 6.0 and r.people[0].name == "Ada" for r in swapped)
+    assert not still_ada or still_ada[-1] - 8.0 <= 1.6, still_ada  # (5 s before the fix)
+    assert not any(r.time > 10.0 and r.people[0].name == "Ada" for r in swapped)
 
 
 def test_without_windows_a_named_tracks_small_faces_are_checked_against_its_names_photos(calibration):
@@ -1063,6 +1088,29 @@ def test_without_windows_a_named_tracks_small_faces_are_checked_against_its_name
     assert not still_ada or still_ada[-1] - 24.0 <= 1.0, still_ada
     held = [d for d in recognizer.log.entries if d.track == 1 and d.time > 24.0 and d.evidence.get("held_out")]
     assert held and held[0].name == "Ada"  # (the first face unlike Ada: held out, the name not yet withdrawn)
+
+
+def test_a_face_in_a_tracks_window_goes_to_the_track_whose_head_it_fits(calibration):
+    """A window asked for Ada's track also shows Ben's face (he stands behind her, a little to the side; she has
+    turned away): the face goes where it fits, to Ben's track, not to the track the window was asked for."""
+    recognizer, engine, detector = _recognizer(calibration, service=_Service(), rate=5.0)
+    ada_box, ben_box = (100.0, 120.0, 200.0, 420.0), (150.0, 100.0, 220.0, 310.0)
+    image = np.full((720, 1280, 3), 90, np.uint8)
+    ben_face = _head_face(ben_box)
+    _paint(image, ben_face, COLOURS["Ben"], 1)
+    detector.boxes, engine.faces = [ada_box, ben_box], [ben_face]
+    first = recognizer.process(_video_frame(image, 0, 0.0))
+    ada, ben = (min(first.people, key=lambda p: abs(p.box[0] - box[0])).id for box in (ada_box, ben_box))
+    x0, y0, x1, y1 = (round(v) for v in HEAD.square(ada_box))
+    middle = ben_face.points[:2].mean(axis=0)
+    assert x0 <= middle[0] <= x1 and y0 <= middle[1] <= y1  # (Ben's face is in the window of Ada's head)
+    picture = cv2.resize(image[y0:y1, x0:x1], None, fx=4.0, fy=4.0, interpolation=cv2.INTER_CUBIC)
+    engine.windows[id(picture)] = (np.array([x0, y0], float), 4.0)
+    for k in range(1, 6):
+        result = recognizer.process(_video_frame(image, k, k / 10, [_Window(picture, (x0, y0), 4.0, tag=ada)]))
+        people = {p.id: p for p in result.people}
+        assert people[ada].face is None and people[ben].face is not None, k
+    assert recognizer.tracks[ada].evidence.count == 0 and recognizer.tracks[ben].evidence.count > 0
 
 
 def test_the_tracks_ask_for_windows_and_their_faces_come_from_the_windows(calibration):
@@ -1161,6 +1209,42 @@ def test_outcomes_count_names_per_segment_from_when_the_face_was_shown():
     assert later.first_shown is None and later.unknown_at == 5.0
     assert outcomes.summary(shown=0.0)["unknown"] == 0.0  # (never shown: not eligible even at 0 s)
     assert outcomes.summary(shown=10.0)["known_eligible"] == 0 and outcomes.summary(shown=10.0)["named"] is None
+
+
+def test_outcomes_count_every_wrong_name_and_named_tracks_that_follow_nobody():
+    """The review's case: Ben's track, his face turned away all along (never shown, so never eligible), is named
+    "Ada" for 3 s; and a named track whose box overlaps nobody's."""
+    outcomes = Outcomes(known={"Ada", "Ben"})
+    for k in range(30):
+        outcomes.update(k / 10, [_truth("p1", "Ben", 80.0)], {"p1": 7}, {7: _D("named", "Ada"), 9: _D("named", "Ben")})
+    summary = outcomes.summary()
+    assert summary["known_eligible"] == 0 and summary["confused"] is None  # (no eligible segment)
+    assert summary["confused_all"] == 1.0 and summary["confused_segments"] == 1 and summary["known_all"] == 1
+    assert summary["named_unfollowed"] == 1 and summary["named_unfollowed_frames"] == 30
+    assert outcomes.unfollowed_named[9]["names"] == ["Ben"]
+
+
+def test_faces_are_attributed_to_their_people_and_counted_when_a_track_following_someone_else_gets_one():
+    from bifold_demo.recognition.truth import FaceAttribution, face_owner
+
+    ada = PersonTruth("p1", "Ada", (0, 0, 100, 300), 4.0, ((40, 30), (60, 30)), 20.0, 0.0, 0.0, 0.0)
+    ben = PersonTruth("p2", "Ben", (200, 0, 300, 300), 4.0, ((240, 30), (260, 30)), 20.0, 0.0, 0.0, 0.0)
+    ada_face, ben_face = _face((50.0, 30.0), 20.0), _face((250.0, 30.0), 20.0)
+    assert face_owner([ada, ben], ada_face) is ada and face_owner([ada, ben], ben_face) is ben
+    assert face_owner([ada, ben], _face((150.0, 30.0), 20.0)) is None  # (between them: nobody's)
+
+    class P:
+        def __init__(self, id_, face, embedded=False, cost=0.5):
+            self.id, self.embedded = id_, embedded
+            self.face = None if face is None else _sighting(face).assigned(id_, cost)
+
+    counted = FaceAttribution()
+    counted.update([ada, ben], {"p1": 1}, [P(1, ada_face), P(3, ben_face, embedded=True, cost=5.5)])  # Ben untracked
+    counted.update([ada, ben], {"p1": 1, "p2": 2}, [P(1, ben_face, embedded=True, cost=7.0), P(2, None)])
+    summary = counted.summary()
+    assert (summary["given"], summary["right"], summary["wrong"], summary["unfollowed"]) == (3, 1, 1, 1)
+    assert summary["embedded_wrong"] == 1 and summary["wrong_owners_untracked"] == 0
+    assert summary["cost_right_median"] == 0.5 and summary["cost_wrong_median"] == 7.0
 
 
 # -- the calibration builder ------------------------------------------------------------------------------------------

@@ -50,6 +50,15 @@ def test_yolox_finds_the_people_and_the_bus_of_the_sample_photo(yolox):
     found = yolox.detect(image)
     people = [d for d in found if d.label == "person"]
     assert len(people) >= 3 and any(d.label == "bus" for d in found)
+    # where they are (YOLOX-s's own demo on this photo: the bus, three people in front of it and one cut off at the
+    # left edge), each once (no box left over that the non-maximum suppression should have taken)
+    expected = [("bus", (17.8, 224.9, 805.9, 736.3), 0.942), ("person", (669.7, 386.8, 810.0, 878.9), 0.907),
+                ("person", (222.5, 408.7, 346.8, 854.0), 0.892), ("person", (47.1, 399.0, 241.0, 893.5), 0.892),
+                ("person", (0.1, 553.8, 63.7, 880.7), 0.538)]
+    assert len(found) == len(expected)
+    for (label, box, score), d in zip(expected, sorted(found, key=lambda d: -d.confidence)):
+        assert d.label == label and np.allclose(d.box, box, atol=2.0), (d, box)
+        assert d.confidence == pytest.approx(score, abs=0.01)
     assert all(0 <= d.box[0] < d.box[2] <= image.shape[1] and 0 <= d.box[1] < d.box[3] <= image.shape[0]
                for d in found)
     assert [d.box for d in yolox.detect(image)] == [d.box for d in found]  # the same twice

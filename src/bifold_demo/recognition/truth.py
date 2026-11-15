@@ -13,11 +13,15 @@ and the measurements of step F2 count with, and what the evaluation (E1) builds 
 * :class:`Outcomes`: what the decisions did per **segment** (one person followed by one track), the visitor's view:
   whether and when a known person's face was first *shown* (turned to the camera, eyes not hidden, big enough) and
   first named correctly, wrong names, "unknown" said to a known person; :meth:`Outcomes.summary` gives the shares
-  (named correctly within 2 and 5 seconds of the face being shown, the false-alarm rate per track for strangers, ...).
+  (named correctly within 2 and 5 seconds of the face being shown, the false-alarm rate per track for strangers, ...),
+  and named tracks that follow nobody.
+* :func:`face_owner` and :class:`FaceAttribution`: whose face each face given to a track is, and how many went to a
+  track following someone else.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -25,7 +29,8 @@ import numpy as np
 from ..detection.assignment import match
 from ..detection.tracker import iou
 
-__all__ = ["IdSwitches", "Outcomes", "PersonTruth", "Segment", "frame_truth", "match_tracks", "simulated_detections"]
+__all__ = ["FaceAttribution", "IdSwitches", "Outcomes", "PersonTruth", "Segment", "face_owner", "frame_truth",
+           "match_tracks", "simulated_detections"]
 
 
 @dataclass(frozen=True)
@@ -233,13 +238,22 @@ class Outcomes:
         self.known = set(known)
         self.min_eyes = float(min_eyes)
         self.segments: dict[tuple[str, int], Segment] = {}
+        self.unfollowed_named: dict[int, dict] = {}  # named tracks that follow nobody: {track: {names, frames}}
         self._last: float | None = None
 
     def update(self, now: float, truth: list[PersonTruth], matched: dict, decisions: dict) -> None:
         """Count a frame at ``now``: ``truth``, ``matched`` (:func:`match_tracks`: person -> track) and
-        ``decisions`` (track -> :class:`~.decision.Decision`)."""
+        ``decisions`` (track -> :class:`~.decision.Decision`). A named track that follows nobody (its box overlaps no
+        person's enough) is counted too (:attr:`unfollowed_named`)."""
         dt = 0.0 if self._last is None else max(0.0, now - self._last)
         self._last = now
+        following = set(matched.values())
+        for track, decision in decisions.items():
+            if decision is not None and decision.state == "named" and track not in following:
+                entry = self.unfollowed_named.setdefault(int(track), {"names": [], "frames": 0, "first": now})
+                entry["frames"] += 1
+                if decision.name not in entry["names"]:
+                    entry["names"].append(decision.name)
         for person in truth:
             track = matched.get(person.name)
             if track is None:
@@ -275,12 +289,16 @@ class Outcomes:
 
         * known people: ``named_within`` (named correctly within each of ``within`` seconds of the face being first
           shown), ``named`` (at all), the median and 90th percentile ``time_to_name``, ``confused`` (another known
-          person's name given), ``unknown`` ("unknown" said);
+          person's name given), ``unknown`` ("unknown" said); and over every known segment, eligible or not (a wrong
+          name comes exactly when someone else's face reaches a track whose own person is turned away):
+          ``confused_all`` and ``confused_segments`` (how many);
         * strangers: ``fpir`` (named at all: the false-alarm rate per track), ``called_unknown``; and over every
-          stranger segment, eligible or not, ``fpir_all``.
+          stranger segment, eligible or not, ``fpir_all``;
+        * named tracks that follow nobody: ``named_unfollowed`` (tracks) and ``named_unfollowed_frames``.
         """
         segs = list(self.segments.values())
         known = [g for g in segs if g.known and g.eligible(shown)]
+        all_known = [g for g in segs if g.known]
         strangers = [g for g in segs if not g.known and g.eligible(shown)]
         all_strangers = [g for g in segs if not g.known]
         times = sorted(g.correct_at - g.first_shown for g in known
@@ -301,4 +319,67 @@ class Outcomes:
             "called_unknown": share(strangers, lambda g: g.unknown_at is not None),
             "fpir_all": share(all_strangers, lambda g: g.named_at is not None),
             "strangers_all": len(all_strangers),
+            "confused_all": share(all_known, lambda g: bool(g.wrong)),
+            "confused_segments": sum(1 for g in all_known if g.wrong), "known_all": len(all_known),
+            "named_unfollowed": len(self.unfollowed_named),
+            "named_unfollowed_frames": sum(e["frames"] for e in self.unfollowed_named.values()),
         }
+
+
+def face_owner(truth: list[PersonTruth], face, reach: float = 0.5) -> PersonTruth | None:
+    """Whose face ``face`` is (a :class:`~.detect.Face` in view pixels): the person whose eyes are nearest the point
+    between its eyes, within ``reach`` of its eye distance (at least a pixel); ``None``: nobody's."""
+    points = np.asarray(face.points[:2], dtype=np.float64)
+    middle = points.mean(axis=0)
+    limit = reach * max(float(np.linalg.norm(points[0] - points[1])), 2.0)
+    best, owner = math.inf, None
+    for person in truth:
+        distance = float(np.linalg.norm(np.mean(np.asarray(person.eyes, dtype=np.float64), axis=0) - middle))
+        if distance < best:
+            best, owner = distance, person
+    return owner if best <= limit else None
+
+
+class FaceAttribution:
+    """The faces the recognition gave to tracks, against the truth (for evaluation only): each face given to a track
+    (a :class:`~.people.Person` with a ``face``) whose owner is known (:func:`face_owner`) counts as ``right`` (the
+    track follows that person, or someone wearing the same avatar), ``wrong`` (it follows someone else: their face
+    joins another person's evidence when it is embedded, ``embedded_wrong``) or ``unfollowed`` (the track follows
+    nobody); ``costs``: the head-fit costs of the right and wrong ones (:meth:`~.heads.HeadModel.cost`);
+    ``wrong_owners_untracked``: wrong ones whose owner no track follows (the person detector missed them)."""
+
+    def __init__(self):
+        self.given = self.right = self.wrong = self.unfollowed = 0
+        self.embedded_wrong = self.wrong_owners_untracked = 0
+        self.costs: dict[str, list[float]] = {"right": [], "wrong": []}
+
+    def update(self, truth: list[PersonTruth], matched: dict, people) -> None:
+        """Count a frame: ``truth``, ``matched`` (:func:`match_tracks`) and the frame's ``people``."""
+        follows = {track: name for name, track in matched.items()}
+        avatar = {p.name: p.avatar for p in truth}
+        for person in people:
+            sighting = getattr(person, "face", None)
+            owner = None if sighting is None else face_owner(truth, sighting.face)
+            if owner is None:
+                continue
+            self.given += 1
+            followed = follows.get(person.id)
+            if followed is None:
+                self.unfollowed += 1
+            elif followed == owner.name or avatar.get(followed) == owner.avatar:
+                self.right += 1
+                self.costs["right"].append(float(sighting.cost))
+            else:
+                self.wrong += 1
+                self.embedded_wrong += int(bool(getattr(person, "embedded", False)))
+                self.wrong_owners_untracked += int(owner.name not in matched)
+                self.costs["wrong"].append(float(sighting.cost))
+
+    def summary(self) -> dict:
+        def median(values):
+            return float(np.median(values)) if values else None
+
+        return {"given": self.given, "right": self.right, "wrong": self.wrong, "unfollowed": self.unfollowed,
+                "embedded_wrong": self.embedded_wrong, "wrong_owners_untracked": self.wrong_owners_untracked,
+                "wrong_share": self.wrong / self.given if self.given else None,
+                "cost_right_median": median(self.costs["right"]), "cost_wrong_median": median(self.costs["wrong"])}
