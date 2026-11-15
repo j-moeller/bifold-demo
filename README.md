@@ -898,7 +898,16 @@ unknown, needs that name's threshold and margin held for a second. A name is
 given to one person at a time: when two people claim it, the stronger claim
 wins and the other goes back to "not decided yet". A track that jumps to
 someone else (two people crossed) is noticed by its next good face, which does
-not fit the evidence so far: its evidence and name go at once.
+not fit the evidence so far: its evidence and name go at once. Faces too small
+for that check (SFace: under 14 pixels between the eyes) are checked against
+the photos of the track's name instead, a second each: one unlike them is
+kept out of the evidence, and a second one within two seconds takes the name
+away. With windows (W) a named track whose faces are that small also asks for
+a window a second after its last face big enough. On renders of 57 avatars the
+calibration was not made from, at 8 to 14 pixels between the eyes and without
+windows, SFace found 81 % of such swaps (usually by the second face; before,
+none) and took 12 names away in 11,016 checks of people's own faces, all from
+3 of the 57, whose faces at that size look far from their photos.
 
 **The target.** You set one thing: the false-alarm rate per decision, `--fpir`
 (default 0.01): how often a decision about a stranger names somebody. With `n`
@@ -913,10 +922,12 @@ behaviour in every profile. A calibration is kept per model in
 each profile's recogniser that runs here (`recognition/calibrations/`: AdaFace,
 the ResNet-50 and SFace, each with T-norm and its cohort), made from renders of
 38 Rocketbox avatars that are not in the fair's library. A model with neither
-gets provisional thresholds from its LFW threshold (one false match in a
-thousand pairs of strangers), which never say "unknown": so does AuraFace,
-which the commercial profile uses where it can be fetched, until `bifold-faces
-calibrate --profiles commercial` has run there. Scores can be
+names nobody: its people stay "? no calibration" (its LFW threshold, one false
+match in a thousand pairs of real strangers, let a third of avatar strangers
+through), and the status line says how to make one. So the commercial profile
+uses AuraFace, where it can be fetched, only once `bifold-faces calibrate
+--profiles commercial` has made its calibration there, and SFace until then.
+Scores can be
 normalised against a *cohort* of faces that are not in the gallery (T-norm,
 AS-norm), when the calibration says so; the calibration records which cohort
 it was made with, and no other is used with it.

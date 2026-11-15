@@ -30,7 +30,8 @@ avatar, non-mated different ones. The result is kept per model in ``<models>/cal
 package ships one for each profile's recogniser (``recognition/calibrations/``), made from 38 avatars that are not in
 the fair. LFW and photos of real people may check a calibration (``docs/research/face_recognition_f2_results.md``),
 never make what is shipped. Without any calibration a model gets a :meth:`provisional <Calibration.provisional>` one
-from its registered threshold (one false match in a thousand LFW stranger pairs), which never says "unknown".
+from its registered threshold (one false match in a thousand LFW stranger pairs), with which the decisions name
+nobody (:mod:`.decision`).
 
 **Score normalisation** (:class:`Cohort`): a face's score against a person can be measured against how the face
 scores against a **cohort** of other faces that are not in the gallery: T-norm (the probe's mean and spread over the
@@ -41,6 +42,7 @@ decisions apply the same normalisation with that cohort and refuse another.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
@@ -81,7 +83,8 @@ class Curve:
     """A bin's two curves (see the module docs). Non-mated: ``scores`` ascending with their ``log_fmr`` (log10 of the
     share of stranger scores at or above), then an exponential tail of mean excess ``beta`` beyond the last point.
     Mated: ``mated`` scores ascending at the false non-match rates ``fnmr``. ``counts``: (non-mated, mated, people)
-    measured; ``borrowed``: the bin the curves come from when this one had too few scores (else ``None``)."""
+    measured; ``borrowed``: the bin the non-mated curve comes from when this one had too few scores (else ``None``),
+    ``mated_borrowed``: the bin the mated curve comes from then."""
 
     scores: tuple
     log_fmr: tuple
@@ -90,6 +93,7 @@ class Curve:
     fnmr: tuple = ()
     counts: tuple = (0, 0, 0)
     borrowed: tuple | None = None
+    mated_borrowed: tuple | None = None
 
     @classmethod
     def fit(cls, nonmated, mated=(), people: int = 0) -> Curve:
@@ -125,6 +129,15 @@ class Curve:
             return float(-np.interp(score, scores, logs))
         return float(-logs[-1] + (score - scores[-1]) / (self.beta * math.log(10.0)))
 
+    def rarities(self, values) -> np.ndarray:
+        """:meth:`rarity` of each of ``values`` (an array; ``-inf`` and ``nan`` count 0)."""
+        values = np.asarray(values, dtype=np.float64)
+        values = np.where(np.isnan(values), -np.inf, values)
+        scores, logs = np.asarray(self.scores), np.asarray(self.log_fmr)
+        inside = -np.interp(np.clip(values, scores[0], scores[-1]), scores, logs)
+        tail = -logs[-1] + (np.maximum(values, scores[-1]) - scores[-1]) / (self.beta * math.log(10.0))
+        return np.where(values <= scores[0], 0.0, np.where(values <= scores[-1], inside, tail))
+
     def threshold(self, fmr: float) -> float:
         """The score whose rarity is ``-log10(fmr)``: strangers reach it with a rate ``fmr``."""
         target = math.log10(float(np.clip(fmr, 1e-300, 1.0)))
@@ -148,22 +161,28 @@ class Curve:
         return float(np.interp(score, self.mated, self.fnmr, left=0.0, right=1.0))
 
     def to_json(self) -> dict:
-        return {"scores": [round(v, 6) for v in self.scores], "log_fmr": [round(v, 6) for v in self.log_fmr],
-                "beta": round(self.beta, 6), "mated": [round(v, 6) for v in self.mated], "fnmr": list(self.fnmr),
-                "counts": list(self.counts), "borrowed": None if self.borrowed is None else list(self.borrowed)}
+        out = {"scores": [round(v, 6) for v in self.scores], "log_fmr": [round(v, 6) for v in self.log_fmr],
+               "beta": round(self.beta, 6), "mated": [round(v, 6) for v in self.mated], "fnmr": list(self.fnmr),
+               "counts": list(self.counts), "borrowed": None if self.borrowed is None else list(self.borrowed)}
+        if self.mated_borrowed is not None:
+            out["mated_borrowed"] = list(self.mated_borrowed)
+        return out
 
     @classmethod
     def from_json(cls, data: dict) -> Curve:
         return cls(tuple(data["scores"]), tuple(data["log_fmr"]), float(data["beta"]), tuple(data.get("mated", ())),
                    tuple(data.get("fnmr", ())), tuple(data.get("counts", (0, 0, 0))),
-                   None if data.get("borrowed") is None else tuple(data["borrowed"]))
+                   None if data.get("borrowed") is None else tuple(data["borrowed"]),
+                   None if data.get("mated_borrowed") is None else tuple(data["mated_borrowed"]))
 
 
 @dataclass(frozen=True)
 class Calibration:
     """A model's calibration (see the module docs): ``curves[size bin][yaw bin]``, the bins' edges, the normalisation
-    its scores had (``"none"``, ``"tnorm"`` or ``"asnorm"``), and ``made``: how it was made (the avatars, renders,
-    presets; ``provisional`` when it comes from the registered threshold alone)."""
+    its scores had (``"none"``, ``"tnorm"`` or ``"asnorm"``), ``made``: how it was made (the avatars, renders,
+    presets; ``provisional`` when it comes from the registered threshold alone), and ``track``: the offsets that make
+    the target a rate per stranger track (:meth:`track_offset`: ``targets`` and their ``offsets``, with how they were
+    measured)."""
 
     model: str
     curves: tuple
@@ -172,6 +191,7 @@ class Calibration:
     yaw_edges: tuple = YAW_EDGES
     made: dict = field(default_factory=dict)
     path: str | None = None
+    track: dict = field(default_factory=dict)
 
     # -- using it ---------------------------------------------------------------------------------------------------
 
@@ -192,6 +212,11 @@ class Calibration:
     def is_provisional(self) -> bool:
         """Whether this is a stand-in from the registered threshold (:meth:`provisional`), not a calibration."""
         return bool(self.made.get("provisional"))
+
+    @functools.cached_property
+    def digest(self) -> str:
+        """A short hash of the calibration as it is saved (its identity in the decision log)."""
+        return hashlib.sha256(json.dumps(self.to_json(), sort_keys=True).encode()).hexdigest()[:16]
 
     def rarity(self, score: float, size: float, yaw: float) -> float:
         """``-log10`` of the share of strangers' scores reaching ``score`` for a face of this ``size`` and ``yaw``."""
@@ -240,15 +265,22 @@ class Calibration:
                 if (s, y) in own:
                     row.append(own[(s, y)])
                     continue
-                # nearest bin with data: the same yaw first, smaller faces before larger, then more turned ones
-                order = sorted(own, key=lambda k: (abs(k[1] - y) + (0 if k[1] >= y else 0.5),
-                                                   abs(k[0] - s) + (0 if k[0] <= s else 0.5)))
-                donor = order[0]
-                curve = own[donor]
-                row.append(Curve(curve.scores, curve.log_fmr, curve.beta, curve.mated, curve.fnmr, curve.counts,
-                                 donor))
+                row.append(_borrowed(own, s, y))
             curves.append(tuple(row))
         return cls(model, tuple(curves), normalisation, tuple(size_edges), tuple(yaw_edges), dict(made or {}))
+
+    def track_offset(self, fpir: float) -> float:
+        """Decades of rarity a name needs beyond the accept threshold of a single decision, so that a stranger's
+        *track*, decided again after each new face, is named at the rate ``fpir`` at most (see the module docs);
+        between the targets it was measured at, interpolated in ``log10(fpir)``, beyond them the nearest one's. 0 for a
+        calibration made without it."""
+        targets, offsets = self.track.get("targets"), self.track.get("offsets")
+        if not targets:
+            return 0.0
+        x = np.log10(np.asarray(targets, dtype=np.float64))
+        order = np.argsort(x)
+        level = math.log10(float(np.clip(fpir, 1e-12, 1.0)))
+        return float(np.interp(level, x[order], np.asarray(offsets, dtype=np.float64)[order]))
 
     @classmethod
     def provisional(cls, model: str, threshold: float, decade: float = 0.04) -> Calibration:
@@ -264,7 +296,7 @@ class Calibration:
     def to_json(self) -> dict:
         return {"format": FORMAT, "model": self.model, "normalisation": self.normalisation,
                 "size_edges": [None if math.isinf(v) else v for v in self.size_edges],
-                "yaw_edges": list(self.yaw_edges), "made": self.made,
+                "yaw_edges": list(self.yaw_edges), "made": self.made, "track": self.track,
                 "bins": [[c.to_json() for c in row] for row in self.curves]}
 
     @classmethod
@@ -275,7 +307,7 @@ class Calibration:
         curves = tuple(tuple(Curve.from_json(c) for c in row) for row in data["bins"])
         return cls(str(data["model"]), curves, str(data.get("normalisation", "none")), edges,
                    tuple(float(v) for v in data["yaw_edges"]), dict(data.get("made", {})),
-                   None if path is None else str(path))
+                   None if path is None else str(path), dict(data.get("track") or {}))
 
     def save(self, path) -> Path:
         path = Path(path)
@@ -288,6 +320,25 @@ class Calibration:
     @classmethod
     def load(cls, path) -> Calibration:
         return cls.from_json(json.loads(Path(path).read_text()), path)
+
+
+def _borrowed(own: dict, s: int, y: int) -> Curve:
+    """The curves of bin ``(s, y)``, which has too few scores of its own, from the nearest bins that have them (``own``;
+    the same yaw first, then the nearest size, both ways): the non-mated curve of the one whose accept threshold is
+    highest (accept thresholds rise with the face's size: a smaller face's would name too easily), the mated curve of
+    the one whose reject threshold is lowest ("unknown" said less often). On the safe side both ways."""
+
+    def distance(k):
+        return abs(k[1] - y), abs(k[0] - s)
+
+    nearest = min(distance(k) for k in own)
+    near = sorted(k for k in own if distance(k) == nearest)
+    strict = max(near, key=lambda k: own[k].threshold(1e-3))
+    safe = min(near, key=lambda k: math.inf if not own[k].mated else own[k].mated_quantile(0.02))
+    a, b = own[strict], own[safe]
+    return Curve(a.scores, a.log_fmr, a.beta, b.mated, b.fnmr, (a.counts[0], b.counts[1], max(a.counts[2],
+                                                                                             b.counts[2])),
+                 strict, safe)
 
 
 def calibration_path(model_id: str, models_folder=None) -> Path:

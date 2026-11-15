@@ -352,6 +352,51 @@ def test_a_calibration_has_curves_per_face_size_and_turns_one_target_into_thresh
         Calibration.fit("m", [0.1, 0.2], [True, False], [20, 20], [0, 0])
 
 
+def test_a_bin_without_scores_borrows_on_the_safe_side_for_names_and_for_unknown():
+    """Strangers score higher with bigger faces here (as with the real models: accept thresholds rise with size), and
+    known people too. The 40-56 bin has no scores: it takes the strangers' curve of its bigger neighbour (a higher
+    accept threshold: a smaller face's would name too easily) and the known people's of its smaller one (a lower reject
+    threshold: "unknown" said less often)."""
+    rng = np.random.default_rng(9)
+    sizes = np.repeat([30.0, 60.0], 20000)
+    mated = rng.random(len(sizes)) < 0.3
+    big = sizes > 45
+    scores = np.where(mated, rng.normal(np.where(big, 0.6, 0.4), 0.1), rng.normal(np.where(big, 0.1, 0.0), 0.1))
+    calibration = Calibration.fit("m", scores, mated, sizes, np.zeros(len(sizes)), rng.integers(0, 30, len(sizes)))
+    small, gap, large = (calibration.curves[s][0] for s in (4, 5, 6))
+    assert gap.borrowed == (6, 0) and gap.mated_borrowed == (4, 0)
+    assert gap.threshold(1e-3) == pytest.approx(large.threshold(1e-3))
+    assert large.threshold(1e-3) > small.threshold(1e-3) + 0.05
+    assert gap.mated_quantile(0.02) == pytest.approx(small.mated_quantile(0.02))
+    again = Curve.from_json(json.loads(json.dumps(gap.to_json())))
+    assert (again.borrowed, again.mated_borrowed) == ((6, 0), (4, 0))  # (both donors kept)
+    values = np.array([-np.inf, -1.0, 0.0, 0.2, 0.35, 0.6, 2.0, np.nan])
+    assert np.allclose(small.rarities(values), [0.0 if not np.isfinite(v) else small.rarity(v) for v in values])
+
+
+def test_the_target_is_per_stranger_track_with_the_calibrations_offsets(tmp_path, calibration):
+    """A calibration may carry offsets (decades of rarity beyond a single decision's accept threshold) that make the
+    target a rate per stranger track, measured at a few targets: interpolated between them in log10, the nearest
+    beyond them; kept when saved; added to every accept threshold."""
+    track = {"targets": [0.1, 0.01, 0.001], "offsets": [0.1, 0.3, 0.5], "confidence": 0.95}
+    with_offsets = dataclasses.replace(calibration, track=track)
+    assert with_offsets.track_offset(0.01) == pytest.approx(0.3)
+    assert with_offsets.track_offset(math.sqrt(0.01 * 0.001)) == pytest.approx(0.4)
+    assert with_offsets.track_offset(1e-5) == pytest.approx(0.5) and with_offsets.track_offset(0.5) == 0.1
+    assert calibration.track_offset(0.01) == 0.0  # (made without them: per decision)
+    assert Calibration.load(with_offsets.save(tmp_path / "m.json")).track == track
+    plain, people = _policy(calibration)
+    offset, _ = _policy(with_offsets)
+    assert offset.accept_rarity(3) == pytest.approx(plain.accept_rarity(3) + 0.3)
+    between = calibration.curve(40.0, 0.0).threshold(10.0 ** -(plain.accept_rarity(3) + 0.15))
+    agg = _agg({"Ada": between}, people)
+    rarity = plain.score(agg.vector, agg.size, agg.yaw).rarity[0]
+    assert plain.accept_rarity(3) < rarity < offset.accept_rarity(3)
+    assert plain.decide({1: agg}, 0.0)[1].state == NAMED
+    d = offset.decide({1: agg}, 0.0)[1]
+    assert d.state == UNDECIDED and d.accept_rarity == pytest.approx(offset.accept_rarity(3))
+
+
 def _scores_for_fit(n=20000, seed=3):
     rng = np.random.default_rng(seed)
     mated = rng.random(n) < 0.3
@@ -729,6 +774,11 @@ def test_decisions_are_logged_for_the_evaluation(calibration, tmp_path):
         assert key in first
     assert first["evidence"]["sources"] == ["window"] and first["evidence"]["frames"] == 3
     assert lines[1]["state"] == "undecided" and not lines[2]["changed"]
+    # what the evaluation needs to read a decision again: the target, the gallery's size, which calibration, the flags
+    assert (first["fpir"], first["track_offset"], first["people"]) == (0.01, 0.0, 3)
+    assert first["calibration"] == f"{calibration.digest} not saved" and len(calibration.digest) == 16
+    assert first["decisive"] is True and isinstance(first["switch_decisive"], bool)
+    assert lines[1]["fpir"] == 0.01 and lines[1]["people"] == 3 and lines[1]["decisive"] is None  # (no scores)
 
 
 # -- the pipeline ------------------------------------------------------------------------------------------------------
@@ -878,6 +928,8 @@ def test_the_pipeline_names_known_people_says_unknown_for_strangers_and_waits_fo
     assert first_named <= 1.5
     assert results[-1].counts() == {NAMED: 1, UNKNOWN: 1, UNDECIDED: 1}
     assert all(set(r.timings) == {"people", "track", "faces", "quality", "embed", "decide"} for r in results)
+    fits = ada.decision.evidence["fits"]  # (the log has how well each face fit the track's head)
+    assert len(fits) == ada.decision.evidence["frames"] and all(0.0 <= f < HEAD.limit for f in fits)
     # never a wrong name, and the same run gives the same decisions
     assert not any(p.name not in (None, "Ada") for r in results for p in r.people)
     again, engine2, detector2 = _recognizer(calibration, rate=2.0)
@@ -989,6 +1041,28 @@ def test_a_named_track_whose_faces_are_too_small_to_tell_a_swap_is_checked_with_
     assert recognizer.tracks[1].resets >= 1
     assert not still_ada or still_ada[-1] - 4.0 <= 1.6, still_ada  # (5 s before the fix)
     assert not any(r.time > 6.0 and r.people[0].name == "Ada" for r in swapped)
+
+
+def test_without_windows_a_named_tracks_small_faces_are_checked_against_its_names_photos(calibration):
+    """Without windows the faces stay small (14 pixels between the eyes), where a face cannot tell the track's own
+    evidence from someone else's (the switch check's floor is not decisive). A named track's faces are then checked
+    against the photos of its name: a face unlike them is held out of the evidence, and a second one says the track
+    shows someone else. Ada keeps her name for 20 s; Cleo on her track is "Ada" for a second at most (5 s before)."""
+    recognizer, engine, detector = _recognizer(calibration, rate=5.0, sustain=1.0)
+    small = _small_scene(0.0, ("Ada",))[2][0]
+    curve = calibration.curve(small.box[3] / 2.95, 0.0)
+    assert not recognizer.policy.switch_decisive(small.box[3] / 2.95, 0.0), curve.rarity(curve.mated_quantile(0.005))
+    ada = _with_windows(recognizer, engine, detector, None, [k / 10 for k in range(240)], ("Ada",))
+    named = [r.time for r in ada if r.people[0].name == "Ada"]
+    assert named and named[0] < 3.0 and len(named) == len(ada) - round(10 * named[0])  # named, then never lost
+    assert recognizer.tracks[1].resets == 0 and recognizer.tracks[1].unlike == []
+    cleo = _with_windows(recognizer, engine, detector, None, [24.0 + k / 10 for k in range(60)], ("Cleo",),
+                         index0=240)
+    still_ada = [r.time for r in cleo if r.people[0].name == "Ada"]
+    assert recognizer.tracks[1].resets == 1
+    assert not still_ada or still_ada[-1] - 24.0 <= 1.0, still_ada
+    held = [d for d in recognizer.log.entries if d.track == 1 and d.time > 24.0 and d.evidence.get("held_out")]
+    assert held and held[0].name == "Ada"  # (the first face unlike Ada: held out, the name not yet withdrawn)
 
 
 def test_the_tracks_ask_for_windows_and_their_faces_come_from_the_windows(calibration):

@@ -190,8 +190,8 @@ class EmbeddingScheduler:
 class FrameEvidence:
     """One embedded face of a track: its unit ``vector``, quality ``weight`` (0-1), ``time``, ``size`` (eye distance
     turned to the camera, in the pixels it was aligned from), ``yaw`` (degrees), the ``model`` that embedded it, its
-    full :class:`~.quality.Quality` and where it came from (``source``: ``"window"`` or ``"frame"``; ``frame``: the
-    frame's index)."""
+    full :class:`~.quality.Quality`, where it came from (``source``: ``"window"`` or ``"frame"``; ``frame``: the
+    frame's index) and how well it fit the track's head (``cost``)."""
 
     vector: np.ndarray = field(repr=False)
     weight: float
@@ -202,6 +202,7 @@ class FrameEvidence:
     quality: object = field(default=None, repr=False)
     source: str = "frame"
     frame: int | None = None
+    cost: float = math.nan  # how badly the face fit the track's head (:meth:`~.heads.HeadModel.cost`)
 
     def decayed(self, now: float, half_life: float) -> float:
         age = max(0.0, now - self.time)

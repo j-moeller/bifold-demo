@@ -35,10 +35,16 @@ rarity (a track holding a name counts ``incumbent`` more for it), and a track wh
 decided yet" ("contested").
 
 **Someone else on the track.** A track can jump to another person (two people crossed, a lost track was picked up by
-someone else). So every new face is first compared with the track's own evidence (:meth:`IdentityPolicy.
-consistent`): a score below what a known person's face of that quality reaches all but ``switch_miss`` (0.5 %) of the
-time, where that floor is decisive, means someone else. The track's old evidence is then dropped and its name
-withdrawn (:meth:`IdentityPolicy.reset`) before the new face counts.
+someone else). So every new face is first checked (:meth:`IdentityPolicy.check_face`): against the track's own
+evidence (:meth:`IdentityPolicy.consistent`), where a score below what a known person's face of that quality reaches
+all but ``switch_miss`` (0.5 %) of the time is decisive, means someone else; the track's old evidence is then dropped
+and its name withdrawn (:meth:`IdentityPolicy.reset`) before the new face counts. Where faces are too small (or
+turned) for that floor to be decisive, a named track's face is checked against the photos of its name instead, below
+the same floor of the calibration's mated curve (made of exactly such scores): weaker, so a face unlike the name is
+only held out of the evidence, and a second one within two seconds withdraws the name. On the calibration's renders
+of 57 avatars it was not made from (faces of 8 to 14 pixels between the eyes, SFace), this finds 81 % of swaps
+(median: the second face, 90 % by the sixth; none before), and withdrew a name from its own person's faces in 0.11 %
+of checks, all for 3 of the 57 people (faces at that size far from their photos).
 
 Every decision is a :class:`Decision` with the raw, normalised and calibrated scores of the best person and the
 runner-up, the thresholds, the model and the evidence; :class:`DecisionLog` keeps them (and writes them as JSON lines
@@ -112,6 +118,8 @@ class Scores:
     reject: float | None
     bin: str
     decisive: bool = False
+    accept_rarity: float = math.nan  # (the rarity ``accept`` stands for)
+    switch_decisive: bool = False  # whether a new face of this bin can tell the track shows someone else
 
     def of(self, name: str) -> tuple[float, float, float] | None:
         """``(raw, normalised, rarity)`` of ``name`` (``None``: not known)."""
@@ -154,6 +162,12 @@ class Decision:
     normalisation: str = "none"
     evidence: dict = field(default_factory=dict)
     changed: bool = False
+    fpir: float | None = None  # the target (per stranger track with the calibration's offset)
+    track_offset: float | None = None  # decades added to a single decision's accept threshold for it
+    people: int | None = None  # how many people the gallery knows
+    calibration: str = ""  # which calibration: its digest and file
+    decisive: bool | None = None  # whether the bin's reject threshold may say "unknown"
+    switch_decisive: bool | None = None  # whether a face of the bin could tell the track shows someone else
 
     @property
     def label(self) -> str:
@@ -235,6 +249,7 @@ class IdentityPolicy:
                              f"{calibration.model} was made with ({made_with})")
         self.tracks: dict[int, _Track] = {}
         self._gallery_stats = None  # (gallery rows id, means, spreads) for AS-norm
+        self._known = 0  # people known at the last decisions (for the log)
 
     @property
     def normalisation(self) -> str:
@@ -273,7 +288,7 @@ class IdentityPolicy:
         rarity = np.array([curve.rarity(v) if np.isfinite(v) else 0.0 for v in best_norm])
         order = np.lexsort((np.arange(len(names)), -best_norm))
         s = self.settings
-        accept_rarity = s.accept(len(names))
+        accept_rarity = self.accept_rarity(len(names))
         accept = curve.threshold(10.0 ** -accept_rarity)
         keep = curve.threshold(10.0 ** -(accept_rarity - s.keep))
         reject = curve.mated_quantile(s.reject_miss)
@@ -281,7 +296,14 @@ class IdentityPolicy:
         return Scores(tuple(names[k] for k in order), tuple(float(best_raw[k]) for k in order),
                       tuple(float(best_norm[k]) for k in order), tuple(float(rarity[k]) for k in order),
                       float(accept), float(keep), None if reject is None else float(reject),
-                      self.calibration.bin_label(size, yaw), bool(decisive))
+                      self.calibration.bin_label(size, yaw), bool(decisive), float(accept_rarity),
+                      self.switch_decisive(size, yaw))
+
+    def accept_rarity(self, people: int) -> float:
+        """The rarity a name needs with ``people`` known people: a single decision's at the target
+        (:meth:`DecisionSettings.accept`) plus the calibration's offset that makes the target a rate per stranger
+        track (:meth:`~.calibration.Calibration.track_offset`)."""
+        return self.settings.accept(people) + self.calibration.track_offset(self.settings.fpir)
 
     def self_score(self, vector, reference) -> float:
         """A new face's ``vector`` scored against its track's own aggregate ``reference``, normalised as the gallery's
@@ -323,6 +345,29 @@ class IdentityPolicy:
         floor = curve.mated_quantile(self.settings.switch_miss)
         return floor is not None and curve.rarity(floor) >= self.settings.decisive
 
+    def check_face(self, track: int, vector, before, size: float, yaw: float,
+                   model: str | None = None) -> tuple[bool | None, bool]:
+        """``(same, decisive)``: whether a new face of a track (unit ``vector``, ``size`` pixels between the eyes,
+        turned ``yaw`` degrees) can show the same person as the track's evidence so far (``before``: its
+        :class:`~.evidence.Aggregate`, ``None`` without any), ``None`` when that cannot be told; and whether one such
+        face is enough to act on. Where the switch check is decisive (:meth:`switch_decisive`, for the face and the
+        evidence), the face against the track's own evidence (:meth:`consistent`): decisive. Else, for a named track,
+        the face against the gallery's photos of its name, below the floor a known person's face of this quality falls
+        below only ``switch_miss`` of the time (the calibration's mated curve is made of exactly such scores): weaker
+        where that floor is not decisive, so not decisive (the recognizer acts on two such faces in a row)."""
+        if before is not None:
+            size_both, yaw_both = min(size, before.size), max(abs(yaw), before.yaw)
+            if self.switch_decisive(size_both, yaw_both):
+                return self.consistent(self.self_score(vector, before.vector), size_both, yaw_both), True
+        memory = self.tracks.get(track)
+        if memory is None or memory.state != NAMED or memory.name is None:
+            return None, False
+        floor = self.calibration.curve(size, yaw).mated_quantile(self.settings.switch_miss)
+        got = self.score(vector, size, yaw, model).of(memory.name) if floor is not None else None
+        if got is None:
+            return None, False
+        return got[1] >= floor, False
+
     # -- decisions -------------------------------------------------------------------------------------------------
 
     def forget(self, track: int) -> None:
@@ -347,6 +392,7 @@ class IdentityPolicy:
         policy remembers of them (a track lost for a moment: its name holds when it is found again); :meth:`forget`
         drops a track."""
         known = len(self.gallery.people()) if hasattr(self.gallery, "people") else 0
+        self._known = known
         proposals: dict[int, tuple] = {}
         scored: dict[int, Scores] = {}
         for track, agg in aggregates.items():
@@ -382,7 +428,7 @@ class IdentityPolicy:
             return UNDECIDED, None, "no calibration", 1.0
         best_rarity = scores.rarity[0]
         runner = scores.rarity[1] if len(scores.names) > 1 else 0.0
-        if best_rarity >= s.accept(len(scores.names)):
+        if best_rarity >= scores.accept_rarity:
             if best_rarity - runner >= s.margin:
                 return NAMED, scores.names[0], "accepted", 1.0
             return UNDECIDED, None, "too close to another", 1.0
@@ -510,9 +556,13 @@ class IdentityPolicy:
         if agg is not None:
             evidence.update(frames=agg.frames, weight=round(agg.weight, 4), size=round(agg.size, 2),
                             yaw=round(agg.yaw, 2), best=round(agg.best, 4))
+        c = self.calibration
         common = {"track": track, "time": float(now), "state": state, "name": name, "reason": reason,
-                  "progress": round(float(progress), 3), "frame": frame, "model": self.calibration.model,
-                  "normalisation": self.normalisation, "evidence": evidence, "changed": changed}
+                  "progress": round(float(progress), 3), "frame": frame, "model": c.model,
+                  "normalisation": self.normalisation, "evidence": evidence, "changed": changed,
+                  "fpir": self.settings.fpir, "track_offset": round(c.track_offset(self.settings.fpir), 4),
+                  "people": self._known,
+                  "calibration": f"{c.digest} {c.path or ('provisional' if c.is_provisional else 'not saved')}"}
         if scores is None or not scores.names:
             return Decision(**common)
         second = len(scores.names) > 1
@@ -521,5 +571,5 @@ class IdentityPolicy:
                         runner_up_raw=scores.raw[1] if second else None,
                         runner_up_score=scores.normalised[1] if second else None,
                         runner_up_calibrated=scores.rarity[1] if second else None, accept=scores.accept,
-                        keep=scores.keep, reject=scores.reject,
-                        accept_rarity=self.settings.accept(len(scores.names)), bin=scores.bin)
+                        keep=scores.keep, reject=scores.reject, accept_rarity=scores.accept_rarity, bin=scores.bin,
+                        decisive=scores.decisive, switch_decisive=scores.switch_decisive)

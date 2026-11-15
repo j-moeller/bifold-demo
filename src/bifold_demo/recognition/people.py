@@ -15,14 +15,17 @@ detect_frame` is what :class:`~bifold_demo.detection.worker.AsyncDetector` calls
    quality measured and gated; the embedding budget of the profile's model (embeddings a second for the whole system,
    on the frames' clock) goes to the faces the scheduler picks; each embedding joins its track's evidence, after a
    check that it shows the same person as the evidence so far (else the track's old evidence and name go: the track
-   jumped to someone else).
+   jumped to someone else). Where the faces are too small for that, a named track's faces are checked against its
+   name's photos, a second each (:data:`RECHECK_DOUBT`): one unlike them is held out, a second within
+   :data:`UNLIKE_WITHIN` withdraws the name (:meth:`~.decision.IdentityPolicy.check_face`).
 4. **Decisions** (:mod:`.decision`): a name, "unknown" or "not decided yet" per track, calibrated per model and face
    size against one target false-alarm rate (:mod:`.calibration`), one identity per track.
 5. **Windows for the frames to come.** Tracks not decided yet (or due for a check: :data:`RECHECK_WINDOW` seconds
    after the last face big enough for the check to tell a swap, :data:`RECHECK_DOUBT` when their faces since have been
    too small), not known to be turned away, whose face is small in the frame, ask the
-   :class:`~bifold_demo.sensor.WindowService` for a window on their head, tagged with the track's number. Its scheduler's ``priority`` hook puts undecided, frontal and large faces first and lets
-   tracks take turns (:meth:`PeopleRecognizer.priority`). A webcam's windows are cut from its full-resolution picture;
+   :class:`~bifold_demo.sensor.WindowService` for a window on their head, tagged with the track's number. Its
+   scheduler's ``priority`` hook puts undecided, frontal and large faces first and lets tracks take turns
+   (:meth:`PeopleRecognizer.priority`). A webcam's windows are cut from its full-resolution picture;
    the code is the same.
 
 Each frame gives a :class:`PeopleResult`: per track its box, decision and the face found (with landmarks), plus the
@@ -70,6 +73,9 @@ RECHECK_WINDOW = 5.0  # seconds: a decided track asks for a window again after t
 # track that jumped to someone else would keep the old name until a bigger face is seen); a face big enough is then
 # embedded first
 RECHECK_DOUBT = 1.0
+# seconds: a named track's face unlike its name (where only the name's photos can check it) is held out of its
+# evidence; a second one within this says the track shows someone else
+UNLIKE_WITHIN = 2.0
 TURN = 0.05  # the window priority a frame of waiting adds (tracks take turns)
 
 __all__ = ["PeopleRecognizer", "PeopleResult", "Person"]
@@ -144,6 +150,7 @@ class _Track:
     resets: int = 0
     checked: float | None = None  # when it was last embedded from a face big enough for the check to tell a swap
     unchecked: float | None = None  # since when its faces have been too small (or turned) to tell one (None: not)
+    unlike: list = field(default_factory=list)  # a named track's last faces unlike its name, held out of the evidence
 
 
 class PeopleRecognizer:
@@ -403,10 +410,14 @@ class PeopleRecognizer:
             enough = enough is not None and enough.weight >= self.policy.settings.min_weight
             median = info.evidence.median_weight(self.scheduler.median_after) if enough else None
             due = None
-            if decided:  # due for its check: a face that can tell a swap, the check's interval after the last one
-                recheck = self.scheduler.recheck if info.unchecked is None else RECHECK_DOUBT
-                due = self.policy.switch_decisive(sighting.size, quality.yaw) and (
-                    info.checked is None or now - info.checked >= recheck - 1e-9)
+            if decided:  # due for its check (see the module docs)
+                if self.policy.switch_decisive(sighting.size, quality.yaw):
+                    recheck = self.scheduler.recheck if info.unchecked is None else RECHECK_DOUBT
+                    due = info.checked is None or now - info.checked >= recheck - 1e-9
+                elif memory.state == NAMED:  # only its name's photos can check it (on two faces in a row)
+                    due = bool(info.unlike) or info.embedded is None or now - info.embedded >= RECHECK_DOUBT - 1e-9
+                else:
+                    due = False
             candidates.append(Candidate(track_id, quality.weight, track_id, decided, info.embedded, median, due))
         if not candidates:
             return set()
@@ -427,22 +438,28 @@ class PeopleRecognizer:
             if spec is not None and getattr(spec, "norm_quality", False):
                 quality = assess(sighting.local, picked[k][2], quality.fiqa, norm)
             frame_evidence = FrameEvidence(vector, quality.weight, now, sighting.size, quality.yaw, self.model,
-                                           quality, sighting.source, frame)
-            before = info.evidence.aggregate(now)
-            if before is not None:
-                score = self.policy.self_score(vector, before.vector)
-                if not self.policy.consistent(score, min(sighting.size, before.size), max(abs(quality.yaw),
-                                                                                          before.yaw)):
-                    info.evidence.reset(now)  # the track shows someone else now
-                    self.policy.reset(candidate.track, now)
-                    info.resets += 1
-            info.evidence.add(frame_evidence)
+                                           quality, sighting.source, frame, sighting.cost)
             info.embedded = now
-            if self.policy.switch_decisive(sighting.size, quality.yaw):
-                info.checked, info.unchecked = now, None
             info.waiting = ""
             self._rate.append(now)
             done.add(candidate.track)
+            before = info.evidence.aggregate(now)
+            same, decisive = self.policy.check_face(candidate.track, vector, before, sighting.size, quality.yaw,
+                                                    self.model)
+            if self.policy.switch_decisive(sighting.size, quality.yaw):
+                info.checked, info.unchecked = now, None  # (a face that can tell a swap)
+            info.unlike = [f for f in info.unlike if now - f.time <= UNLIKE_WITHIN]
+            if same is False and not decisive and not info.unlike:
+                info.unlike.append(frame_evidence)  # unlike its name: held out until the next face says more
+                continue
+            if same is False:  # the track shows someone else now: one decisive face, or two unlike its name
+                info.evidence.reset(now)
+                self.policy.reset(candidate.track, now)
+                info.resets += 1
+                for held in info.unlike:
+                    info.evidence.add(held)
+            info.unlike = []
+            info.evidence.add(frame_evidence)
         return done
 
     def _describe(self, info: _Track) -> dict:
@@ -452,7 +469,8 @@ class PeopleRecognizer:
                 "sizes": [round(f.size, 2) for f in frames], "yaws": [round(f.yaw, 1) for f in frames],
                 "sources": [f.source for f in frames], "frames_seen": [f.frame for f in frames],
                 "fiqa": [None if f.quality is None or f.quality.fiqa is None else round(f.quality.fiqa, 3)
-                         for f in frames], "resets": info.resets}
+                         for f in frames], "fits": [None if math.isnan(f.cost) else round(f.cost, 3) for f in frames],
+                "resets": info.resets, "held_out": len(info.unlike)}
 
     def _request_windows(self, service, active, decisions: dict, frame: int, size) -> None:
         """Ask ``service`` for windows on the heads that need them (see the module docs)."""
