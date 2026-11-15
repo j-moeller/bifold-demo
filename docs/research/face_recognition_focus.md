@@ -508,3 +508,29 @@ branch and pushed; its results go into the progress log.
 - **15 November, 22:35 UTC: resumed on request ("Continue").** The container kept everything: the branch, the
   builders' worktrees, the avatars and the models. F2's builder goes on with its review fixes (the calibration first)
   from its saved changes. S3's reviewer finishes its review from its notes.
+- **15 November, 22:50 UTC: S3's review finished.**
+  - **Verdict:** no high findings; 5 medium, 11 low. The reviewer confirmed:
+    - the fit's derivatives, numerically;
+    - every measurement, pair by pair;
+    - the identity space, byte for byte;
+    - clean heads in all 13 faces.
+  - **The default stays the space fit.** Measured on recognition with the builder's protocol (8 pairs, 72 probes per
+    head), the free-form correction alone gains about half as much:
+
+    | Head | AdaFace d' | ResNet-50 d' | SFace d' |
+    |---|---|---|---|
+    | the avatar's own | 3.60 | 3.49 | 4.43 |
+    | the space fit | 4.52 | 5.07 | 4.92 |
+    | free-form alone | 3.92 | 3.94 | 4.91 |
+
+    The space fit is ahead in 7 of 8 pairs. The exception is the child as the person, which loses a little with either
+    fit.
+  - **Medium:**
+    - photos turned 60 degrees degrade the fit and cause the cheek loss; with three photos (front and 30 degrees each
+      way) 18 of 20 pairs improve;
+    - the rig checks are blunt: they miss a lower lip pulled behind the teeth, yet shrink whole heads for small local
+      problems;
+    - the fit's poor focal lengths are passed on to the textures as known;
+    - cached fitted heads are not refitted when the fit changes;
+    - 22 of 32 mutations survive the tests.
+  - **The S3 builder fixes them forward,** the 60-degree photos first.
