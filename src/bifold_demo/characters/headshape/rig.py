@@ -34,9 +34,10 @@ fitted head must not show more of the eyeballs through the lids or of the teeth 
 avatar's own does, the neck's edge must not move, and nothing may jump (no offset beyond :data:`MAX_OFFSET`, no
 flipped or degenerate triangle). In detail: no lid over an eyeball's cap sinks into it more than 1 mm further than
 the avatar's (:data:`LID_TOLERANCE`); a face that shuts an eye shows no more of that eye; the front teeth come no
-nearer the lips' front than the avatar's do (:data:`TEETH_TOLERANCE`); no lip vertex comes nearer the tooth behind
-it (seen from the front) than the avatar's does by more than :data:`LIP_TOLERANCE` (a lip pulled behind the teeth);
-and where the avatar's mouth is shut seen from the front (fewer than :data:`CLOSED_MOUTH` pixels of its teeth), the
+nearer the lips' front than the avatar's do (:data:`TEETH_TOLERANCE`); the lips' front (where the avatar's is
+:data:`LIP_FRONT` or more in front of the tooth behind it, seen from the front, in each face) does not come behind
+that tooth by more than :data:`LIP_TOLERANCE` (a lip pulled behind the teeth; the lips' inside, against the teeth
+already, is hidden whatever it does); and where the avatar's mouth is shut seen from the front (fewer than :data:`CLOSED_MOUTH` pixels of its teeth), the
 fitted head shows no more of them from either side. Each problem is put down to a part of the head
 (:attr:`RigCheck.where`: an eye, the mouth, a fold, the neck, the size), so that a shape can be kept smaller there
 only (:func:`~.fitted.fit_shape`).
@@ -440,10 +441,11 @@ def rig_checks(model, fitted, hs, size: int = CHECK_SIZE) -> RigCheck:
                 problem("mouth", f"{key}: the teeth come through the lips ({theirs * 1000:.1f} mm from the lips' "
                         f"front, the avatar's {own * 1000:.1f} mm)")
         lip, tooth = _lips_before_teeth(posed["avatar"], teeth, lips)  # (paired in this face: the jaw moves)
-        if len(lip):  # each lip vertex stays in front of the tooth behind it (as far as the avatar's does)
+        if len(lip):  # the lips' front stays in front of the teeth behind it (where the avatar's is)
             own, theirs = (posed[w][lip, 2] - posed[w][tooth, 2] for w in ("avatar", "fitted"))
-            worst = np.argmin(theirs - np.minimum(own, 0.0))
-            if theirs[worst] < min(own[worst], 0.0) - LIP_TOLERANCE:
+            front = own >= LIP_FRONT  # (not the lips' inside, against the teeth already: hidden whatever it does)
+            worst = np.argmin(np.where(front, theirs, np.inf)) if front.any() else 0
+            if front.any() and theirs[worst] < -LIP_TOLERANCE:
                 problem("mouth", f"{key}: a lip comes behind the teeth ({theirs[worst] * 1000:.1f} mm in front of "
                         f"them, the avatar's {own[worst] * 1000:.1f} mm)")
         counts = {}
@@ -474,7 +476,8 @@ LID_TOLERANCE = 0.001  # metres: a lid may sink this much further into its eyeba
 CLOSED_EYES = {"scrunch": (1, 2), "wink": (2,)}  # the eyes (1 right, 2 left) these faces shut: no more of them may show
 CLOSED_MOUTH = 2 * SHOW_PIXELS  # pixels: where the avatar shows fewer of its teeth its mouth is shut: no more may show
 TEETH_TOLERANCE = 0.0015  # metres: the teeth may come this much nearer the lips' front than the avatar's do
-LIP_TOLERANCE = 0.0005  # metres: a lip vertex may come this much nearer the tooth behind it than the avatar's does
+LIP_TOLERANCE = 0.0005  # metres: the lips' front may come this much behind the front of the teeth behind it ...
+LIP_FRONT = 0.001  # ... where the avatar's is at least this much in front of them (the lips' inside touches them)
 LIP_REACH = 0.002  # metres across (seen from the front): the frontmost tooth this near a lip vertex is behind it
 LID_REACH = 0.006  # metres outside an eyeball: the skin there is its lids
 LID_MARGIN = 5.0  # degrees: the lids within this of the eyeball cap's edge are not over it (the eye's corners)

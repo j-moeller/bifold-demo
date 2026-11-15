@@ -193,6 +193,12 @@ def test_the_rig_checks_catch_broken_heads(heads):
     for label, offsets, part, words in defects:
         check = rig.rig_checks(model, _broken(model, hs, offsets), hs)
         assert any(words in problem for problem in check.where.get(part, [])), (label, check.where)
+    teeth_all, lips = rig._teeth_and_lips(model, hs, p)  # the lips' inside, against the teeth already: hidden
+    lip, tooth = rig._lips_before_teeth(p, teeth_all, lips)
+    inside = lip[p[lip, 2] - p[tooth, 2] < rig.LIP_FRONT]
+    assert len(inside) >= 3
+    check = rig.rig_checks(model, _broken(model, hs, moved(inside, [0, 0, -0.0015])), hs)
+    assert not any("lip comes behind" in problem for problem in check.problems), check.problems
 
 
 def test_a_failing_part_is_kept_smaller_there_only(heads, space, tmp_path):
