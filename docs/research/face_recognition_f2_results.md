@@ -95,8 +95,11 @@ turns (section 4 compares the two).
 
 ## 3. The calibration
 
-**How it was made** (`bifold-faces calibrate`, the package's calibrations): 38 avatars of Rocketbox's conference
-set that are *not* in the fair's library, so that every person of the fair is a stranger to the calibration. Per
+**How the first calibrations were made** (9 November; section 9 has those made after the review): 38 avatars of
+Rocketbox's conference set that are *not* in the fair's library, meant to make every person of the fair a stranger
+to the calibration; but one of them, Wood_Male_01, wears the face of the fair's Male_Adult_17 (the review found it:
+SFace scores their photos 0.89 against each other, any two other avatars at most 0.68), so its faces were in all
+three calibrations and cohorts, and the fair's known Male_Adult_17 was not a stranger to them. Per
 avatar, a gallery of three windows of the 8K sensor on its head at 2 m (100 pixels between the eyes; turned -25, 0
 and 25 degrees), and 80 windows of its face as the pipeline sees faces: 8 sizes (8, 11, 14, 18, 24, 32, 44 and 64
 pixels between the eyes) by 5 yaws (-40 to 40 degrees) by 2 cameras (ideal, and `budget 1080p` with its blur, noise
@@ -118,8 +121,11 @@ different men 69-72 %.
 known and half strangers. Every face and average of a held-out avatar is one decision: about 14,000 decisions about
 strangers and 13,000 about known people per recogniser, normalisation and target, pooled over the halvings.
 "Measured" is the share of strangers' decisions that named somebody (in brackets: the lowest and highest of the ten
-halvings); "named" the share of known people's decisions that named them rightly (nobody was named wrongly in any
-check). A name needs the runner-up a factor of ten rarer, as live.
+halvings); "named" the share of known people's decisions that named them rightly. Some were named wrongly: SFace
+with T-norm named a known person as somebody else in 2 decisions at 0.1 % and at 1 % asked and in 7 at 10 %. A name
+needs the runner-up a factor of ten rarer, as live. Ten halvings say little about the spread: the review's 60 more
+(T-norm) measured 1.85 % (SFace), 1.64 % (ResNet-50) and 1.79 % (AdaFace) at 1 % asked, above the target in 42-43 %
+of the halvings, and 0.39-0.51 % at 0.1 % asked; the false alarms came from few identity pairs.
 
 | Recogniser (profile) | Normalisation | 0.1 % asked: measured (halvings) | named | 1 % asked: measured (halvings) | named | 10 % asked: measured | named |
 |---|---|---|---|---|---|---|---|
@@ -143,7 +149,7 @@ ResNet-50's is above the target, within the factor of two the choice allows. The
 stranger alike to a known person makes most of the false alarms (up to 8-11 % of the decisions about strangers
 without normalisation). With 18 calibrating identities a threshold far in the tail is uncertain;
 the shipped calibrations have all 37, and the fair (section 4), with 20 other avatars, checks them independently.
-Nobody was named as somebody else in any check. **T-norm is the default** where the check chose it, and its cohort
+Wrong names were rare but not absent (above). **T-norm is the default** where the check chose it, and its cohort
 ships beside the calibration.
 
 **Checked on real faces** (numbers only; LFW and photos may check a calibration, never make one). Avatars are more
