@@ -184,7 +184,11 @@ def cmd_check(args) -> int:
 
 def cmd_calibrate(args) -> int:
     """Make each profile's recogniser's calibration from renders of avatars (see :mod:`.calibrate`)."""
+    import dataclasses
     import datetime
+    import time
+
+    import numpy as np
 
     from ..characters.library import CharacterLibrary
     from . import calibrate as cal
@@ -201,32 +205,84 @@ def cmd_calibrate(args) -> int:
         engines.setdefault(engine.model_id, engine)
     detectors = {engine.detector_spec.id: engine.detector for engine in engines.values()}
     paths = {key: data / f"probes.{key}.npz" for key in detectors}
-    if args.refit and all(path.is_file() for path in paths.values()):
-        probes = {key: cal.Probes.load(path) for key, path in paths.items()}
+    probes = {key: cal.Probes.load(path) for key, path in paths.items() if path.is_file()}
+    library = None
+    if args.refit:  # the faces rendered before, nothing new
+        if len(probes) < len(detectors):
+            raise ValueError(f"{data} holds no renders for every profile's detector: run without --refit first")
+        names = args.avatars or sorted(set().union(*(set(p.avatar.tolist()) for p in probes.values())))
         print(f"[calibrate] the faces rendered before, from {data}")
-    else:
+    else:  # render what is missing (the windows of new avatars or sizes); what was rendered before is kept
         library = CharacterLibrary(args.characters) if args.characters else CharacterLibrary()
         names = args.avatars or sorted(library.available())
         if len(names) < 6:
             raise ValueError(f"{len(names)} avatars are too few to calibrate (prepare more: bifold-characters fetch)")
-        print(f"[calibrate] {len(names)} avatars from {library.folder}: their gallery and "
-              f"{len(cal.EYE_PX) * len(cal.YAWS) * len(cal.PRESETS)} windows each")
-        probes = cal.render(library, names, detectors, data / "gallery", seed=args.seed)
-        for key, found in probes.items():
-            found.save(paths[key])
+        wanted = cal.window_keys(names)
+        have = {key: set(p.keys().tolist()) for key, p in probes.items()}
+        common = set.intersection(*(have.get(key, set()) for key in detectors))
+        missing = [k for k in wanted if k not in common]
+        print(f"[calibrate] {len(names)} avatars from {library.folder}: {len(wanted)} windows, {len(missing)} to "
+              "render")
+        fresh = cal.render(library, sorted({k.split("|")[0] for k in missing}) if missing else [], detectors,
+                           data / "gallery", seed=args.seed, skip=common)
+        for key, new in fresh.items():
+            old = probes.get(key)
+            if old is not None:
+                new = old.concat(new.subset(~np.isin(new.keys(), sorted(have.get(key, set())))))
+            probes[key] = new
+            new.save(paths[key])
+        cal.gallery_photos(library, names, data / "gallery")  # (any still missing)
+    excluded_gallery = None
+    if args.exclude_faces_of != "none":  # avatars wearing a face of another library (the fair's) are left out
+        other = CharacterLibrary(args.exclude_faces_of) if args.exclude_faces_of else CharacterLibrary()
+        if library is None or Path(other.folder).resolve() != Path(library.folder).resolve():
+            if library is not None and other.available():
+                cal.gallery_photos(other, sorted(other.available()), data / "exclude")
+            if (data / "exclude").is_dir():
+                excluded_gallery = data / "exclude"
     status = 0
+    found_shared: dict[str, str] = {}  # what the models before found (the first, the best, tells faces apart best)
+    found_alias: dict[str, str] = {}
+    decided_by = None
     for model_id, engine in engines.items():
         found = probes[engine.detector_spec.id]
-        vectors, fiqa = _embedded(engine, found, data / f"embeddings.{model_id}.npz", args.refit)
-        faces = cal.faces(found, vectors, found.weights(fiqa))
+        vectors, fiqa = _embedded(engine, found, data / f"embeddings.{model_id}.npz")
         gallery = Gallery(data / "gallery", engine)
         gallery.refresh(force=True)
+        others = None
+        if excluded_gallery is not None:
+            other_gallery = Gallery(excluded_gallery, engine)
+            other_gallery.refresh(force=True)
+            others = cal.GalleryRows.of(other_gallery)
+        if args.data_only:
+            print(f"[calibrate] {model_id}: {int(found.found.sum())} faces embedded")
+            continue
+        chosen = np.isin(found.avatar, names)
+        found, vectors = found.subset(chosen), vectors[chosen]
+        fiqa = None if fiqa is None else fiqa[chosen]
+        passed = found.passed(fiqa)  # (the faces the live gate lets through, as live)
+        faces = cal.faces(found, vectors, found.weights(fiqa), passed)
         rows = cal.GalleryRows.of(gallery)
+        rows = rows.subset(sorted(set(faces.people.tolist())))
         avatars = sorted(set(faces.people.tolist()))
         print(f"[calibrate] {model_id}: {int(faces.single.sum())} faces and {int((~faces.single).sum())} averages of "
-              f"{len(avatars)} avatars ({found.found.mean():.0%} of the windows' faces found); "
+              f"{len(avatars)} avatars ({found.found.mean():.0%} of the windows' faces found, "
+              f"{passed.sum() / max(1, found.found.sum()):.0%} of those pass the live gate); "
               f"{len(rows.rows)} gallery photos and templates")
-        alias = cal.same_faces(faces, rows)
+        shared = cal.shared_faces(faces, rows, others, known=found_shared) if others is not None else {}
+        found_shared.update(shared)
+        if shared:
+            print("[calibrate] left out, wearing a face of the other library: "
+                  + ", ".join(f"{a} ({b})" for a, b in sorted(shared.items())))
+            faces = cal._subset(faces, [a for a in avatars if a not in shared])
+            rows = rows.subset([a for a in avatars if a not in shared])
+        present = set(faces.people.tolist())
+        if decided_by is None:  # who wears whose face: the first model's say (list the best profile first)
+            alias, decided_by = cal.same_faces(faces, rows), model_id
+            found_alias.update(alias)
+        else:  # (another model's lookalikes stay strangers to each other: its calibration must count them)
+            alias = {a: b for a, b in found_alias.items() if a in present and b in present}
+            print(f"[calibrate] who wears whose face, as {decided_by} found it")
         if alias:
             print("[calibrate] the same face, counted as one identity: "
                   + ", ".join(f"{a} as {b}" for a, b in sorted(alias.items())))
@@ -242,7 +298,8 @@ def cmd_calibrate(args) -> int:
                               f"{e['tpir']:.1%}" for t, e in by_target.items())
             print(f"  held out, {k:>6}: target {cells}{'   <- kept' if k == kind else ''}")
         made = {"by": "bifold-faces calibrate", "date": datetime.date.today().isoformat(),
-                "avatars": avatars, "same_faces": alias, "detector": engine.detector_spec.id,
+                "avatars": [a for a in avatars if a not in shared], "same_faces": alias,
+                "left_out": shared, "detector": engine.detector_spec.id,
                 "sha256": engine.embedder_spec.file.sha256, "eye_px": list(cal.EYE_PX), "yaws": list(cal.YAWS),
                 "presets": list(cal.PRESETS), "gallery": {"yaws": list(cal.GALLERY_YAWS),
                                                           "eye_px": cal.GALLERY_EYE_PX},
@@ -254,34 +311,82 @@ def cmd_calibrate(args) -> int:
         cohort = cal.cohort_of(model_id, cohort_set) if cohort_set is not None else None
         if cohort is not None:
             made["cohort"] = {"faces": len(cohort), "digest": cohort.digest}
-        calibration = cal.fit(model_id, faces, rows, kind, cohort_set, made)
+        report = {"model": model_id, "normalisation": kind, "check": results}
+        track = {}
+        if args.track_splits > 0:  # the target per stranger track: offsets from some halvings, checked on others
+            started = time.perf_counter()
+            tracks = cal.track_check(model_id, faces, rows, kind, args.track_splits, args.seed, progress=print)
+            track = cal.track_offsets(tracks, seed=args.seed)
+            again = cal.track_check(model_id, faces, rows, kind, args.track_splits, args.seed + 1000, progress=print)
+            report["per_track"] = measured = cal.track_rates(again, track)
+            track["checked"] = {t: measured[t] for t in map(str, track["targets"])}
+            print(f"[calibrate] {model_id}: per stranger track ({len(tracks)} tracks, {track['pairs']} identity "
+                  f"pairs; offsets from {args.track_splits} halvings, checked on {args.track_splits} others, "
+                  f"{time.perf_counter() - started:.0f} s):")
+            for target, offset in zip(track["targets"], track["offsets"]):
+                w, wo = measured[str(target)]["with"], measured[str(target)]["without"]
+                print(f"  target {target:.1%}: offset {offset:.2f} decades; per track {w['per_track']:.2%} "
+                      f"({w['interval'][0]:.2%}-{w['interval'][1]:.2%}, {w['named']} tracks from {w['pairs']} pairs), "
+                      f"per decision {w['per_decision']:.3%}; without the offset {wo['per_track']:.2%} "
+                      f"({wo['interval'][0]:.2%}-{wo['interval'][1]:.2%})")
+        made["track"] = {"splits": args.track_splits, "seed": args.seed} if track else None
+        calibration = dataclasses.replace(cal.fit(model_id, faces, rows, kind, cohort_set, made), track=track)
         for path in cal.write(model_id, calibration, cohort, args.models):
             print(f"[calibrate] wrote {path}")
         for line in cal.bins_table(calibration):
             print(line)
-        cal.save_report(data / f"report.{model_id}.json", {"model": model_id, "normalisation": kind,
-                                                            "check": results})
+        cal.save_report(data / f"report.{model_id}.json", report)
     return status
 
 
-def _embedded(engine, probes, path: Path, reuse: bool):
-    """``(unit embeddings, eDifFIQA-T scores or None)`` of ``probes``' faces (kept in ``path``)."""
+def _embedded(engine, probes, path: Path, progress=print):
+    """``(unit embeddings, eDifFIQA-T scores or None)`` of ``probes``' faces, kept in ``path`` by window key: only the
+    windows this model file has not embedded before are embedded now, and the file is saved as it goes (a long run
+    that stops keeps what it did)."""
+    import time
+
     import numpy as np
 
-    if reuse and path.is_file():
+    keys = probes.keys()
+    vectors = np.zeros((len(keys), engine.dim), np.float32)
+    fiqa = np.zeros(len(keys), np.float32) if engine.fiqa is not None else None
+    done = np.zeros(len(keys), bool)
+    sha = engine.embedder_spec.file.sha256
+    if path.is_file():
         with np.load(path, allow_pickle=False) as data:
-            fiqa = data["fiqa"] if "fiqa" in data.files else None
-            return data["vectors"].astype(np.float64), fiqa
-    vectors = np.zeros((len(probes.crops), engine.dim), np.float32)
-    fiqa = np.zeros(len(probes.crops), np.float32) if engine.fiqa is not None else None
-    rows = np.flatnonzero(probes.found)
+            old = data["vectors"]
+            old_keys = data["keys"].tolist() if "keys" in data.files else keys[: len(old)].tolist()
+            old_done = data["embedded"] if "embedded" in data.files else np.ones(len(old), bool)
+            old_fiqa = data["fiqa"] if "fiqa" in data.files else None
+            old_sha = str(data["sha256"]) if "sha256" in data.files else sha
+        if old_sha == sha and old.shape[1:] == (engine.dim,):
+            index = {k: i for i, k in enumerate(old_keys) if old_done[i]}
+            for r, k in enumerate(keys.tolist()):
+                i = index.get(k)
+                if i is not None:
+                    vectors[r], done[r] = old[i], True
+                    if fiqa is not None and old_fiqa is not None:
+                        fiqa[r] = old_fiqa[i]
+
+    def save():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(path, vectors=vectors, keys=keys, embedded=done, sha256=np.array(sha),
+                            **({"fiqa": fiqa} if fiqa is not None else {}))
+
+    rows = np.flatnonzero(probes.found & ~done)
+    started = time.perf_counter()
     for start in range(0, len(rows), 32):
         part = rows[start:start + 32]
         vectors[part] = engine.embedder.embed(probes.crops[part]).vectors
         if fiqa is not None:
             fiqa[part] = engine.fiqa.score(probes.crops[part])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(path, vectors=vectors, **({"fiqa": fiqa} if fiqa is not None else {}))
+        done[part] = True
+        if start // 32 % 10 == 9:
+            save()
+            if progress:
+                progress(f"[calibrate] {engine.model_id}: {start + len(part)} of {len(rows)} faces embedded "
+                         f"({time.perf_counter() - started:.0f} s)")
+    save()
     return vectors.astype(np.float64), fiqa
 
 
@@ -360,11 +465,19 @@ def main(argv=None) -> int:
                            help="where the renders, faces and embeddings are kept (default: "
                                 "models/calibration/data)")
     calibrate.add_argument("--refit", action="store_true",
-                           help="use the faces and embeddings made before (no rendering)")
+                           help="use only the faces rendered before (no rendering; embeddings are always reused)")
+    calibrate.add_argument("--data-only", action="store_true",
+                           help="render and embed what is missing, then stop (no calibration)")
+    calibrate.add_argument("--exclude-faces-of", default="", metavar="DIR",
+                           help="leave out avatars wearing a face of this character library's avatars (default: the "
+                                "default library, the fair's; 'none': no such check)")
     calibrate.add_argument("--normalisation", choices=("auto", "none", "tnorm", "asnorm"), default="auto",
                            help="score normalisation (default auto: kept only when the held-out check finds it "
                                 "names more at the same false-alarm rate)")
     calibrate.add_argument("--splits", type=int, default=10, help="random halvings of the avatars for the check")
+    calibrate.add_argument("--track-splits", type=int, default=60, metavar="N",
+                           help="halvings for the offsets that make the target a rate per stranger track, and as "
+                                "many others to check them (default 60; 0: per decision, no offsets)")
     calibrate.add_argument("--seed", type=int, default=0, help="the seed of the places and the halvings")
     calibrate.add_argument("--offline", action="store_true", help="do not download missing models")
     calibrate.set_defaults(run=cmd_calibrate)

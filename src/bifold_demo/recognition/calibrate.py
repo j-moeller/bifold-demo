@@ -5,18 +5,22 @@ people and LFW may check a calibration, never make one. The data:
 
 * **Who.** The avatars of a character library (``--characters``; by default every prepared avatar). Each avatar is
   one identity: mated pairs are the same avatar, non-mated pairs different avatars; except that avatars showing the
-  same face count as one (:func:`same_faces`: Rocketbox reuses a face, Security_Male_01 wears Male_Adult_03's).
-  The shipped calibrations come from 38 avatars that are *not* in the fair's library, so that the fair can check
-  them (its people are strangers to the calibration).
+  same face count as one (:func:`same_faces`: Rocketbox reuses a face, Security_Male_01 wears Male_Adult_03's; the
+  first profile's model decides, the others take its say, so that their own lookalikes stay strangers), and that
+  avatars wearing a face of another library's avatars (``--exclude-faces-of``, by default the fair's) are left out
+  (:func:`shared_faces`: Wood_Male_01 wears the fair's Male_Adult_17's), so that the fair's people are strangers to
+  the calibration and can check it.
 * **Their gallery.** Each avatar's "photos": windows of the virtual sensor on its head in the fair's hall, 2 m from
   the camera, 100 pixels between the eyes, the head turned -25, 0 and 25 degrees, enrolled by the
   :class:`~.gallery.Gallery` as photos are (the same checks, templates per pose).
 * **Their faces as the live pipeline sees them.** Windows (:class:`~bifold_demo.sensor.WindowRequest` with
-  ``eye_px``: an exact eye distance) at swept face sizes (:data:`EYE_PX`, 8 to 64 pixels between the eyes), the head
-  turned (:data:`YAWS`), through camera presets (:data:`PRESETS`: an ideal camera and a budget 1080p one with its
-  blur, noise and JPEG), at a few places in the hall (its light varies), found by the profile's face detector as the
-  live pipeline finds faces in windows, aligned and embedded. Each face is binned by what the pipeline measures: the
-  face's size from its box and its yaw from its landmarks.
+  ``eye_px``: an exact eye distance) at swept face sizes (:data:`EYE_PX`, 8 to 90 pixels between the eyes: 90 for
+  the bin of a webcam's near faces), the head turned (:data:`YAWS`), through camera presets (:data:`PRESETS`: an
+  ideal camera and a budget 1080p one with its blur, noise and JPEG), at a few places in the hall (its light varies;
+  each avatar's own random places), found by the profile's face detector as the live pipeline finds faces in
+  windows, aligned, gated as live faces are (:meth:`Probes.passed`: those the live gate would not embed do not
+  count) and embedded. Each face is binned by what the pipeline measures: the face's size from its box and its yaw
+  from its landmarks. Renders and embeddings are kept per window, so new avatars or sizes add to what was done.
 * **Evidence of several faces.** The decisions score a track's averaged faces, so the calibration also scores
   averages of two and three faces of one avatar at one size (neighbouring yaws), weighted by quality as the tracks
   are (:data:`AGGREGATES`).
@@ -34,15 +38,26 @@ within twice the target: no normalisation unless another names at least a point 
 calibration uses every avatar; with a normalisation, its cohort is kept beside it (``<model id>.cohort.npz``), the
 very faces its scores were normalised with.
 
+**The target per stranger track.** A live track is decided again after every new face, so a stranger's *track* is
+named more often than a single decision is. :func:`track_check` simulates strangers' tracks on more halvings
+(:data:`TRACK_SPLITS`): each stranger's faces at one camera and one class of sizes arrive one by one, and the running
+quality-weighted mean is decided after each, as live (enough evidence, the accept threshold, the margin). The offsets
+(:func:`track_offsets`: decades added to every accept threshold, per target of :data:`TRACK_TARGETS`) are the
+smallest whose upper bound (one-sided 95 %, a bootstrap over identity pairs: a stranger's false alarms come from the
+few people they resemble) keeps the share of stranger tracks named at the target; :func:`track_rates` then measures
+the rate per track with them on as many other halvings. The calibration keeps them (``track``), with that check.
+
 The renders, the aligned faces and their embeddings are kept in ``--data`` (default ``<models>/calibration/data``),
 so that a calibration can be made again without rendering (``--refit``).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 import time
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -50,7 +65,8 @@ import numpy as np
 
 from .calibration import Calibration, Cohort, bin_index, calibration_path, cohort_path, per_person
 
-EYE_PX = (8.0, 11.0, 14.0, 18.0, 24.0, 32.0, 44.0, 64.0)  # pixels between the eyes asked of the windows
+# pixels between the eyes asked of the windows (90: the bin of faces 80 pixels and more apart, a webcam's near faces)
+EYE_PX = (8.0, 11.0, 14.0, 18.0, 24.0, 32.0, 44.0, 64.0, 90.0)
 YAWS = (-40.0, -20.0, 0.0, 20.0, 40.0)  # degrees the head is turned (to its own left: positive)
 PRESETS = ("ideal", "budget 1080p")
 DISTANCES = (3.5, 5.0, 6.5)  # metres from the camera; each face is at one of them (the light varies)
@@ -65,12 +81,20 @@ COHORT_KEEP = 16  # faces per avatar kept in a shipped cohort
 # photos (AdaFace and the ResNet-50: Security_Male_01 and Male_Adult_03 0.80-0.85 of it, the next most alike pair
 # 0.52-0.55; SFace tells faces apart less well: 0.75 for them, 0.69-0.72 for two different men)
 SAME_FACE = 0.8
-# Rocketbox avatars that wear another's face (their renders and head textures show it), counted as one whatever the
-# model's scores say
-KNOWN_SAME_FACES = {"Security_Male_01": "Male_Adult_03"}
+# Rocketbox avatars that wear another's face (their renders and head textures show it), counted as one (or, when the
+# other is in another library, left out) whatever the model's scores say. Wood_Male_01 wears the face of the fair's
+# Male_Adult_17 (SFace scores their photos 0.89, any two different avatars at most 0.68)
+KNOWN_SAME_FACES = {"Security_Male_01": "Male_Adult_03", "Wood_Male_01": "Male_Adult_17"}
+# stranger tracks (:func:`stranger_tracks`): a track's faces come from one of these classes of eye distances asked
+TRACK_SIZES = ((8.0, 11.0), (14.0, 18.0), (24.0, 32.0), (44.0, 64.0), (90.0,))
+TRACK_TARGETS = (0.1, 0.03, 0.01, 0.003, 0.001)  # false-alarm rates per stranger track the offsets are measured at
+TRACK_SPLITS = 60  # halvings for the offsets (and as many others for the check of them)
+CONFIDENCE = 0.95  # the offsets keep the upper bound of this (one-sided) interval at the target
+OFFSET_STEP, OFFSET_MOST = 0.02, 3.0  # decades
 
-__all__ = ["AGGREGATES", "DISTANCES", "EYE_PX", "PRESETS", "YAWS", "Probes", "as_one", "check", "fit", "render",
-           "same_faces", "scores"]
+__all__ = ["AGGREGATES", "DISTANCES", "EYE_PX", "PRESETS", "TRACK_SIZES", "TRACK_TARGETS", "YAWS", "Probes",
+           "StrangerTracks", "as_one", "check", "fit", "render", "same_faces", "scores", "shared_faces",
+           "stranger_tracks", "track_check", "track_offsets", "track_rates", "window_key", "window_keys"]
 
 
 @dataclass
@@ -117,27 +141,72 @@ class Probes:
         """How the windows were drawn (see the class docs; ``{}`` when not recorded)."""
         return json.loads(self.rendered)
 
-    def weights(self, fiqa=None) -> np.ndarray:
-        """The quality weights (:attr:`~.quality.Quality.weight`), with eDifFIQA-T's scores when given."""
+    def keys(self) -> np.ndarray:
+        """Each window's key (:func:`window_key`): which avatar, size, yaw and camera it shows."""
+        return np.array([window_key(a, px, y, p) for a, px, y, p in zip(self.avatar.tolist(), self.eye_px.tolist(),
+                                                                         self.yaw.tolist(), self.preset.tolist())],
+                        str)
+
+    def subset(self, mask) -> Probes:
+        """The windows where ``mask`` is true."""
+        mask = np.asarray(mask)
+        values = {k: getattr(self, k) for k in self.__dataclass_fields__}
+        return Probes(**{k: (v[mask] if isinstance(v, np.ndarray) else v) for k, v in values.items()})
+
+    def concat(self, other: Probes) -> Probes:
+        """These windows, then ``other``'s (of the same detector, drawn the same way)."""
+        if other.detector != self.detector:
+            raise ValueError(f"probes of {self.detector} and {other.detector} cannot be joined")
+        values = {k: getattr(self, k) for k in self.__dataclass_fields__}
+        return Probes(**{k: (np.concatenate([v, getattr(other, k)]) if isinstance(v, np.ndarray) else v)
+                         for k, v in values.items()})
+
+    def _quality(self, k: int, fiqa=None):
         from .quality import Quality
 
+        return Quality(float(self.ied[k]), float(self.yaws[k]), 0.0, 0.0, float(self.sharpness[k]), 128.0, 50.0, 0.0,
+                       float(self.outside[k]), float(self.score[k]), None if fiqa is None else float(fiqa[k]))
+
+    def weights(self, fiqa=None) -> np.ndarray:
+        """The quality weights (:attr:`~.quality.Quality.weight`), with eDifFIQA-T's scores when given."""
         out = np.zeros(len(self.found))
         for k in np.flatnonzero(self.found):
-            q = Quality(float(self.ied[k]), float(self.yaws[k]), 0.0, 0.0, float(self.sharpness[k]), 128.0, 50.0,
-                        0.0, float(self.outside[k]), float(self.score[k]),
-                        None if fiqa is None else float(fiqa[k]))
-            out[k] = q.weight
+            out[k] = self._quality(k, fiqa).weight
+        return out
+
+    def passed(self, fiqa=None, gate=None) -> np.ndarray:
+        """Which faces were found and pass the live pipeline's quality gate (``gate``, default
+        :class:`~.evidence.QualityGate`; with eDifFIQA-T's scores when given), as live faces must to be embedded."""
+        from .evidence import QualityGate
+
+        gate = gate or QualityGate()
+        out = np.zeros(len(self.found), bool)
+        for k in np.flatnonzero(self.found):
+            out[k] = gate.check(self._quality(k, fiqa), float(self.sizes[k]), float(self.score[k])) is None
         return out
 
 
 # -- rendering -----------------------------------------------------------------------------------------------------
 
 
+def window_key(avatar: str, eye_px: float, yaw: float, preset: str) -> str:
+    """The key of a calibration window: ``avatar|eye_px|yaw|preset``."""
+    return f"{avatar}|{float(eye_px):g}|{float(yaw):g}|{preset}"
+
+
+def window_keys(names, eye_px=EYE_PX, yaws=YAWS, presets=PRESETS) -> list[str]:
+    """Every window :func:`render` draws of ``names``."""
+    return [window_key(n, px, y, p) for n in names for y in yaws for px in eye_px for p in presets]
+
+
 def render(library, names, detectors: dict, gallery_folder, eye_px=EYE_PX, yaws=YAWS, presets=PRESETS,
-           distances=DISTANCES, progress=print, seed: int = 0) -> dict:
+           distances=DISTANCES, progress=print, seed: int = 0, skip=frozenset()) -> dict:
     """Render ``names`` (avatars of ``library``) in the fair's hall: their gallery photos (written as PNG files into
-    ``gallery_folder/<avatar>/``) and their faces through the windows, found by each of ``detectors`` (``{id:
-    detector}``). Returns ``{detector id: Probes}``. Needs OpenGL."""
+    ``gallery_folder/<avatar>/``, unless there already) and their faces through the windows, found by each of
+    ``detectors`` (``{id: detector}``), except the windows whose :func:`window_key` is in ``skip`` (rendered before).
+    Each avatar's places in the hall are drawn from its own random numbers (``seed`` and its name), so an avatar's
+    renders do not depend on which others are rendered with it. Returns ``{detector id: Probes}`` of the windows
+    rendered. Needs OpenGL."""
     import cv2
 
     from ..characters.character import Character
@@ -153,7 +222,6 @@ def render(library, names, detectors: dict, gallery_folder, eye_px=EYE_PX, yaws=
     from .quality import assess
 
     gallery_folder = Path(gallery_folder)
-    rng = np.random.default_rng(seed)
     scene = fair.build_scene(people=[])  # the hall, its light and haze, nobody in it
     camera = scene.camera
     position = np.asarray(camera.current_position, dtype=np.float64)
@@ -178,10 +246,17 @@ def render(library, names, detectors: dict, gallery_folder, eye_px=EYE_PX, yaws=
     started = time.perf_counter()
     try:
         for n, name in enumerate(names):
+            rng = np.random.default_rng([seed, zlib.crc32(name.encode())])
+            poses = [(2.0, 0.0, yaw, "gallery") for yaw in GALLERY_YAWS
+                     if not (gallery_folder / name / f"yaw{yaw:+.0f}.png").is_file()]
+            poses += [(float(rng.choice(distances)), float(rng.uniform(-0.8, 0.8)), yaw, "probe") for yaw in yaws]
+            wanted = {(yaw, px, preset) for yaw in yaws for px in eye_px for preset in presets
+                      if window_key(name, px, yaw, preset) not in skip}
+            poses = [p for p in poses if p[3] == "gallery" or any(w[0] == p[2] for w in wanted)]
+            if not poses:
+                continue
             person = Character(library.load(name), name=name, shadow=False)
             scene.add(person)
-            poses = [(2.0, 0.0, yaw, "gallery") for yaw in GALLERY_YAWS]
-            poses += [(float(rng.choice(distances)), float(rng.uniform(-0.8, 0.8)), yaw, "probe") for yaw in yaws]
             for distance, side, yaw, kind in poses:
                 spot = position + forward * distance + across * side
                 spot[1] = 0.0
@@ -198,7 +273,8 @@ def render(library, names, detectors: dict, gallery_folder, eye_px=EYE_PX, yaws=
                     cv2.imwrite(str(folder / f"yaw{yaw:+.0f}.png"), window.image)
                     continue
                 requests = [WindowRequest((name, px, preset), head=head, head_size=0.5, subject=person, eye_px=px,
-                                          preset=preset) for px in eye_px for preset in presets]
+                                          preset=preset) for px in eye_px for preset in presets
+                            if (yaw, px, preset) in wanted]
                 for window in render_windows(scene, renderer, requests, sensor, truth=False):
                     _, px, preset = window.tag
                     image = window.image
@@ -262,7 +338,8 @@ def gallery_photos(library, names, folder, progress=None) -> list[Path]:
 @dataclass
 class Faces:
     """Faces (single and averaged) of one model: unit ``vectors``, who they show (``people``), their ``sizes`` and
-    ``yaws`` (absolute) for the bins, and whether each is a ``single`` face (the cohort's)."""
+    ``yaws`` (absolute) for the bins, whether each is a ``single`` face (the cohort's), the eye distance asked
+    (``eye_px``), and where known their quality ``weights`` (an average's: the sum) and camera ``presets``."""
 
     vectors: np.ndarray
     people: np.ndarray
@@ -270,13 +347,24 @@ class Faces:
     yaws: np.ndarray
     single: np.ndarray
     eye_px: np.ndarray
+    weights: np.ndarray | None = None
+    presets: np.ndarray | None = None
+
+    def take(self, keep) -> Faces:
+        """The faces where ``keep`` (a mask or indices) says."""
+        return Faces(*(None if v is None else v[keep] for v in (self.vectors, self.people, self.sizes, self.yaws,
+                                                                 self.single, self.eye_px, self.weights,
+                                                                 self.presets)))
 
 
-def faces(probes: Probes, vectors: np.ndarray, weights: np.ndarray) -> Faces:
+def faces(probes: Probes, vectors: np.ndarray, weights: np.ndarray, passed=None) -> Faces:
     """The single faces found, and averages of two and three faces of one avatar at one size, preset and place
-    (:data:`AGGREGATES`, neighbouring yaws), weighted by quality as a track's evidence is."""
+    (:data:`AGGREGATES`, neighbouring yaws), weighted by quality as a track's evidence is; ``passed``: only the faces
+    that pass the live pipeline's quality gate (:meth:`Probes.passed`), as live ones must."""
     found = probes.found & (weights > 0)
-    out_v, out_p, out_s, out_y, out_single, out_px = [], [], [], [], [], []
+    if passed is not None:
+        found &= np.asarray(passed, bool)
+    out_v, out_p, out_s, out_y, out_single, out_px, out_w, out_pre = [], [], [], [], [], [], [], []
     for k in np.flatnonzero(found):
         out_v.append(vectors[k])
         out_p.append(probes.avatar[k])
@@ -284,10 +372,12 @@ def faces(probes: Probes, vectors: np.ndarray, weights: np.ndarray) -> Faces:
         out_y.append(abs(probes.yaws[k]))
         out_single.append(True)
         out_px.append(probes.eye_px[k])
+        out_w.append(weights[k])
+        out_pre.append(probes.preset[k])
     groups: dict = {}
     for k in np.flatnonzero(found):
         groups.setdefault((probes.avatar[k], probes.eye_px[k], probes.preset[k]), {})[float(probes.yaw[k])] = k
-    for (avatar, px, _preset), by_yaw in groups.items():
+    for (avatar, px, preset), by_yaw in groups.items():
         for combo in AGGREGATES:
             members = [by_yaw.get(YAWS[i]) for i in combo if i < len(YAWS)]
             if len(members) != len(combo) or any(m is None for m in members):
@@ -302,8 +392,10 @@ def faces(probes: Probes, vectors: np.ndarray, weights: np.ndarray) -> Faces:
             out_y.append(float(share @ np.abs(probes.yaws[members])))
             out_single.append(False)
             out_px.append(px)
+            out_w.append(float(w.sum()))
+            out_pre.append(preset)
     return Faces(np.array(out_v), np.array(out_p, str), np.array(out_s), np.array(out_y), np.array(out_single, bool),
-                 np.array(out_px))
+                 np.array(out_px), np.array(out_w), np.array(out_pre, str))
 
 
 @dataclass
@@ -415,8 +507,7 @@ def check(model: str, probe: Faces, gallery: GalleryRows, kinds=KINDS, splits: i
             calibration = fit(model, fit_faces, gallery.subset(fitting), kind, cohort)
             s, people = scores(test_faces, gallery.subset(known), kind, cohort)
             n = len(people)
-            curves = [calibration.curve(z, y) for z, y in zip(test_faces.sizes, test_faces.yaws)]
-            rarity = np.array([[c.rarity(v) for v in row] for c, row in zip(curves, s)])
+            rarity = rarities(calibration, s, test_faces.sizes, test_faces.yaws)
             order_ = np.argsort(-rarity, axis=1)
             best = rarity[np.arange(len(rarity)), order_[:, 0]]
             second = rarity[np.arange(len(rarity)), order_[:, 1]] if n > 1 else np.zeros(len(rarity))
@@ -444,11 +535,248 @@ def check(model: str, probe: Faces, gallery: GalleryRows, kinds=KINDS, splits: i
     return out
 
 
-def same_faces(probe: Faces, gallery: GalleryRows, share: float = SAME_FACE) -> dict[str, str]:
+def rarities(calibration: Calibration, values: np.ndarray, sizes, yaws) -> np.ndarray:
+    """The rarities of ``values`` (one row per face: its scores against the people) under ``calibration``, each row in
+    its face's bin (``sizes``, ``yaws``)."""
+    values = np.asarray(values, dtype=np.float64)
+    out = np.zeros_like(values)
+    bins = np.array([calibration.bin(z, y) for z, y in zip(sizes, yaws)], int).reshape(-1, 2)
+    for s, y in {tuple(b) for b in bins.tolist()}:
+        here = (bins[:, 0] == s) & (bins[:, 1] == y)
+        out[here] = calibration.curves[s][y].rarities(values[here])
+    return out
+
+
+# -- stranger tracks: the target per track ----------------------------------------------------------------------------
+
+
+@dataclass
+class StrangerTracks:
+    """Simulated stranger tracks (:func:`stranger_tracks`), one entry per track: the stranger (``avatar``), the halving
+    (``split``), the gallery's size (``people``), the highest rarity of the best person among its decisions whose
+    margin held (``best``; ``-inf``: none did) and whom that decision would name (``named``; where none held, the best
+    person of its most alike decision): the identity pair the track's false alarms come from. Per decision:
+    ``decision_track`` (its track) and ``decision_best`` (the best person's rarity where the margin held, else
+    ``-inf``)."""
+
+    avatar: np.ndarray
+    split: np.ndarray
+    people: np.ndarray
+    best: np.ndarray
+    named: np.ndarray
+    decision_track: np.ndarray
+    decision_best: np.ndarray
+
+    def __len__(self) -> int:
+        return len(self.avatar)
+
+    @classmethod
+    def join(cls, parts) -> StrangerTracks:
+        parts = [p for p in parts if len(p)]
+        if not parts:
+            return cls(*(np.zeros(0, t) for t in (str, int, int, float, str, int, float)))
+        offsets = np.cumsum([0] + [len(p) for p in parts[:-1]])
+        return cls(np.concatenate([p.avatar for p in parts]), np.concatenate([p.split for p in parts]),
+                   np.concatenate([p.people for p in parts]), np.concatenate([p.best for p in parts]),
+                   np.concatenate([p.named for p in parts]),
+                   np.concatenate([p.decision_track + o for p, o in zip(parts, offsets)]),
+                   np.concatenate([p.decision_best for p in parts]))
+
+    def pairs(self) -> np.ndarray:
+        """Each track's identity pair (the stranger and the person it would be named as, in either order)."""
+        return np.array(["|".join(sorted((a, b))) for a, b in zip(self.avatar.tolist(), self.named.tolist())], str)
+
+    def excess(self, target: float, offset: float = 0.0) -> np.ndarray:
+        """Per track, how far (decades) its best decision passes the accept threshold for ``target`` plus ``offset``
+        (a track is named where this is at least 0)."""
+        accept = np.array([-math.log10(per_person(target, int(n))) for n in self.people])
+        return self.best - accept - offset
+
+    def decisions_named(self, target: float, offset: float = 0.0) -> float:
+        """The share of decisions (not tracks) that name someone at ``target`` plus ``offset``."""
+        accept = np.array([-math.log10(per_person(target, int(n))) for n in self.people])
+        return float(np.mean(self.decision_best >= accept[self.decision_track] + offset - 1e-12)) \
+            if len(self.decision_best) else 0.0
+
+
+def stranger_tracks(calibration: Calibration, probe: Faces, gallery: GalleryRows, strangers, kind: str = "none",
+                    cohort: Faces | None = None, seed: int = 0, split: int = 0, margin: float = 1.0,
+                    min_weight: float = 0.5, min_frames: int = 2, top: int = 50) -> StrangerTracks:
+    """Strangers' tracks as the live decisions see them: each stranger's single faces at one camera preset and one
+    class of sizes (:data:`TRACK_SIZES`; all their yaws) arrive one by one in a random order; after each (from the
+    ``min_frames``-th, once their quality weights reach ``min_weight``) the running quality-weighted mean of the faces
+    so far is scored against ``gallery`` (normalised by ``kind`` against ``cohort``'s single faces, which hold none of
+    these people) and decided as live: the best person's rarity in the mean's bin, and whether it beats the
+    runner-up's by ``margin``. ``probe`` must carry its faces' ``weights`` and ``presets``."""
+    people = sorted(set(gallery.owners.tolist()))
+    owner = np.searchsorted(np.array(people), gallery.owners)
+    order = np.argsort(owner, kind="stable")
+    starts = np.r_[0, np.flatnonzero(np.diff(owner[order])) + 1]
+    rows = gallery.rows[order]
+    c_vectors = None if kind == "none" else cohort.vectors[cohort.single]
+    g_stats = None
+    if kind == "asnorm":
+        g = rows @ c_vectors.T
+        k = min(top, g.shape[1])
+        g = -np.partition(-g, k - 1, axis=1)[:, :k]
+        g_stats = (g.mean(axis=1), np.maximum(g.std(axis=1), 1e-3))
+    rng = np.random.default_rng([seed, split])
+    single = probe.single & np.isin(probe.people, list(strangers))
+    out = {"avatar": [], "best": [], "named": [], "decision_track": [], "decision_best": []}
+    for avatar in sorted(strangers):
+        mine = single & (probe.people == avatar)
+        for preset in sorted(set(probe.presets[mine].tolist())):
+            for group in TRACK_SIZES:
+                idx = np.flatnonzero(mine & (probe.presets == preset) & np.isin(probe.eye_px, group))
+                if len(idx) < min_frames:
+                    continue
+                idx = rng.permutation(idx)
+                w = np.maximum(probe.weights[idx], 1e-6)
+                total = np.cumsum(w)
+                mean = np.cumsum(w[:, None] * probe.vectors[idx], axis=0)
+                mean /= np.maximum(np.linalg.norm(mean, axis=1, keepdims=True), 1e-12)
+                decide = (np.arange(1, len(idx) + 1) >= min_frames) & (total >= min_weight - 1e-9)
+                if not decide.any():
+                    continue
+                mean = mean[decide]
+                size = (np.cumsum(w * probe.sizes[idx]) / total)[decide]
+                yaw = (np.cumsum(w * probe.yaws[idx]) / total)[decide]
+                raw = mean @ rows.T
+                if kind == "tnorm":
+                    c = mean @ c_vectors.T
+                    raw = (raw - c.mean(axis=1, keepdims=True)) / np.maximum(c.std(axis=1, keepdims=True), 1e-3)
+                elif kind == "asnorm":
+                    c = mean @ c_vectors.T
+                    k = min(top, c.shape[1])
+                    c = -np.partition(-c, k - 1, axis=1)[:, :k]
+                    p_mean, p_spread = c.mean(axis=1, keepdims=True), np.maximum(c.std(axis=1, keepdims=True), 1e-3)
+                    raw = 0.5 * ((raw - p_mean) / p_spread + (raw - g_stats[0][None]) / g_stats[1][None])
+                person = np.maximum.reduceat(raw, starts, axis=1)
+                rarity = rarities(calibration, person, size, yaw)
+                ranked = np.argsort(-rarity, axis=1, kind="stable")
+                best = rarity[np.arange(len(rarity)), ranked[:, 0]]
+                second = rarity[np.arange(len(rarity)), ranked[:, 1]] if len(people) > 1 else np.zeros(len(rarity))
+                held = np.where(best - second >= margin, best, -np.inf)
+                j = int(np.argmax(held)) if np.isfinite(held).any() else int(np.argmax(best))
+                track = len(out["avatar"])
+                out["avatar"].append(avatar)
+                out["best"].append(float(held.max()))
+                out["named"].append(people[ranked[j, 0]])
+                out["decision_track"] += [track] * len(held)
+                out["decision_best"] += held.tolist()
+    n = len(out["avatar"])
+    return StrangerTracks(np.array(out["avatar"], str), np.full(n, split), np.full(n, len(people)),
+                          np.array(out["best"]), np.array(out["named"], str), np.array(out["decision_track"], int),
+                          np.array(out["decision_best"]))
+
+
+def track_check(model: str, probe: Faces, gallery: GalleryRows, kind: str = "none", splits: int = TRACK_SPLITS,
+                seed: int = 0, progress=None) -> StrangerTracks:
+    """Stranger tracks (:func:`stranger_tracks`) over ``splits`` random halvings of the avatars, as the held-out check
+    halves them (:func:`check`): one half calibrates (with ``kind``'s cohort of its faces), the other is split into
+    known people and strangers; the strangers' tracks are decided against the known people's gallery."""
+    rng = np.random.default_rng(seed)
+    avatars = np.array(sorted(set(probe.people.tolist())))
+    parts = []
+    for split in range(splits):
+        order = rng.permutation(avatars)
+        half = len(order) // 2
+        fitting, rest = order[:half], order[half:]
+        known, strangers = rest[: len(rest) // 2], rest[len(rest) // 2:]
+        fit_faces = _subset(probe, fitting)
+        cohort = cohort_faces(fit_faces, seed=seed) if kind != "none" else None
+        calibration = fit(model, fit_faces, gallery.subset(fitting), kind, cohort)
+        parts.append(stranger_tracks(calibration, _subset(probe, strangers), gallery.subset(known), strangers, kind,
+                                     cohort, seed, split))
+        if progress and (split + 1) % 10 == 0:
+            progress(f"[calibrate] {model}: stranger tracks of {split + 1} of {splits} halvings")
+    return StrangerTracks.join(parts)
+
+
+def _bootstrap(tracks: StrangerTracks, draws: int, seed: int):
+    """``(cluster of each track, draws x clusters counts)``: a bootstrap over identity pairs (clusters drawn with
+    replacement), for intervals that allow for the false alarms coming from few pairs."""
+    _, cluster = np.unique(tracks.pairs(), return_inverse=True)
+    clusters = int(cluster.max()) + 1 if len(cluster) else 0
+    rng = np.random.default_rng(seed)
+    counts = rng.multinomial(clusters, np.full(clusters, 1.0 / max(clusters, 1)), size=draws).astype(np.float32)
+    return cluster, clusters, counts
+
+
+def track_offsets(tracks: StrangerTracks, targets=TRACK_TARGETS, confidence: float = CONFIDENCE, draws: int = 2000,
+                  seed: int = 0, step: float = OFFSET_STEP, most: float = OFFSET_MOST) -> dict:
+    """The offsets (decades added to a single decision's accept threshold) that keep the false-alarm rate per
+    stranger track at each of ``targets``: the smallest (from 0, in steps of ``step``) whose upper bound (one-sided,
+    ``confidence``; a bootstrap over identity pairs) is at most the target; ``most`` where none is. Each target's
+    accept threshold with its offset stays at least as strict as a looser target's. Returns the calibration's
+    ``track`` (:meth:`~.calibration.Calibration.track_offset`) with how they were measured."""
+    cluster, clusters, counts = _bootstrap(tracks, draws, seed)
+    sizes = np.bincount(cluster, minlength=clusters).astype(np.float32)
+    grid = np.arange(0.0, most + step / 2, step)
+    totals = counts @ sizes
+    out = {"targets": [], "offsets": [], "upper": [], "rate": [], "rate_without": [], "upper_without": []}
+    previous = None
+    for target in sorted(targets, reverse=True):
+        excess = tracks.excess(target)
+        named = np.stack([np.bincount(cluster, weights=(excess >= g - 1e-12), minlength=clusters) for g in grid],
+                         axis=1).astype(np.float32)
+        upper = np.quantile((counts @ named) / totals[:, None], confidence, axis=0)
+        rate = named.sum(axis=0) / sizes.sum()
+        ok = np.flatnonzero(upper <= target)
+        k = int(ok[0]) if len(ok) else len(grid) - 1
+        offset = float(grid[k])
+        if previous is not None:  # (no looser than the looser target's threshold)
+            loose_target, loose_offset = previous
+            n = int(np.median(tracks.people))
+            floor = loose_offset - (math.log10(per_person(loose_target, n)) - math.log10(per_person(target, n)))
+            offset = max(offset, round(floor, 4))
+        previous = (target, offset)
+        k = min(round(offset / step), len(grid) - 1)
+        out["targets"].append(target)
+        out["offsets"].append(round(offset, 4))
+        out["upper"].append(round(float(upper[k]), 5))
+        out["rate"].append(round(float(rate[k]), 5))
+        out["rate_without"].append(round(float(rate[0]), 5))
+        out["upper_without"].append(round(float(upper[0]), 5))
+    out.update(confidence=confidence, tracks=len(tracks), pairs=clusters, splits=len(set(tracks.split.tolist())),
+               draws=int(draws), step=step)
+    return out
+
+
+def track_rates(tracks: StrangerTracks, track: dict, interval: float = 0.9, draws: int = 2000, seed: int = 1) -> dict:
+    """The false-alarm rate per stranger track measured at each target of ``track`` (offsets,
+    :func:`track_offsets`) and without them: the share of tracks named, with an ``interval`` (two-sided) from a
+    bootstrap over identity pairs; the share of single decisions naming; how many tracks were named and from how
+    many pairs."""
+    cluster, clusters, counts = _bootstrap(tracks, draws, seed)
+    sizes = np.bincount(cluster, minlength=clusters).astype(np.float32)
+    totals = counts @ sizes
+    lo, hi = (1.0 - interval) / 2, 1.0 - (1.0 - interval) / 2
+    pairs = tracks.pairs()
+    out = {}
+    for target, offset in zip(track["targets"], track["offsets"]):
+        entry = {}
+        for label, used in (("with", offset), ("without", 0.0)):
+            named = tracks.excess(target, used) >= -1e-12
+            per_cluster = np.bincount(cluster, weights=named, minlength=clusters).astype(np.float32)
+            boot = (counts @ per_cluster) / totals
+            entry[label] = {"offset": used, "per_track": round(float(named.mean()), 5),
+                            "interval": [round(float(np.quantile(boot, lo)), 5), round(float(np.quantile(boot, hi)),
+                                                                                       5)],
+                            "named": int(named.sum()), "pairs": len(set(pairs[named].tolist())),
+                            "per_decision": round(tracks.decisions_named(target, used), 5)}
+        out[str(target)] = entry
+    out["tracks"], out["pairs"], out["interval"] = len(tracks), clusters, interval
+    out["splits"] = len(set(tracks.split.tolist()))
+    return out
+
+
+def same_faces(probe: Faces, gallery: GalleryRows, share: float = SAME_FACE, known=None) -> dict[str, str]:
     """Avatars that show the same face as another, ``{avatar: the avatar it counts as}`` (the first by name of each
-    group): those of :data:`KNOWN_SAME_FACES`, and those the scores show, judged on single faces of at least 20 pixels
-    between the eyes turned less than 25 degrees: the median of an avatar's scores against the other's photos reaches
-    ``share`` of the lower of the two avatars' medians against their own."""
+    group): those of :data:`KNOWN_SAME_FACES` and ``known`` (pairs found before, by another model), and those the
+    scores show, judged on single faces of at least 20 pixels between the eyes turned less than 25 degrees: the median
+    of an avatar's scores against the other's photos reaches ``share`` of the lower of the two avatars' medians
+    against their own."""
     s, people = scores(probe, gallery)
     big = (probe.sizes >= 20) & (probe.yaws < 25) & probe.single
     own = {}
@@ -463,7 +791,7 @@ def same_faces(probe: Faces, gallery: GalleryRows, share: float = SAME_FACE) -> 
             person = parent[person]
         return person
 
-    for a, b in KNOWN_SAME_FACES.items():
+    for a, b in {**KNOWN_SAME_FACES, **(known or {})}.items():
         if a in parent and b in parent:
             first, second = sorted((root(a), root(b)))
             parent[second] = first
@@ -476,6 +804,32 @@ def same_faces(probe: Faces, gallery: GalleryRows, share: float = SAME_FACE) -> 
     return {person: root(person) for person in people if root(person) != person}
 
 
+def shared_faces(probe: Faces, gallery: GalleryRows, others: GalleryRows, share: float = SAME_FACE,
+                 known=None) -> dict[str, str]:
+    """Avatars of ``probe`` that wear a face of another library's avatars (``others``: their gallery photos), ``{avatar:
+    the other avatar}``: those of :data:`KNOWN_SAME_FACES` and ``known`` whose other avatar is among ``others``, and
+    those whose single faces of at least 20 pixels between the eyes turned less than 25 degrees score against an
+    other avatar's photos a median of at least ``share`` of their median against their own photos. Such an avatar is
+    left out of a calibration made to be checked on the other library (the fair's)."""
+    s, people = scores(probe, gallery)
+    o, other_people = scores(probe, others)
+    big = (probe.sizes >= 20) & (probe.yaws < 25) & probe.single
+    out = {}
+    for j, person in enumerate(people):
+        mine = big & (probe.people == person)
+        if not mine.any():
+            continue
+        own = float(np.median(s[mine, j]))
+        medians = np.median(o[mine], axis=0)
+        k = int(np.argmax(medians))
+        if medians[k] >= share * own:
+            out[person] = other_people[k]
+    for a, b in {**KNOWN_SAME_FACES, **(known or {})}.items():
+        if a in people and b in other_people:
+            out.setdefault(a, b)
+    return out
+
+
 def as_one(faces_: Faces, gallery: GalleryRows, alias: dict) -> tuple[Faces, GalleryRows]:
     """``faces_`` and ``gallery`` with each avatar of ``alias`` (:func:`same_faces`) counted as the one it shows."""
     if not alias:
@@ -484,14 +838,12 @@ def as_one(faces_: Faces, gallery: GalleryRows, alias: dict) -> tuple[Faces, Gal
     def renamed(names):
         return np.array([alias.get(n, n) for n in names.tolist()], str)
 
-    return (Faces(faces_.vectors, renamed(faces_.people), faces_.sizes, faces_.yaws, faces_.single, faces_.eye_px),
+    return (dataclasses.replace(faces_, people=renamed(faces_.people)),
             GalleryRows(gallery.rows, renamed(gallery.owners)))
 
 
 def _subset(faces_: Faces, people) -> Faces:
-    keep = np.isin(faces_.people, list(people))
-    return Faces(faces_.vectors[keep], faces_.people[keep], faces_.sizes[keep], faces_.yaws[keep],
-                 faces_.single[keep], faces_.eye_px[keep])
+    return faces_.take(np.isin(faces_.people, list(people)))
 
 
 def choose(results: dict, target: float = 0.01, kinds=KINDS) -> str:
@@ -513,9 +865,8 @@ def cohort_faces(faces_: Faces, keep: int = COHORT_KEEP, seed: int = 0) -> Faces
         mine = np.flatnonzero((faces_.people == avatar) & faces_.single)
         rows += sorted(rng.choice(mine, size=min(keep, len(mine)), replace=False).tolist())
     rows = np.array(rows, int)
-    vectors = faces_.vectors[rows].astype(np.float16).astype(np.float64)  # as a cohort is saved
-    return Faces(vectors, faces_.people[rows], faces_.sizes[rows], faces_.yaws[rows], faces_.single[rows],
-                 faces_.eye_px[rows])
+    chosen = faces_.take(rows)
+    return dataclasses.replace(chosen, vectors=chosen.vectors.astype(np.float16).astype(np.float64))  # (as saved)
 
 
 def cohort_of(model: str, faces_: Faces) -> Cohort:

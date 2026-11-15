@@ -1353,3 +1353,78 @@ def test_the_held_out_check_measures_the_false_alarm_rate_asked_for(monkeypatch)
     better = {"none": {"0.01": {"fpir": 0.01, "tpir": 0.8}}, "tnorm": {"0.01": {"fpir": 0.012, "tpir": 0.85}},
               "asnorm": {"0.01": {"fpir": 0.01, "tpir": 0.83}}}
     assert choose(better) == "tnorm"
+
+
+def test_the_offsets_make_the_target_a_rate_per_stranger_track(monkeypatch):
+    """Stranger tracks of a made-up world (each stranger's faces one by one, decided after each as live) are named more
+    often than single decisions are; the offsets found on some halvings bring the rate per track down to the target
+    (its upper bound), and on other halvings the measured rate per track comes out near it."""
+    from bifold_demo.recognition import calibration as calibration_module
+    from bifold_demo.recognition.calibrate import (
+        StrangerTracks,
+        fit,
+        stranger_tracks,
+        track_check,
+        track_offsets,
+        track_rates,
+    )
+
+    monkeypatch.setattr(calibration_module, "MIN_NONMATED", 50)
+    monkeypatch.setattr(calibration_module, "MIN_MATED", 10)
+    faces, gallery = _avatar_world(avatars=24, per=40, spread=0.9)
+    n = len(faces.people)
+    faces = dataclasses.replace(faces, weights=np.full(n, 0.4), presets=np.array(["ideal", "budget"] * (n // 2)),
+                                eye_px=np.array([[8.0, 11.0, 14.0, 18.0, 24.0, 32.0, 44.0][k % 7] for k in range(n)]))
+    tracks = track_check("m", faces, gallery, "none", splits=6, seed=1)
+    assert len(tracks) > 100 and set(tracks.split.tolist()) == set(range(6))
+    assert len(tracks.decision_best) > 2 * len(tracks)  # (several decisions per track)
+    assert len(stranger_tracks(fit("m", faces, gallery), faces, gallery, [], "none")) == 0  # (no strangers)
+    joined = StrangerTracks.join([tracks, tracks])
+    assert len(joined) == 2 * len(tracks) and joined.decision_track.max() == 2 * len(tracks) - 1
+    target = 0.1
+    per_track = float(np.mean(tracks.excess(target) >= 0))
+    assert per_track > tracks.decisions_named(target)  # a track decides again and again
+    track = track_offsets(tracks, targets=(0.1, 0.03), draws=500)
+    assert track["targets"] == [0.1, 0.03] and all(o >= 0 for o in track["offsets"])
+    assert track["upper"][0] <= 0.1 + 1e-9 and track["rate"][0] <= track["rate_without"][0]
+    again = track_check("m", faces, gallery, "none", splits=6, seed=2)
+    rates = track_rates(again, track, draws=500)
+    with_, without = rates["0.1"]["with"], rates["0.1"]["without"]
+    assert with_["per_track"] <= without["per_track"] and with_["interval"][0] <= with_["per_track"]
+    assert with_["per_track"] <= with_["interval"][1] and rates["tracks"] == len(again)
+    assert with_["per_track"] < 0.25  # (near the target; a small made-up world)
+
+
+def test_avatars_wearing_a_face_of_the_fairs_library_are_left_out(monkeypatch):
+    """A calibration made to be checked on the fair's people leaves out avatars wearing one of their faces: those whose
+    faces score against an avatar of the other library as against their own photos, and the known ones."""
+    from bifold_demo.recognition import calibrate
+    from bifold_demo.recognition.calibrate import GalleryRows, shared_faces
+
+    faces, gallery = _avatar_world()
+    a03 = gallery.rows[gallery.owners == "A03"]  # Fair_Male wears A03's face
+    others = GalleryRows(np.vstack([a03, gallery.rows[gallery.owners == "A01"][:1] * 0.0 + 1.0 / math.sqrt(32)]),
+                         np.array(["Fair_Male", "Fair_Male", "Fair_Female"]))
+    monkeypatch.setattr(calibrate, "KNOWN_SAME_FACES", {"A07": "Fair_Female", "A08": "Nobody"})
+    assert shared_faces(faces, gallery, others) == {"A03": "Fair_Male", "A07": "Fair_Female"}
+    assert shared_faces(faces, gallery, others, known={"A05": "Fair_Female"})["A05"] == "Fair_Female"
+
+
+def test_calibration_windows_have_keys_and_join_and_pass_the_live_gate():
+    from bifold_demo.recognition.calibrate import EYE_PX, PRESETS, YAWS, Probes, window_key, window_keys
+
+    n = 4
+    probes = Probes("det", np.array(["A", "A", "B", "B"]), np.array([8.0, 64.0, 8.0, 90.0]),
+                    np.array([0.0, -20.0, 40.0, 0.0]), np.array(["ideal", "budget 1080p", "ideal", "ideal"]),
+                    np.full(n, 5.0), np.array([True, True, False, True]), np.zeros((n, 112, 112, 3), np.uint8),
+                    np.array([7.0, 60.0, 0.0, 88.0]), np.array([0.0, -20.0, 0.0, 0.0]), np.full(n, 1.0),
+                    np.zeros(n), np.array([7.0, 60.0, 0.0, 88.0]), np.full(n, 0.9))
+    assert probes.keys().tolist() == ["A|8|0|ideal", "A|64|-20|budget 1080p", "B|8|40|ideal", "B|90|0|ideal"]
+    assert window_key("A", 8.0, 0.0, "ideal") == "A|8|0|ideal"
+    assert len(window_keys(["A", "B"])) == 2 * len(EYE_PX) * len(YAWS) * len(PRESETS)
+    first, rest = probes.subset([True, False, False, False]), probes.subset(np.array([False, True, True, True]))
+    joined = first.concat(rest)
+    assert joined.keys().tolist() == probes.keys().tolist() and joined.detector == "det"
+    with pytest.raises(ValueError):
+        first.concat(dataclasses.replace(rest, detector="other"))
+    assert probes.passed().tolist() == [False, True, False, True]  # (7 pixels between the eyes: too small; not found)
