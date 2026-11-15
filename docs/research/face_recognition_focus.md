@@ -505,3 +505,6 @@ branch and pushed; its results go into the progress log.
     branch `f2-review-fixes`).
   - **S3:** its independent review was stopped part way; its notes are in `scratchpad/steps/S3_review/notes.txt`.
   - **Next:** E1 and S4.
+- **15 November, 22:35 UTC: resumed on request ("Continue").** The container kept everything: the branch, the
+  builders' worktrees, the avatars and the models. F2's builder goes on with its review fixes (the calibration first)
+  from its saved changes. S3's reviewer finishes its review from its notes.
