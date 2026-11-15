@@ -601,11 +601,13 @@ class StrangerTracks:
 
 def stranger_tracks(calibration: Calibration, probe: Faces, gallery: GalleryRows, strangers, kind: str = "none",
                     cohort: Faces | None = None, seed: int = 0, split: int = 0, margin: float = 1.0,
-                    min_weight: float = 0.5, min_frames: int = 2, top: int = 50,
-                    sizes=TRACK_SIZES) -> StrangerTracks:
+                    min_weight: float = 0.5, min_frames: int = 2, top: int = 50, sizes=TRACK_SIZES,
+                    single_face: float = 40.0, single_yaw: float = 25.0) -> StrangerTracks:
     """Strangers' tracks as the live decisions see them: each stranger's single faces at one camera preset and one
     class of sizes (:data:`TRACK_SIZES`; all their yaws) arrive one by one in a random order; after each (from the
-    ``min_frames``-th, once their quality weights reach ``min_weight``) the running quality-weighted mean of the faces
+    ``min_frames``-th, or from the first while their mean face is ``single_face`` pixels between the eyes or more and
+    turned less than ``single_yaw``; once their quality weights reach ``min_weight``: the live decisions' settings,
+    :class:`~.decision.DecisionSettings`) the running quality-weighted mean of the faces
     so far is scored against ``gallery`` (normalised by ``kind`` against ``cohort``'s single faces, which hold none of
     these people) and decided as live: the best person's rarity in the mean's bin, and whether it beats the
     runner-up's by ``margin``. ``probe`` must carry its faces' ``weights`` and ``presets``; ``sizes``: the classes."""
@@ -629,19 +631,20 @@ def stranger_tracks(calibration: Calibration, probe: Faces, gallery: GalleryRows
         for preset in sorted(set(probe.presets[mine].tolist())):
             for group in sizes:
                 idx = np.flatnonzero(mine & (probe.presets == preset) & np.isin(probe.eye_px, group))
-                if len(idx) < min_frames:
+                if not len(idx):
                     continue
                 idx = rng.permutation(idx)
                 w = np.maximum(probe.weights[idx], 1e-6)
                 total = np.cumsum(w)
                 mean = np.cumsum(w[:, None] * probe.vectors[idx], axis=0)
                 mean /= np.maximum(np.linalg.norm(mean, axis=1, keepdims=True), 1e-12)
-                decide = (np.arange(1, len(idx) + 1) >= min_frames) & (total >= min_weight - 1e-9)
+                size = np.cumsum(w * probe.sizes[idx]) / total
+                yaw = np.cumsum(w * probe.yaws[idx]) / total
+                one = (single_face > 0) & (size >= single_face) & (yaw < single_yaw)
+                decide = ((np.arange(1, len(idx) + 1) >= min_frames) | one) & (total >= min_weight - 1e-9)
                 if not decide.any():
                     continue
-                mean = mean[decide]
-                size = (np.cumsum(w * probe.sizes[idx]) / total)[decide]
-                yaw = (np.cumsum(w * probe.yaws[idx]) / total)[decide]
+                mean, size, yaw = mean[decide], size[decide], yaw[decide]
                 raw = mean @ rows.T
                 if kind == "tnorm":
                     c = mean @ c_vectors.T

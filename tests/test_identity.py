@@ -595,8 +595,14 @@ def test_a_track_is_named_only_with_a_rare_score_a_margin_and_enough_evidence(ca
     policy, people = _policy(calibration)
     little = policy.decide({1: _agg({"Ada": 0.5}, people, weight=0.2)}, 0.0)[1]  # (0.5 needed)
     assert (little.state, little.reason, little.progress) == (UNDECIDED, "collecting", 0.4) and little.label == "? 40%"
-    one = policy.decide({1: _agg({"Ada": 0.5}, people, frames=1)}, 0.1)[1]
-    assert (one.state, one.progress) == (UNDECIDED, 0.5)  # a single frame is never enough
+    one = policy.decide({1: _agg({"Ada": 0.5}, people, frames=1, size=30.0)}, 0.1)[1]
+    assert (one.state, one.progress) == (UNDECIDED, 0.5)  # a single frame of a face this small is not enough
+    turned = policy.decide({2: _agg({"Ada": 0.5}, people, frames=1, size=48.0, yaw=30.0)}, 0.1)[2]
+    assert (turned.state, turned.progress) == (UNDECIDED, 0.5)  # ... nor of a big face turned away
+    big = policy.decide({3: _agg({"Ada": 0.5}, people, frames=1, size=48.0, yaw=10.0)}, 0.1)[3]
+    assert (big.state, big.name) == (NAMED, "Ada")  # one big frontal face is (a window's, at one embedding a second)
+    assert _policy(calibration, single_face=0.0)[0].decide({3: _agg({"Ada": 0.5}, people, frames=1, size=48.0)},
+                                                           0.1)[3].state == UNDECIDED
     waiting = policy.decide({1: None}, 0.2, waiting={1: "turned"})[1]
     assert (waiting.state, waiting.reason, waiting.raw) == (UNDECIDED, "turned", None)
     assert waiting.label == "? turned"  # (no evidence yet: why, not "0%")
@@ -1393,6 +1399,17 @@ def test_the_offsets_make_the_target_a_rate_per_stranger_track(monkeypatch):
     assert with_["per_track"] <= without["per_track"] and with_["interval"][0] <= with_["per_track"]
     assert with_["per_track"] <= with_["interval"][1] and rates["tracks"] == len(again)
     assert with_["per_track"] < 0.25  # (near the target; a small made-up world)
+
+
+def test_the_simulated_tracks_decide_with_the_live_decisions_settings():
+    import inspect
+
+    from bifold_demo.recognition.calibrate import stranger_tracks
+
+    defaults = {k: v.default for k, v in inspect.signature(stranger_tracks).parameters.items()}
+    live = DecisionSettings()
+    for name in ("margin", "min_weight", "min_frames", "single_face", "single_yaw"):
+        assert defaults[name] == getattr(live, name), name
 
 
 def test_avatars_wearing_a_face_of_the_fairs_library_are_left_out(monkeypatch):

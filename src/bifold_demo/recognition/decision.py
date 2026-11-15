@@ -14,7 +14,8 @@ is decided again after every face: :meth:`~.calibration.Calibration.track_offset
 
 * **a name** when the best person's score reaches ``accept``, beats the runner-up by ``margin`` (in rarity: the
   runner-up's score is that many decades more common among strangers) and enough good evidence has been seen (summed
-  quality weight ``min_weight``, ``min_frames`` frames);
+  quality weight ``min_weight``, ``min_frames`` frames; one face of ``single_face`` pixels between the eyes, nearly
+  frontal, is enough on its own: a window's face, where the budget allows one embedding a second);
 * **unknown** when enough good evidence has been seen and the best score stays below the **reject** threshold (the
   score a known person's face of that quality falls below only ``reject_miss`` of the time: the calibration's mated
   curve) for ``sustain_unknown`` seconds, in a bin where that threshold is *decisive*: above all but a tenth of
@@ -82,7 +83,9 @@ class DecisionSettings:
     ``stranger_like``: how often strangers' best scores must reach a best score called unknown;
     ``min_weight``, ``min_frames``: enough good evidence (summed quality weights, :attr:`~.quality.Quality.weight`:
     one sharp frontal face of 24 pixels between the eyes is worth 0.5, of 40 or more 1; and at least two frames; the
-    calibration's bins already count how good the faces are); ``sustain``: seconds a switch to another name or to
+    calibration's bins already count how good the faces are); ``single_face``, ``single_yaw``: one face is enough
+    when the evidence's face is this big (pixels between the eyes) and turned less than this (degrees; 0: never; the
+    calibration's offsets are measured with the same rule); ``sustain``: seconds a switch to another name or to
     unknown must hold; ``sustain_unknown``: seconds the score must stay below the reject threshold (from not decided);
     ``incumbent``: decades a track holding a name counts more for it in the assignment."""
 
@@ -95,6 +98,8 @@ class DecisionSettings:
     stranger_like: float = 0.25
     min_weight: float = 0.5
     min_frames: int = 2
+    single_face: float = 40.0
+    single_yaw: float = 25.0
     sustain: float = 1.0
     sustain_unknown: float = 1.0
     incumbent: float = 1.0
@@ -418,7 +423,8 @@ class IdentityPolicy:
 
     def _progress(self, agg) -> float:
         s = self.settings
-        return float(min(1.0, agg.weight / s.min_weight, agg.frames / max(1, s.min_frames)))
+        one = s.single_face > 0 and agg.size >= s.single_face and agg.yaw < s.single_yaw  # (a big frontal face)
+        return float(min(1.0, agg.weight / s.min_weight, agg.frames / max(1, 1 if one else s.min_frames)))
 
     def _propose(self, scores: Scores, agg) -> tuple:
         """What this evidence says on its own: ``(state, name, reason, progress)``."""
