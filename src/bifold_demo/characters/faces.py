@@ -393,6 +393,15 @@ def face_rig(model: CharacterModel) -> FaceRig | None:
     return rig
 
 
+def share_rig(model: CharacterModel, source: CharacterModel) -> None:
+    """Give ``model`` the face rig of ``source`` instead of one worked out from its own mesh: for a copy of
+    ``source`` with the same skeleton and a finer head (:mod:`.subdivide`), whose face must move exactly as
+    ``source``'s does (the rig's tongue and cheeks are fitted to the mesh, which subdivision changes a little)."""
+    rig = face_rig(source)
+    _RIGS[id(model)] = (weakref.ref(model), rig)
+    weakref.finalize(model, _RIGS.pop, id(model), None)
+
+
 def cheek_room(model: CharacterModel, bones: dict[str, int]) -> float:
     """Metres of room beside the cheeks (the less of both sides; ``inf`` when nothing is there).
 

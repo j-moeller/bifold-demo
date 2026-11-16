@@ -2375,6 +2375,68 @@ child's renders on an adult's head).
 A fitted face shape is biometric data like the photos it comes from: it is
 kept only in git-ignored folders and deleted with the person or character.
 
+## Close-ups: subdivided heads
+
+The Rocketbox heads have about 1,700 vertices and 3,100 triangles; a face
+edge is 10 mm long on the median and 23 mm at the 90th percentile. In a
+window with 100 pixels or more between the eyes the jaw line, the nose, the
+chin and the ears show their facets. Step S4 of the plan
+([docs/research/face_recognition_focus.md](docs/research/face_recognition_focus.md))
+gives faces seen up close a finer head
+([`characters/subdivide.py`](src/bifold_demo/characters/subdivide.py); the
+approach: [docs/research/high_res_faces.md](docs/research/high_res_faces.md),
+sections 2.3 and 3.1, A4):
+
+- **Curved triangles.** `subdivide(model, level)` is a copy of the model
+  whose head primitive has 4 (level 1) or 16 (level 2) triangles for each of
+  its own, on a smooth surface through its own vertices: every triangle is a
+  cubic Bezier triangle (a PN triangle) tangent at its corners to the mesh's
+  own tangent planes, and the new vertices are points of these patches. An
+  edge's curve depends on its two ends only, so neighbouring triangles share
+  it and nothing cracks; a new point depends on one triangle, not on two
+  rings of neighbours, so the coarse heads' uneven edges do not make the
+  surface ripple, as a Butterfly scheme's fixed weights would.
+- **What keeps its shape.** The closed lips (the skin that touches without an
+  edge), the lid margins (where the skin turns from facing out to facing the
+  eyeball), the edge of the mouth's inside and folds sharper than 100° are
+  creases: their new points follow a curve along the crease and each side
+  keeps its own tangent plane, so the folds stay folds, and the two lips get
+  the same new points, so closed lips stay closed. The neck's open edge and
+  the skin the body's bones move are split on their straight edges (the seam
+  to the collar cannot open); so are the teeth, gums and tongue (their exact
+  shape kept); the eyeballs' new points lie on their spheres.
+- **The rest of a vertex** comes from its triangle by the same barycentric
+  weights: UVs per triangle (seams stay exact), the skin weights (the four
+  strongest kept, renormalised), the artist's normals (the shading inside the
+  face stays as it was; the outline is what changes), tangents made again.
+  The original vertices come first and keep everything, bit for bit; the copy
+  shares the skeleton, the inverse binds, the other parts and the face rig
+  (`faces.share_rig`), so it poses exactly as the model does.
+- **After a fitted shape.** A head fitted to a person (`apply_shape`) is
+  subdivided like the avatar's own, after its shape is applied (its normals
+  were turned and its tangents made with it).
+- **Checked like a fitted head.** `subdivide.check(model, level)` runs the S3
+  rig checks in the 12 faces of the face rig, front and side, on the head
+  subdivided on its curved surface against the same head split along its flat
+  triangles (the coarse head's own surface, vertex for vertex): no eyeball
+  through a lid, no teeth through the lips, no shut mouth opened, the neck's
+  edge where it was, no triangle folded. A patch that would fold (a few
+  slivers in the eye sockets, 1 by 20 mm) is flattened until it does not.
+  The labels the checks need (the head's parts, eyes, the mouth's inside,
+  the fade to the neck, the ties) come from `subdivide.head_labels`, without
+  MediaPipe or the identity space; the parts (by visibility, about 1.2 s) are
+  cached in the head-texture cache for an avatar's own head, in memory for a
+  fitted one.
+- **Cost.** 0.07 s for level 1 and 0.17 s for level 2 per head on this CPU
+  (about 6,500 and 25,000 vertices); cached in memory by the head's geometry.
+
+```python
+from bifold_demo.characters.subdivide import check, subdivide
+
+finer = subdivide(model, 2)        # the head with 16 times the triangles; the rest shared
+print(check(model, 2).ok)          # the rig's checks in the 12 faces
+```
+
 ## Character creator
 
 `C` opens the character creator (in selection mode: for the selected person,
@@ -2845,6 +2907,8 @@ src/bifold_demo/
                headshape/ (head shapes from photos: ICT-FaceKit's identity space on each
                            head, the multi-photo fit, the fitted head on the rig, checks,
                            shape.npz, the texture on the fitted head, the evaluation),
+               subdivide.py (subdivided heads for close-ups: curved triangles, creases,
+                             the labels carried, the rig's checks on them),
                created.py (characters from the character creator, saved),
                rocketbox.py + library.py + cli.py (bifold-characters),
                rocketbox_catalog.json (avatar labels)                   ← 3D people
