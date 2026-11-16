@@ -285,6 +285,20 @@ def test_eyeballs_stay_on_their_spheres_and_the_mouths_inside_is_split_flat():
     assert np.abs(q[inside] - flat[inside]).max() < 1e-7
 
 
+def test_the_skin_is_creased_where_it_meets_the_mouths_inside():
+    """Where the visible skin meets the mouth's inside (the lips' inner rims) the edge is a crease, even where the
+    surface hardly folds there: the skin keeps its own tangent plane instead of rounding into the mouth."""
+    points, normals, uvs, tri, fade = _band(6, 12)
+    rows = np.repeat(np.arange(7), 13)  # the band's vertices, ring by ring
+    labels = _labels(len(points), parts=np.where(rows >= 5, s0.INNER, s0.SKIN), fade=fade)
+    prim = _primitive(points, uvs, tri, normals)
+    made = sd.subdivide_primitive(prim, labels, 1)
+    node = mesh.weld(np.asarray(prim.positions, np.float64))[0]
+    rim = np.isin(made.edges, np.unique(node[rows == 4])).all(axis=1)  # the last ring of skin
+    assert rim.sum() == 12 and (made.rules[rim] == sd.CREASE).all()
+    assert not (made.rules[~rim] == sd.CREASE).any()  # (the band folds by 11 degrees a ring: no other crease)
+
+
 def test_the_skin_weights_are_the_four_strongest_renormalised(band):
     prim, labels = band
     n = len(prim.positions)
