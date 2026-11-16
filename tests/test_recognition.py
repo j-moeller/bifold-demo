@@ -332,11 +332,12 @@ def test_with_n_on_the_tracks_own_the_window_requests_also_when_a_result_is_too_
     assert len(app.window_service.calls) == 1
 
 
-def test_where_faces_are_real_the_target_is_stricter_unless_one_is_asked_for():
-    """The calibrations are made from avatars; on real faces they let more strangers through. So without --fpir the
-    webcam and photos cast on the 3D people get the stricter target; switching the source changes it at once."""
+def test_the_target_follows_the_source_where_faces_are_real_unless_one_is_asked_for(monkeypatch):
+    """Without --fpir the webcam and photos cast on the 3D people get the target for real faces (now the same as the
+    scene's: the checks on LFW support no stricter one); switching the source changes it at once."""
     from types import SimpleNamespace
 
+    from bifold_demo import app as app_module
     from bifold_demo.app import REAL_FPIR, SCENE_FPIR, DemoApp, DemoConfig, parse_args
     from bifold_demo.recognition.decision import DecisionSettings
 
@@ -344,14 +345,16 @@ def test_where_faces_are_real_the_target_is_stricter_unless_one_is_asked_for():
     app.config, app.cast = DemoConfig(), None
     app.switcher = SimpleNamespace(active_name="scene")
     app.people = SimpleNamespace(policy=SimpleNamespace(settings=DecisionSettings(fpir=0.5)))
-    assert app.target() == SCENE_FPIR == 0.01 and REAL_FPIR < SCENE_FPIR
+    assert SCENE_FPIR == 0.01 and REAL_FPIR <= SCENE_FPIR
+    monkeypatch.setattr(app_module, "REAL_FPIR", 0.001)  # (the mechanism, whatever the value)
+    assert app.target() == SCENE_FPIR
     app._apply_target()
     assert app.people.policy.settings.fpir == SCENE_FPIR and app.people.policy.settings.margin == 1.0
     app.switcher.active_name = "webcam"
     app._apply_target()
-    assert app.people.policy.settings.fpir == REAL_FPIR
+    assert app.people.policy.settings.fpir == 0.001
     app.switcher.active_name, app.cast = "scene", object()  # (photos of real people on the 3D people)
-    assert app.target() == REAL_FPIR
+    assert app.target() == 0.001
     app.config = DemoConfig(fpir=0.02)
     assert app.target() == 0.02
     assert parse_args([]).fpir is None and parse_args(["--fpir", "0.003"]).fpir == 0.003

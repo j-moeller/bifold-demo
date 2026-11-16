@@ -278,18 +278,26 @@ profile's person detector; YOLOX-tiny is registered too but misses most people u
 
 - **Deterministic runs**: a scene source with a fixed-step clock (which also makes the renderer wait for the 2048
   heads), the gallery refreshed (`refresh(force=True)`) before the run; the tracker, the embedding budget and the
-  decisions read only the frames' times.
+  decisions read only the frames' times. Build a fresh `PeopleRecognizer` per run (or call `reset()`); a frame whose
+  time goes back, or from another source, starts the recognition afresh.
 - **Every decision** (`DecisionLog(path)`, JSON lines): the state, name, reason and progress; the best person's and the
-  runner-up's raw, normalised and calibrated scores; the thresholds of the face's bin; the model and normalisation;
-  the evidence (each face's time, quality weight, size, yaw, source, eDifFIQA-T, and the resets).
+  runner-up's raw, normalised and calibrated scores; the thresholds of the face's bin; the target (`fpir`, per
+  stranger track), the per-track offset, the gallery's size (`people`), the calibration's digest and file, whether
+  the bin may say "unknown" (`decisive`) and whether its faces can tell a swap (`switch_decisive`); the model and
+  normalisation; the evidence (each face's time, quality weight, size, yaw, source, eDifFIQA-T, head-fit cost
+  (`fits`), the resets and the faces held out as unlike the track's name).
 - **Track-level results**: `PeopleResult.people` per frame (track id, box, decision, face), and `recognition/truth.py`
-  to score them against the scene: `frame_truth`, `match_tracks`, `IdSwitches`, `Outcomes` (the shares of this note).
+  to score them against the scene: `frame_truth`, `match_tracks`, `IdSwitches`, `Outcomes` (the shares of this note;
+  wrong names also over segments whose face was never shown: `confused_all`; named tracks that follow nobody:
+  `named_unfollowed`), `face_owner` and `FaceAttribution` (whose face each face given to a track is, and how many
+  went to a track following someone else, embedded or not).
 - **The calibration and the cohort as inputs**: `PeopleRecognizer(calibration=..., cohort=...)`,
   `Calibration.load/save`, `Cohort.load/save` (a calibration records its cohort's digest; the decisions refuse
-  another); `recognition/calibrate.py` makes them (`render`, `gallery_photos`, `faces`, `same_faces`, `as_one`,
-  `scores`, `fit`, `check`, the held-out check with each halving's own rate). A calibration's `made` says how it was
-  made (avatars, same faces, detector, model SHA-256, sizes, yaws, cameras, the renderer's quality and hemisphere
-  light, the check).
+  another); `recognition/calibrate.py` makes them (`render`, `gallery_photos`, `faces`, `same_faces`,
+  `shared_faces`, `as_one`, `scores`, `fit`, `check`, the held-out check with each halving's own rate;
+  `stranger_tracks`, `track_check`, `track_offsets`, `track_rates`: the target per stranger track). A calibration's
+  `made` says how it was made (avatars, same faces, those left out, detector, model SHA-256, sizes, yaws, cameras,
+  the renderer's quality and hemisphere light, the check), its `track` the offsets and their check.
 
 ## 8. Open
 

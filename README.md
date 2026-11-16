@@ -910,19 +910,24 @@ windows, SFace found 81 % of such swaps (usually by the second face; before,
 none) and took 12 names away in 11,016 checks of people's own faces, all from
 3 of the 57, whose faces at that size look far from their photos.
 
-**The target.** You set one thing: the false-alarm rate per decision, `--fpir`
-(default 0.01): how often a decision about a stranger names somebody. With `n`
-known people a stranger has `n` chances, so each person's threshold is set at
-about `fpir / n` of strangers' scores. Each model's **calibration** turns that
-rate into its own threshold for each face size (pixels between the eyes,
-measured by the face's height, which a turned head does not shrink) and yaw: a
-score becomes a *rarity*, how rarely strangers reach it (`-log10` of their
-rate), the same currency for every model, so the same target gives the same
-behaviour in every profile. A calibration is kept per model in
-`models/calibration/<model>.json`, else the package's own: it ships one for
-each profile's recogniser that runs here (`recognition/calibrations/`: AdaFace,
-the ResNet-50 and SFace, each with T-norm and its cohort), made from renders of
-38 Rocketbox avatars that are not in the fair's library. A model with neither
+**The target.** You set one thing: the false-alarm rate per stranger track,
+`--fpir`: how often a stranger's track is given somebody's name, at any of its
+decisions (one after every new face). Without it the demo asks 1 % (see "Real
+faces" below for the webcam). With `n` known people a stranger has `n` chances
+in each decision, so each person's threshold is set at about `fpir / n` of
+strangers' scores, and then raised by the calibration's offset for that
+target, which allows for the track being decided again and again. Each
+model's **calibration** turns that rate into its own threshold for each face
+size (pixels between the eyes, measured by the face's height, which a turned
+head does not shrink) and yaw: a score becomes a *rarity*, how rarely
+strangers reach it (`-log10` of their rate), the same currency for every
+model, so the same target gives the same behaviour in every profile. A
+calibration is kept per model in `models/calibration/<model>.json`, else the
+package's own: it ships one for each profile's recogniser that runs here
+(`recognition/calibrations/`: AdaFace and the ResNet-50 without
+normalisation, SFace with T-norm and its cohort), made from renders of 87
+Rocketbox avatars (about 72 identities: Rocketbox reuses faces) that are not in
+the fair's library and wear none of its faces. A model with neither
 names nobody: its people stay "? no calibration" (its LFW threshold, one false
 match in a thousand pairs of real strangers, let a third of avatar strangers
 through), and the status line says how to make one. So the commercial profile
@@ -933,14 +938,36 @@ normalised against a *cohort* of faces that are not in the gallery (T-norm,
 AS-norm), when the calibration says so; the calibration records which cohort
 it was made with, and no other is used with it.
 
-The shipped calibrations hold the target for the fair's people (avatars): in
-a check on avatars they were not made from, the false-alarm rate measured at
-1 % asked was 0.3-1.7 %. Real faces differ: on LFW's pairs of real strangers
-the avatar-made thresholds with T-norm let more strangers through than asked
-(SFace and the ResNet-50: 1-1.6 times at 1 %, 3-6 times at 1 in 1,000; see
-the [results note](docs/research/face_recognition_f2_results.md)). With real
-people (the webcam, the face cast), ask for a lower `--fpir` where a false
-name matters.
+**What the target holds.** On 60 halvings of the avatars that the offsets
+were not measured on, at 1 % asked, the share of stranger tracks named was
+0.70 % for AdaFace (90 % interval 0.33-1.15 %, from a bootstrap over identity
+pairs), 0.52 % for the ResNet-50 (0.18-0.90 %) and 0.61 % for SFace
+(0.08-1.26 %); without the offsets (2.2-2.6 decades) it was 2.5-3.6 %, and the
+first calibrations, made from 38 avatars per decision, measured 1.6-1.9 % per
+decision and more per track. The false alarms come from a few pairs of avatars
+that look alike (5-11 pairs at 1 %), which is also why the intervals are wide.
+The offsets stop at 3 decades, so the strictest targets are not all met: at
+0.1 % asked AdaFace measured 0.25 % per track and SFace 0.34 % (the ResNet-50
+0.07 %). Known people are still named: of the known people's tracks of big
+faces, AdaFace named 98.5 % by their second face at 1 % (64.8 % at the first,
+which one big frontal face now allows).
+
+**Real faces.** The calibrations are made from avatars, which are more alike
+to each other than real people are, so on real faces their thresholds err the
+other way. Checked on LFW's pairs of real people (numbers only, nothing made
+from them is shipped: 3,000 pairs of strangers and 1,000 of one person, aligned
+faces of about 35 pixels between the eyes, the thresholds for 10 known people):
+at the 1 % target no pair of strangers reached SFace's or the ResNet-50's
+threshold (the first calibrations, per decision, let 10 and 9 through: 3 % per
+decision), but 34 % (SFace) and 49 % (the ResNet-50) of the pairs of one person
+fell below it (before: under 1 %); at 0.1 % 63 % and 70 % did, and still no
+stranger pair passed. So a stricter target for the webcam and the face cast is
+not what the checks support: they get the same 1 % (the app's `REAL_FPIR`, which
+`--fpir` overrides). A track's name comes from its better faces, and a
+webcam's near faces are bigger and sharper than LFW's, so fewer are missed than
+in these single comparisons; a calibration made from real faces that may be
+shipped (licensed photos, consented recordings) would close the gap both ways
+(see the [results note](docs/research/face_recognition_f2_results.md)).
 
 **Making a calibration.** Calibrations are made only from data that may be
 shipped: renders of the Rocketbox avatars (MIT), never photos of people (those
@@ -953,29 +980,39 @@ bifold-faces calibrate --refit                 # again from the faces rendered b
 ```
 
 Each avatar is one identity, except that avatars showing the same face count
-as one (Rocketbox reuses a face: Security_Male_01 wears Male_Adult_03's; the
-command also finds others by their scores, and says so). An avatar's "photos" for
-the gallery are windows of the virtual sensor on its head in the fair's hall
-(100 pixels between the eyes, the head turned -25, 0 and 25 degrees); its
-faces as the live pipeline sees them are windows with 8 to 64 pixels between
-the eyes, the head turned up to 40 degrees, through an ideal camera and the
-`budget 1080p` preset, at a few places in the hall, found, aligned and
+as one (Rocketbox reuses faces: Security_Male_01 wears Male_Adult_03's; the
+first profile's model finds the others by their scores, says so, and the
+other models take its word), and that avatars wearing a face of the fair's
+library are left out (`--exclude-faces-of`: Wood_Male_01 wears Male_Adult_17's),
+so that the fair's people are strangers to the calibration. An avatar's
+"photos" for the gallery are windows of the virtual sensor on its head in the
+fair's hall (100 pixels between the eyes, the head turned -25, 0 and 25
+degrees); its faces as the live pipeline sees them are windows with 8 to 90
+pixels between the eyes, the head turned up to 40 degrees, through an ideal
+camera and the `budget 1080p` preset, at a few places in the hall, found,
+aligned, gated (faces the live pipeline would not embed do not count) and
 embedded as live, singly and averaged in twos and threes as a track's evidence
-is. Every face is scored against every
-avatar's gallery: the same avatar gives the mated scores, the others the
-non-mated ones. The command also checks itself: the avatars are halved again
-and again, one half calibrates, the other is split into known people and
-strangers, and the false-alarm rate asked for is compared with the one
-measured, without normalisation and with T-norm and AS-norm. Kept is the one
-that names the most people among those whose measured rate at 1 % stays within
-twice the target (no normalisation, unless another names a point more).
-Calibrations made from avatars that are not in the fair's library
-(`--characters`) keep the fair a fair check of them. Each calibration records
-how it was made: the avatars (and which count as one), the detector, the model
-file's SHA-256, the sizes, yaws and cameras, how the faces were drawn (the
-renderer's quality, the hall's hemisphere light, the heads' textures; scores
-depend on them) and the check's numbers. The renders and embeddings are kept
-in `models/calibration/data/` (about 200 MB) for `--refit`.
+is. Every face is scored against every avatar's gallery: the same avatar gives
+the mated scores, the others the non-mated ones. The command also checks
+itself: the avatars are halved again and again, one half calibrates, the other
+is split into known people and strangers, and the false-alarm rate asked for
+is compared with the one measured, without normalisation and with T-norm and
+AS-norm. Kept is the one that names the most people among those whose
+measured rate at 1 % stays within twice the target (no normalisation, unless
+another names a point more). Then the target per track: on 60 more halvings
+strangers' tracks are played as live (a stranger's faces at one camera and size
+arrive one by one, the running mean decided after each), and each target's
+offset is the smallest whose upper bound (95 %, from a bootstrap over identity
+pairs: a stranger's false alarms come from the few people they resemble) keeps
+the share of stranger tracks named at the target; 60 other halvings measure
+the rate per track with the offsets (`--track-splits`). Each calibration
+records how it was made: the avatars (which count as one, which were left
+out), the detector, the model file's SHA-256, the sizes, yaws and cameras, how
+the faces were drawn (the renderer's quality, the hall's hemisphere light, the
+heads' textures; scores depend on them), the check's numbers and the offsets
+with their check. The renders and embeddings are kept per window in
+`models/calibration/data/` (about 550 MB for 95 avatars), so that `--refit`
+needs no rendering and new avatars or sizes add to them.
 
 **The budget per profile** (embeddings a second for everyone, on a four-core
 CPU like the development machine's; `--embed-rate` sets another): `best`
@@ -1001,11 +1038,19 @@ for frame in frames:                     # sources.Frame, with frame.windows
 ```
 
 Each `Decision` carries the raw, normalised and calibrated scores of the best
-person and the runner-up, the thresholds of the face's bin, the model and the
-evidence (every face's time, quality weight, size, yaw and source); the log
-writes them as lines of JSON. Runs are deterministic for the same frames: the
-tracker, the budget and the decisions read only the frames' times (a scene's own
-time, or the camera's).
+person and the runner-up, the thresholds of the face's bin, the target and the
+per-track offset, how many people the gallery knows, which calibration (its
+digest and file), whether the bin may say "unknown" and whether its faces can
+tell a swap, the model and the evidence (every face's time, quality weight,
+size, yaw, source and how well it fit the track's head); the log writes them as
+lines of JSON. Runs are deterministic for the same frames: the tracker, the
+budget and the decisions read only the frames' times (a scene's own time, or
+the camera's); a frame whose time goes back (a scene started again, another
+source) starts the recognition afresh, and `reset()` does too. For the
+evaluation, `recognition.truth` scores runs against a scene's truth:
+`Outcomes` (names per person and track, wrong names over every segment,
+named tracks that follow nobody) and `FaceAttribution` (whose face each face
+given to a track is).
 
 **Measured** in the fair, half its avatars known (enrolled from renders of
 themselves), 30 s per run, two crowds per profile, with the sensor's windows

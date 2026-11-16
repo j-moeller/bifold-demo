@@ -25,9 +25,11 @@ HELP = ("S source | D detect | N who | W windows | Space pause | R reset | [ ] c
         "C creator | F fullscreen | P screenshot | H hide | Q quit")
 STALE_AFTER = 1.0  # seconds after which old detections are no longer drawn
 # the recognition's targets (false-alarm rate per stranger track) without --fpir: for the 3D scene's avatars, and
-# where faces are real (the webcam, photos cast on the 3D people): the calibrations are made from avatars, and on
-# real faces (LFW) they let more strangers through than asked (see the README)
-SCENE_FPIR, REAL_FPIR = 0.01, 0.001
+# where faces are real (the webcam, photos cast on the 3D people). The calibrations are made from avatars; with
+# their per-track offsets no LFW stranger pair reaches a threshold at 1 % (SFace, the ResNet-50: 0 of 3,000; per
+# decision the first calibrations let 9-10 through), while 34-49 % of the pairs of one person fall below it (60-70 %
+# at 0.1 %). So the checks support no stricter default for real faces: the same (see the README)
+SCENE_FPIR, REAL_FPIR = 0.01, 0.01
 
 
 @dataclass
@@ -811,7 +813,7 @@ def parse_args(argv=None) -> DemoConfig:
     g.add_argument("--fpir", type=_rate, default=None, metavar="RATE",
                    help="the recognition's target false-alarm rate per stranger track, e.g. 0.01 for 1 %% (default: "
                         f"{SCENE_FPIR} for the 3D scene, {REAL_FPIR} where faces are real: the webcam, photos cast "
-                        "on the 3D people)")
+                        "on the 3D people; see the README)")
     g.add_argument("--embed-rate", type=_per_second, default=None, metavar="N",
                    help="face embeddings a second for everyone (default: the model's: 1 for AdaFace, 4 for the "
                         "ResNet-50, 20 for SFace, as a four-core CPU allows)")
