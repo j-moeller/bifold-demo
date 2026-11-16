@@ -26,7 +26,8 @@ memory; only aggregate numbers are reported.
   and lashes and hair cards are antialiased by alpha to coverage. Smaller faces and the 720p view are drawn as before,
   bit for bit. No shadow map was made.
 - **What the recognisers see changes little.** The finer head moves the same-person scores by less than 0.002 and
-  d' by less than 0.1 (AdaFace, the ResNet-50, SFace; 64-256 px). The shading raises the same-person scores by
+  d' by less than 0.1 (AdaFace and the ResNet-50 at 64-256 px; SFace too, but for one window in which YuNet misses
+  the face). The shading raises the same-person scores by
   0.006-0.012 and d' by about 0.4, in a hard side light and on turned faces (in the fair's soft frontal light, by
   little either way). Rank-1 among ten identities is 1.000 either way: up close the gain is mostly what the faces
   look like. Faces from photos keep their identity: S3's fitted faces move by -0.012 to +0.005, and faces painted
@@ -35,8 +36,8 @@ memory; only aggregate numbers are reported.
   Gallery photos drawn at close would cost known people's small faces 0.8-1.5 points of names at 1 % (through the
   shading), so only the demo's live windows draw close-ups; any other renderer, the calibration's and the gallery
   photos' among them, keeps the high quality.
-- **Cost:** on llvmpipe a window takes about 40 ms more with the x4 head and 140 ms more with x16; the shading costs
-  nothing measurable.
+- **Cost:** on llvmpipe a window takes about 40 ms more with the x4 head and 140-180 ms more with x16; the shading
+  costs nothing measurable.
 
 ## 1. The subdivided heads
 
@@ -140,9 +141,9 @@ head subdivided once, from `subdivide_from[1]` (180) twice; `Character.detailed(
 at that moment (the avatar's, or after `use_model` a fitted head) with its head subdivided, sharing the skeleton, the
 textures and maps, the detail textures and the face rig, so the pose, the expression, a face from photos (its
 texture overrides and photo mask, which stay keyed by the coarse head) apply to it as they are. The subdivided
-geometry is cached per head geometry (64 heads), so people wearing the same avatar share it. Measurements, tests and
-the calibration's renders make it at once; the demo's live renderer makes it on a worker thread and draws the coarse
-head until it is there (`detail_wait`, as for the 2048 textures).
+geometry is cached per head geometry (64 heads), so people wearing the same avatar share it. Measurements and tests
+make it at once; the demo's live renderer makes it on a worker thread and draws the coarse head until it is there
+(`detail_wait`, as for the 2048 textures).
 
 ## 4. Shading up close
 
@@ -163,9 +164,8 @@ are drawn exactly as at the high quality, bit for bit):
   has MSAA: the cut-out where the texture's alpha crosses 0.5, as before, but with its edge one pixel wide, so the
   lashes' edges are antialiased instead of stair-stepped. `renderer.coverage` turns it off.
 - **A shadow map for the key light** was not made: the 2048 maps' ambient occlusion already darkens the eye sockets,
-  the sides of the nose and under the lips, and in the fair's hall the key light is high and soft. What a shadow map
-  would add (the nose's and the brim's cast shadows in a side light) and what it costs (a depth pass per window) is
-  left measured by nobody: an open issue (section 9).
+  the sides of the nose and under the lips. What a shadow map would add (the nose's and a brim's cast shadows in a
+  side light) and what it would cost (a depth pass per window) were not measured: an open issue (section 9).
 
 Faces from photos keep S2's rule: no avatar maps where the photo face is (its relief and shine are the person's
 own), no hemisphere variation there; the wrap and the cornea are applied to them, as they are not the avatar's
@@ -181,10 +181,9 @@ hemisphere's variation 0.3) and a harsh side light (from the camera's left, near
 avatars' own faces (Business_Female_02, Business_Male_05, Female_Adult_01, Female_Adult_06, Female_Adult_13,
 Female_Party_02, Male_Adult_05, Male_Adult_12, Male_Adult_17, Male_Child_02), and faces from photos as S3 measured
 them (its protocol D1: avatar B's head fitted to six renders of avatar A, and textures made from them; 8 pairs among
-the ten, A the identity shown). Galleries: each
-identity's own renders at 112 px, turned 0 and 20 degrees each way, in the fair's light; either drawn in the same
-configuration as the probes ("matched") or always with the coarse head ("fixed": people enrolled before the change,
-or enrolled from photos). Configurations: the coarse head (the high quality, S2's shading); x4 and x16 (the head
+the ten, A the identity shown). Galleries: each identity's own renders at 112 px, turned 0 and 20 degrees each way,
+in the fair's light; either drawn in the same configuration as the probes ("matched") or always with the coarse head
+("fixed": people enrolled before the change, or enrolled from photos). Configurations: the coarse head (the high quality, S2's shading); x4 and x16 (the head
 subdivided, the high shading); "shading" (the coarse head with the close-up shading); x16 with the shading; and the
 close quality as shipped (x4 below 180 px, x16 from 180, the shading). Each window's face found and aligned as live
 (SCRFD for AdaFace IR-101 and the ResNet-50, YuNet for SFace) and embedded by the three recognisers. Measures, with
@@ -391,8 +390,8 @@ Male_Child_02; this CPU shared with another builder's measurements, so the times
 | 128 px (576-720 px square) | 76-108 ms | 129-148 ms | 233-253 ms | 192-242 ms | 126-140 ms (x4) |
 | 256 px (1136-1440 px square) | 221-323 ms | 305-372 ms | 409-513 ms | 429-491 ms | 389-547 ms (x16) |
 
-The finer head is what costs: x4 adds about 40 ms to a window (40 % at 128 px, 15 % at 256 px), x16 about 140 ms (more
-than doubling a 128 px window, which is why x16 waits until 180 px, where a window has four times the pixels); the
+The finer head is what costs: x4 adds about 40 ms to a window (40-45 % at 128 px, 15 % at 256 px), x16 140-180 ms
+(more than doubling a 128 px window; from 180 px, where the outline asks for it, a window has twice the pixels); the
 close-up shading adds no measurable time. The 720p view does not change (its quality stays high), nor windows of
 faces under 64 px. On a GPU (the Mac's) meshes of 13,000 and 50,000 triangles a head should cost little; that was
 not measured here.
@@ -421,4 +420,4 @@ not measured here.
   calibration's 64 px faces all drawn as at high.
 - **Rank-1 is at its ceiling** among ten identities at 64 px and more; a larger gallery would show whether the
   shading's gain in d' turns into names.
-- **x16 is expensive on llvmpipe** (about 140 ms more per window); on the Mac it was not measured.
+- **x16 is expensive on llvmpipe** (140-180 ms more per window); on the Mac it was not measured.

@@ -2492,8 +2492,8 @@ at 64-256 pixels between the eyes the finer head moves the recognisers'
 same-person scores by less than 0.002 and d' by less than 0.1; the shading
 raises the scores by 0.006-0.012 and d' by about 0.4, in a hard side light
 and on turned faces; rank-1 among ten identities is 1.000 either way. On
-llvmpipe a window takes about 40 ms more with the x4 head and 140 ms more
-with x16; the shading costs nothing measurable.
+llvmpipe a window takes about 40 ms more with the x4 head and 140-180 ms
+more with x16; the shading costs nothing measurable.
 
 ## Character creator
 
