@@ -842,8 +842,10 @@ In the demo `N` (or `--recognize`) turns it on; it runs the person detector
 itself (`D` then only says whether the other things found are drawn too). Each
 person gets a box in the colour of what is decided, with their number and
 their state above it: the name and its similarity in green (`#3 Ada 0.52`),
-`unknown` in red, and in amber `?` with how far along the evidence is
-(`#3 ? 40%`) or what it waits for (`#3 ? turned`). The face found for them in
+in yellow-green with a question mark while it is unconfirmed (`#3 Ada? 0.52`:
+the track may have changed hands, below), `unknown` in red, and in amber `?`
+with how far along the evidence is (`#3 ? 40%`) or what it waits for
+(`#3 ? turned`). The face found for them in
 the frame is boxed with its five landmarks. The status panel gives the profile
 and its recogniser, the embeddings a second against the budget, the number of
 people followed and how many are named (and who), unknown or not decided yet.
@@ -911,6 +913,16 @@ calibration was not made from, at 8 to 14 pixels between the eyes and without
 windows, SFace found 81 % of such swaps (usually by the second face; before,
 none) and took 12 names away in 11,016 checks of people's own faces, all from
 3 of the 57, whose faces at that size look far from their photos.
+
+**Tracks that change hands.** The tracker follows boxes, not people: when
+someone walks in front of a named person, the track may go on with them, and
+no face of theirs may ever be seen. So while a named track's box overlaps
+another's by half the smaller box, when it is found again near another, or
+when its box jumps from where it was expected, the name is unconfirmed
+(`Ada?`, yellow-green) until a face of the track, the boxes apart, passes the
+check; its faces are embedded first, and a name no face confirms within two
+seconds is withdrawn with its evidence ("not decided yet"). The decision log
+records each such event and whether a name is confirmed.
 
 **The target.** You set one thing: the false-alarm rate per stranger track,
 `--fpir`: how often a stranger's track is given somebody's name, at any of its

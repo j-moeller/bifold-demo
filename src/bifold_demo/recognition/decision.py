@@ -48,6 +48,13 @@ of 57 avatars it was not made from (faces of 8 to 14 pixels between the eyes, SF
 (median: the second face, 90 % by the sixth; none before), and withdrew a name from its own person's faces in 0.11 %
 of checks, all for 3 of the 57 people (faces at that size far from their photos).
 
+**A track that may have changed hands without a face** (two tracks' boxes overlapping, a track found again near
+another, a box that jumped: the recognizer says so, :meth:`IdentityPolicy.unconfirm`): its name is **unconfirmed**
+(``Ada?``, :attr:`Decision.confirmed` false) until a face of the track passes the check (:meth:`IdentityPolicy.
+confirm`), and withdrawn ("not decided yet", with its evidence) when none does within ``confirm_within`` seconds. An
+unconfirmed name yields to any other track's claim to it. With ``unverified_after``, a named track that has shown no
+confirming face that long is unconfirmed too.
+
 Every decision is a :class:`Decision` with the raw, normalised and calibrated scores of the best person and the
 runner-up, the thresholds, the model and the evidence; :class:`DecisionLog` keeps them (and writes them as JSON lines
 for the evaluation, E1).
@@ -87,7 +94,10 @@ class DecisionSettings:
     when the evidence's face is this big (pixels between the eyes) and turned less than this (degrees; 0: never; the
     calibration's offsets are measured with the same rule); ``sustain``: seconds a switch to another name or to
     unknown must hold; ``sustain_unknown``: seconds the score must stay below the reject threshold (from not decided);
-    ``incumbent``: decades a track holding a name counts more for it in the assignment."""
+    ``incumbent``: decades a track holding a name counts more for it in the assignment; ``confirm_within``: seconds a
+    name stays unconfirmed after its track may have changed hands before it is withdrawn, unless a face of the track
+    confirms it first; ``unverified_after``: seconds a named track may go without a face that confirms it before its
+    name is unconfirmed too (0: no such limit)."""
 
     fpir: float = 0.01
     margin: float = 1.0
@@ -103,6 +113,8 @@ class DecisionSettings:
     sustain: float = 1.0
     sustain_unknown: float = 1.0
     incumbent: float = 1.0
+    confirm_within: float = 2.0
+    unverified_after: float = 0.0
 
     def accept(self, people: int) -> float:
         """The rarity a name needs with ``people`` known people."""
@@ -175,13 +187,16 @@ class Decision:
     calibration: str = ""  # which calibration: its digest and file
     decisive: bool | None = None  # whether the bin's reject threshold may say "unknown"
     switch_decisive: bool | None = None  # whether a face of the bin could tell the track shows someone else
+    confirmed: bool = True  # a name's track may have changed hands and no face has confirmed it yet: False
+    unconfirmed: str = ""  # why (the track crossed another, was found again near one, jumped; or no face for long)
 
     @property
     def label(self) -> str:
-        """What the overlay shows: the name, ``unknown``, or ``?`` with how far along the evidence is (``? 40%``), or,
-        before any evidence and once there is enough, what it waits for (``? turned``, ``? too close to another``)."""
+        """What the overlay shows: the name (``Ada?`` while unconfirmed), ``unknown``, or ``?`` with how far along the
+        evidence is (``? 40%``), or, before any evidence and once there is enough, what it waits for (``? turned``,
+        ``? too close to another``)."""
         if self.state == NAMED:
-            return str(self.name)
+            return str(self.name) if self.confirmed else f"{self.name}?"
         if self.state == UNKNOWN:
             return "unknown"
         return f"? {round(100 * self.progress)}%" if 0.0 < self.progress < 1.0 else f"? {self.reason}"
@@ -233,6 +248,7 @@ class _Track:
     dropped: tuple | None = None  # (name, time) of the last name it lost
     reset_at: float | None = None  # when it was last found to show someone else
     last: Decision | None = None
+    unconfirmed: tuple | None = None  # (since, why): its name's track may have changed hands
 
 
 class IdentityPolicy:
@@ -257,6 +273,7 @@ class IdentityPolicy:
         self.tracks: dict[int, _Track] = {}
         self._gallery_stats = None  # (gallery rows id, means, spreads) for AS-norm
         self._known = 0  # people known at the last decisions (for the log)
+        self.withdrawn: set[int] = set()  # tracks whose unconfirmed name the last decisions withdrew
 
     @property
     def normalisation(self) -> str:
@@ -389,7 +406,30 @@ class IdentityPolicy:
         if memory.state in (NAMED, UNKNOWN):
             memory.dropped = (memory.name, now)
         memory.state, memory.name, memory.since, memory.pending = UNDECIDED, None, now, None
-        memory.reset_at = now
+        memory.reset_at, memory.unconfirmed = now, None
+
+    def unconfirm(self, track: int, now: float, why: str, restart: bool = False) -> bool:
+        """The track may have changed hands (it crosses another, was found again near one, its box jumped; see the
+        module docs): its name, if it has one, is unconfirmed from ``now`` (``why``) until a face of the track confirms
+        it (:meth:`confirm`), and withdrawn if none does within ``confirm_within`` seconds; ``restart``: from ``now``
+        even if it was unconfirmed already (while the hands may still change: the tracks still overlap). Returns
+        whether a name was unconfirmed."""
+        memory = self.tracks.get(track)
+        if memory is None or memory.state != NAMED:
+            return False
+        if memory.unconfirmed is None or restart:
+            memory.unconfirmed = (float(now), why)
+        return True
+
+    def confirm(self, track: int) -> None:
+        """A face of the track passed the check against its name (:meth:`check_face`): the name is confirmed."""
+        memory = self.tracks.get(track)
+        if memory is not None:
+            memory.unconfirmed = None
+
+    def is_unconfirmed(self, track: int) -> bool:
+        memory = self.tracks.get(track)
+        return memory is not None and memory.state == NAMED and memory.unconfirmed is not None
 
     def decide(self, aggregates: dict, now: float, frame: int | None = None, evidence: dict | None = None,
                waiting: dict | None = None) -> dict[int, Decision]:
@@ -400,6 +440,7 @@ class IdentityPolicy:
         drops a track."""
         known = len(self.gallery.people()) if hasattr(self.gallery, "people") else 0
         self._known = known
+        self.withdrawn = set()
         proposals: dict[int, tuple] = {}
         scored: dict[int, Scores] = {}
         for track, agg in aggregates.items():
@@ -475,10 +516,11 @@ class IdentityPolicy:
         cost = np.full((len(tracks), len(names)), math.inf)
         for i, t in enumerate(tracks):
             memory = self.tracks[t]
+            weak = memory.state == NAMED and memory.unconfirmed is not None  # (yields to any other claim)
             for name in claims[t]:
                 rarity = scored[t].of(name)[2]
                 bonus = self.settings.incumbent if memory.state == NAMED and memory.name == name else 0.0
-                cost[i, names.index(name)] = -(max(rarity, 0.0) + bonus)
+                cost[i, names.index(name)] = -(max(rarity, 0.0) + bonus) * (1e-3 if weak else 1.0)
         pairs, _, _ = match(cost, 1.0)  # every claim costs less than 1 (rarities are not negative)
         winners = {tracks[i]: names[j] for i, j in pairs}
         for t in tracks:
@@ -547,6 +589,11 @@ class IdentityPolicy:
                 (UNDECIDED, None, f"waiting: {waiting(UNKNOWN, None, s.sustain_unknown)}", 1.0)
         else:
             result = (UNDECIDED, None, reason, progress)
+        if memory.state == NAMED and memory.unconfirmed is not None and result[:2] == (NAMED, memory.name):
+            since, why = memory.unconfirmed
+            if now - since >= s.confirm_within - 1e-9:  # no face of the track confirmed the name in time
+                result = (UNDECIDED, None, f"unconfirmed ({why})", 1.0)
+                self.withdrawn.add(track)
         if state == UNDECIDED or result[:2] == (state, name):
             memory.pending = None  # nothing to wait for any more
         if memory.state in (NAMED, UNKNOWN) and result[:2] != (memory.state, memory.name):
@@ -554,12 +601,14 @@ class IdentityPolicy:
         changed = result[:2] != (memory.state, memory.name)
         if changed:
             memory.state, memory.name, memory.since = result[0], result[1], now
-        decision = self._decision(track, now, frame, *result, scores, agg, described, changed)
+            memory.unconfirmed = None
+        why = memory.unconfirmed[1] if memory.unconfirmed is not None and result[0] == NAMED else ""
+        decision = self._decision(track, now, frame, *result, scores, agg, described, changed, not why, why)
         memory.last = decision
         return decision
 
     def _decision(self, track, now, frame, state, name, reason, progress, scores: Scores | None, agg, described,
-                  changed) -> Decision:
+                  changed, confirmed: bool = True, unconfirmed: str = "") -> Decision:
         evidence = dict(described)
         if agg is not None:
             evidence.update(frames=agg.frames, weight=round(agg.weight, 4), size=round(agg.size, 2),
@@ -569,7 +618,7 @@ class IdentityPolicy:
                   "progress": round(float(progress), 3), "frame": frame, "model": c.model,
                   "normalisation": self.normalisation, "evidence": evidence, "changed": changed,
                   "fpir": self.settings.fpir, "track_offset": round(c.track_offset(self.settings.fpir), 4),
-                  "people": self._known,
+                  "people": self._known, "confirmed": confirmed, "unconfirmed": unconfirmed,
                   "calibration": f"{c.digest} {c.path or ('provisional' if c.is_provisional else 'not saved')}"}
         if scores is None or not scores.names:
             return Decision(**common)

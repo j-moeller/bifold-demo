@@ -17,7 +17,12 @@ detect_frame` is what :class:`~bifold_demo.detection.worker.AsyncDetector` calls
    check that it shows the same person as the evidence so far (else the track's old evidence and name go: the track
    jumped to someone else). Where the faces are too small for that, a named track's faces are checked against its
    name's photos, a second each (:data:`RECHECK_DOUBT`): one unlike them is held out, a second within
-   :data:`UNLIKE_WITHIN` withdraws the name (:meth:`~.decision.IdentityPolicy.check_face`).
+   :data:`UNLIKE_WITHIN` withdraws the name (:meth:`~.decision.IdentityPolicy.check_face`). A track can also change
+   hands without showing a face (someone walks in front of a named person and the tracker follows them on): while a
+   track's box overlaps another's (:data:`CROSSING`), when it is found again near another, or when its box jumps
+   (:data:`JUMP`), its name is *unconfirmed* (``Ada?``) until a face of the track passes the check, the boxes apart;
+   faces of unconfirmed names are embedded first, and a name no face confirms within ``confirm_within`` seconds is
+   withdrawn with its evidence (:meth:`~.decision.IdentityPolicy.unconfirm`).
 4. **Decisions** (:mod:`.decision`): a name, "unknown" or "not decided yet" per track, calibrated per model and face
    size against one target false-alarm rate (:mod:`.calibration`), one identity per track.
 5. **Windows for the frames to come.** Tracks not decided yet (or due for a check: :data:`RECHECK_WINDOW` seconds
@@ -77,6 +82,12 @@ RECHECK_DOUBT = 1.0
 # evidence; a second one within this says the track shows someone else
 UNLIKE_WITHIN = 2.0
 TURN = 0.05  # the window priority a frame of waiting adds (tracks take turns)
+# A track may change hands (the tracker follows boxes, not people): when its box and another's overlap by this share
+# of the smaller one (someone passing in front or behind), when it is found again after being lost while near
+# another, or when its box lands this far from where the filter expected it (box heights, or the log of the size
+# ratio). A named track's name is then unconfirmed until a face of it passes the check (see the module docs).
+CROSSING = 0.5
+JUMP = 0.5
 
 __all__ = ["PeopleRecognizer", "PeopleResult", "Person"]
 
@@ -151,6 +162,10 @@ class _Track:
     checked: float | None = None  # when it was last embedded from a face big enough for the check to tell a swap
     unchecked: float | None = None  # since when its faces have been too small (or turned) to tell one (None: not)
     unlike: list = field(default_factory=list)  # a named track's last faces unlike its name, held out of the evidence
+    verified: float | None = None  # when a face of it last passed the check against its evidence or its name
+    events: list = field(default_factory=list)  # (time, why) the track may have changed hands: the last few
+    withdrawn: int = 0  # names withdrawn for want of a confirming face
+    crossing: set = field(default_factory=set)  # the tracks whose boxes overlap its own (CROSSING)
 
 
 class PeopleRecognizer:
@@ -287,6 +302,7 @@ class PeopleRecognizer:
             self.policy.forget(gone.id)
         for track in active:
             self.tracks.setdefault(track.id, _Track(TrackEvidence(self.model)))
+        self._handovers(active, now)  # (names of tracks that may have changed hands: unconfirmed)
         timings["track"] = (time.perf_counter() - t0) * 1000.0
 
         # 2. faces in the head regions
@@ -320,6 +336,10 @@ class PeopleRecognizer:
             described[track.id] = self._describe(info)
             waiting[track.id] = info.waiting
         decisions = self.policy.decide(aggregates, now, frame.index, described, waiting)
+        for track_id in self.policy.withdrawn:  # (an unconfirmed name withdrawn: its evidence may be someone else's)
+            info = self.tracks[track_id]
+            info.evidence.reset(now)
+            info.unlike, info.withdrawn = [], info.withdrawn + 1
         timings["decide"] = (time.perf_counter() - t0) * 1000.0
 
         # 5. windows for the frames to come
@@ -411,7 +431,9 @@ class PeopleRecognizer:
             median = info.evidence.median_weight(self.scheduler.median_after) if enough else None
             due = None
             if decided:  # due for its check (see the module docs)
-                if self.policy.switch_decisive(sighting.size, quality.yaw):
+                if self.policy.is_unconfirmed(track_id):  # (any face that can confirm its name, at once)
+                    due = True
+                elif self.policy.switch_decisive(sighting.size, quality.yaw):
                     recheck = self.scheduler.recheck if info.unchecked is None else RECHECK_DOUBT
                     due = info.checked is None or now - info.checked >= recheck - 1e-9
                 elif memory.state == NAMED:  # only its name's photos can check it (on two faces in a row)
@@ -458,9 +480,49 @@ class PeopleRecognizer:
                 info.resets += 1
                 for held in info.unlike:
                     info.evidence.add(held)
+            elif same and not info.crossing:  # (the same person, the boxes apart: an unconfirmed name is confirmed)
+                info.verified = now
+                self.policy.confirm(candidate.track)
             info.unlike = []
             info.evidence.add(frame_evidence)
         return done
+
+    def _handovers(self, active, now: float) -> None:
+        """Unconfirm the names of tracks that may have changed hands (see :data:`CROSSING`): while a track's box
+        overlaps another's (the confirming face counts once they are apart), when a track is found again near another,
+        or when its box jumped; and, with the decisions' ``unverified_after``, of named tracks that have shown no face
+        confirming them that long. Each such event goes to the decision log (the evidence's ``events``)."""
+        others = [t for t in self.tracker.tracks if t.state in ("tracked", "lost") and t.confirmed]
+        for track in active:
+            info = self.tracks[track.id]
+            why = None
+            overlapping = {o.id for o in others if o.id != track.id and _overlap(track.box, o.box) >= CROSSING}
+            started = sorted(overlapping - info.crossing)
+            info.crossing = overlapping
+            if overlapping:  # unconfirmed while the boxes overlap (the hands may change at any moment), and from
+                # when they come apart until a face confirms the name; logged when an overlap starts
+                why = f"crossing #{min(overlapping)}"
+                if started:
+                    info.events = [*info.events[-4:], (round(now, 3), why)]
+                self.policy.unconfirm(track.id, now, why, restart=True)
+                continue
+            if track.found_again_at == now:
+                near = [o.id for o in others if o.id != track.id and _overlap(_grown(track.box, 0.5), o.box) > 0.0]
+                if near:
+                    why = f"found again near #{near[0]}"
+            if why is None and track.seen == now and track.jump >= JUMP:
+                why = f"jumped ({track.jump:.2f})"
+            stale = self.policy.settings.unverified_after
+            memory = self.policy.tracks.get(track.id)
+            if why is None and stale > 0 and memory is not None and memory.state == NAMED \
+                    and memory.unconfirmed is None:
+                last = max(info.verified if info.verified is not None else -math.inf, memory.since)
+                if now - last >= stale - 1e-9:
+                    why = f"no face for {stale:g} s"
+            if why is None:
+                continue
+            info.events = [*info.events[-4:], (round(now, 3), why)]
+            self.policy.unconfirm(track.id, now, why)
 
     def _describe(self, info: _Track) -> dict:
         """A track's evidence for the decision log."""
@@ -470,7 +532,8 @@ class PeopleRecognizer:
                 "sources": [f.source for f in frames], "frames_seen": [f.frame for f in frames],
                 "fiqa": [None if f.quality is None or f.quality.fiqa is None else round(f.quality.fiqa, 3)
                          for f in frames], "fits": [None if math.isnan(f.cost) else round(f.cost, 3) for f in frames],
-                "resets": info.resets, "held_out": len(info.unlike)}
+                "resets": info.resets, "held_out": len(info.unlike), "events": list(info.events),
+                "withdrawn": info.withdrawn}
 
     def _request_windows(self, service, active, decisions: dict, frame: int, size) -> None:
         """Ask ``service`` for windows on the heads that need them (see the module docs)."""
@@ -481,6 +544,8 @@ class PeopleRecognizer:
             info = self.tracks[track.id]
             decision = decisions.get(track.id)
             decided = decision is not None and decision.state in (NAMED, UNKNOWN)
+            if decided and not decision.confirmed:
+                decided = False  # (a name to confirm: a window as for a track not decided yet)
             recheck = RECHECK_WINDOW if info.unchecked is None else RECHECK_DOUBT
             if decided and info.checked is not None and decision.time - info.checked < recheck:
                 continue  # (checked a moment ago)
@@ -504,3 +569,20 @@ class PeopleRecognizer:
             service.request(requests)
         except ValueError:  # (a request the service cannot serve: none this frame)
             service.request([])
+
+
+def _overlap(a, b) -> float:
+    """The share of the smaller of boxes ``a`` and ``b`` (``x0, y0, x1, y1``) that the other covers."""
+    w = min(a[2], b[2]) - max(a[0], b[0])
+    h = min(a[3], b[3]) - max(a[1], b[1])
+    if w <= 0 or h <= 0:
+        return 0.0
+    smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    return float(w * h / smaller) if smaller > 0 else 0.0
+
+
+def _grown(box, share: float) -> tuple:
+    """``box`` grown by ``share`` of its width and height on every side."""
+    x0, y0, x1, y1 = box
+    dx, dy = share * (x1 - x0), share * (y1 - y0)
+    return x0 - dx, y0 - dy, x1 + dx, y1 + dy

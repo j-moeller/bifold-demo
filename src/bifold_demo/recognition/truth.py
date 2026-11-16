@@ -218,6 +218,12 @@ class Segment:
     named_at: float | None = None  # when it was first named (rightly or not)
     frames: int = 0
     best_eyes: float = 0.0  # the biggest face shown (view pixels between the eyes, turned to the camera)
+    # an unconfirmed name (``Ada?``: the track may have changed hands) is no name here, but counted apart:
+    unconfirmed_at: float | None = None  # when it was first shown an unconfirmed name
+    unconfirmed: tuple = ()  # the unconfirmed names it was shown
+    doubted: int = 0  # times its right name went from confirmed to unconfirmed (the flicker of a right name)
+    withdrawn: int = 0  # times its right name was withdrawn for want of a confirming face
+    shown_as: str = ""  # what its track showed last: a name, a name with ``?``, or nothing
 
     def eligible(self, seconds: float) -> bool:
         """Whether the face was shown, at least ``seconds`` in all."""
@@ -273,7 +279,16 @@ class Outcomes:
             decision = decisions.get(track)
             if decision is None:
                 continue
-            if decision.state == "named":
+            before, seg.shown_as = seg.shown_as, ""
+            if decision.state == "named" and not getattr(decision, "confirmed", True):
+                seg.shown_as = f"{decision.name}?"
+                if seg.unconfirmed_at is None:
+                    seg.unconfirmed_at = now
+                if decision.name not in seg.unconfirmed:
+                    seg.unconfirmed = (*seg.unconfirmed, decision.name)
+                seg.doubted += int(before == decision.name == person.avatar)
+            elif decision.state == "named":
+                seg.shown_as = decision.name
                 if seg.named_at is None:
                     seg.named_at = now
                 if decision.name == person.avatar:
@@ -281,8 +296,11 @@ class Outcomes:
                         seg.correct_at = now
                 elif decision.name not in seg.wrong:
                     seg.wrong = (*seg.wrong, decision.name)
-            elif decision.state == "unknown" and seg.unknown_at is None:
-                seg.unknown_at = now
+            else:
+                seg.withdrawn += int(before == f"{person.avatar}?" and
+                                     str(getattr(decision, "reason", "")).startswith("unconfirmed"))
+                if decision.state == "unknown" and seg.unknown_at is None:
+                    seg.unknown_at = now
 
     def summary(self, shown: float = 1.0, within=(2.0, 5.0)) -> dict:
         """The shares over the segments whose face was shown at least ``shown`` seconds (``eligible``) and over all:
@@ -294,7 +312,11 @@ class Outcomes:
           ``confused`` and ``confused_segments`` (how many);
         * strangers: ``fpir`` (named at all: the false-alarm rate per track), ``called_unknown``; and over every
           stranger segment, eligible or not, ``fpir_all``;
-        * named tracks that follow nobody: ``named_unfollowed`` (tracks) and ``named_unfollowed_frames``.
+        * named tracks that follow nobody: ``named_unfollowed`` (tracks) and ``named_unfollowed_frames``;
+        * names shown unconfirmed (``Ada?``, the track may have changed hands; no name above): ``unconfirmed_strangers``
+          (stranger segments shown one), ``unconfirmed_wrong`` (known people's segments shown another's), and of known
+          people's right names, ``doubted`` (times they went unconfirmed: the flicker) and ``withdrawn`` (times they
+          were withdrawn for want of a confirming face), over ``named_seconds`` of segments named rightly.
         """
         segs = list(self.segments.values())
         known = [g for g in segs if g.known and g.eligible(shown)]
@@ -323,6 +345,10 @@ class Outcomes:
             "confused_segments": sum(1 for g in all_known if g.wrong), "known_all": len(all_known),
             "named_unfollowed": len(self.unfollowed_named),
             "named_unfollowed_frames": sum(e["frames"] for e in self.unfollowed_named.values()),
+            "unconfirmed_strangers": sum(1 for g in all_strangers if g.unconfirmed),
+            "unconfirmed_wrong": sum(1 for g in all_known if any(n != g.avatar for n in g.unconfirmed)),
+            "doubted": sum(g.doubted for g in all_known), "withdrawn": sum(g.withdrawn for g in all_known),
+            "named_seconds": round(sum(g.end - g.correct_at for g in all_known if g.correct_at is not None), 3),
         }
 
 

@@ -1104,6 +1104,137 @@ def test_without_windows_a_named_tracks_small_faces_are_checked_against_its_name
     assert held and held[0].name == "Ada"  # (the first face unlike Ada: held out, the name not yet withdrawn)
 
 
+def _crossing(t, ada_leaves=True):
+    """Ada stands facing the camera; from 2 s a stranger walks in from the right with their back to the camera (no
+    face) and stops where she stands; with ``ada_leaves`` she is hidden behind them and gone from 4 s (the tracker
+    keeps her track on the stranger's box), else they walk on past her and she stays."""
+    image = np.full((720, 1280, 3), 90, np.uint8)
+    boxes, faces = [], []
+    ada = (400.0, 60.0, 620.0, 660.0)
+    if t < 4.0 or not ada_leaves:
+        boxes.append(ada)
+        face = _head_face(ada)
+        faces.append(face)
+        _paint(image, face, COLOURS["Ada"], 0)
+    if t >= 2.0:
+        x = 1000.0 - 300.0 * (t - 2.0)
+        x = max(400.0, x) if ada_leaves else x
+        if x > -220.0:
+            boxes.append((x, 40.0, x + 220.0, 680.0))
+    return image, boxes, faces
+
+
+def _run_crossing(recognizer, engine, detector, seconds=10.0, **scene):
+    out = []
+    for k in range(round(seconds * 10)):
+        image, boxes, faces = _crossing(k / 10, **scene)
+        detector.boxes, engine.faces = boxes, faces
+        out.append(recognizer.process(_video_frame(image, k, k / 10)))
+    return out
+
+
+def test_a_name_whose_track_may_have_changed_hands_is_unconfirmed_and_withdrawn_without_a_face(calibration):
+    """E1's scene runs: a stranger who walked in front of a named known person took over her track, name and all,
+    without ever showing a face. Now while two tracks' boxes overlap the name is unconfirmed ("Ada?"), and after they
+    come apart (or one of them goes) it stays so until a face of the track passes the check, and is withdrawn after
+    ``confirm_within`` seconds without one; the event is in the decision log."""
+    recognizer, engine, detector = _recognizer(calibration, rate=5.0)
+    results = _run_crossing(recognizer, engine, detector)
+    ada = results[0].people[0].id
+    by_time = {round(r.time, 1): {p.id: p.decision for p in r.people} for r in results}
+    assert by_time[3.0][ada].label == "Ada" and by_time[3.0][ada].confirmed  # (named, before the crossing)
+    # their boxes overlap by half the smaller one from 3.7 s: unconfirmed while they overlap, the overlap logged
+    crossing = by_time[3.7][ada]
+    assert (crossing.label, crossing.unconfirmed) == ("Ada?", "crossing #2") and by_time[3.6][ada].confirmed
+    assert crossing.evidence["events"] == [(3.7, "crossing #2")]
+    # the tracker gives the stranger's box to Ada's track (the younger, overlapping track is dropped as a duplicate,
+    # hers is found again on it): the name goes on, unconfirmed, and no face of the stranger confirms it
+    swapped = min(t for t, ds in by_time.items() if t >= 4.0 and ada in ds)
+    assert len(by_time[swapped]) == 1 and swapped < 4.5
+    unconfirmed = by_time[swapped][ada]
+    assert (unconfirmed.state, unconfirmed.label, unconfirmed.confirmed) == (NAMED, "Ada?", False)
+    from bifold_demo.display.overlay import UNCONFIRMED_COLOUR, draw_people, person_label
+
+    shown = next(p for r in results if round(r.time, 1) == swapped for p in r.people)
+    assert person_label(shown, score=False) == f"#{ada} Ada?"
+    canvas = np.zeros((720, 1280, 3), np.uint8)
+    draw_people(canvas, [shown], score=False)
+    x0, y0, x1, y1 = (round(v) for v in shown.box)
+    assert tuple(canvas[(y0 + y1) // 2, x0]) == UNCONFIRMED_COLOUR  # (the box in the unconfirmed name's colour)
+    withdrawn = next(d for t, ds in sorted(by_time.items()) for d in ds.values() if d.state != NAMED and t > 4.0)
+    assert 5.5 <= withdrawn.time <= swapped + 2.0 and withdrawn.reason == "unconfirmed (crossing #2)"
+    assert withdrawn.changed and recognizer.tracks[ada].withdrawn == 1
+    assert not any(d.name == "Ada" for t, ds in by_time.items() if t >= withdrawn.time for d in ds.values())
+    assert recognizer.tracks[ada].evidence.count == 0  # (the old evidence went with the name)
+    logged = [d for d in recognizer.log.entries if d.track == ada and not d.confirmed]
+    assert logged and all(d.unconfirmed for d in logged)
+
+
+def test_a_name_whose_own_face_comes_back_after_a_crossing_is_confirmed_again(calibration):
+    """A stranger walks past in front of Ada and on: her name is unconfirmed while they come apart, and her next face
+    confirms it; it is never withdrawn."""
+    recognizer, engine, detector = _recognizer(calibration, rate=5.0)
+    results = _run_crossing(recognizer, engine, detector, ada_leaves=False)
+    ada = results[0].people[0].id
+    decisions = [(round(r.time, 1), p.decision) for r in results for p in r.people if p.id == ada]
+    assert all(d.state == NAMED and d.name == "Ada" for t, d in decisions if t >= 1.0)  # (never withdrawn)
+    doubted = [t for t, d in decisions if not d.confirmed]
+    assert doubted and max(doubted) - min(doubted) < 1.0  # (unconfirmed for a moment only)
+    assert recognizer.tracks[ada].withdrawn == 0 and recognizer.tracks[ada].verified is not None
+
+
+def test_unconfirmed_names_are_withdrawn_in_time_yield_to_other_claims_and_can_follow_long_silences(calibration):
+    policy, people = _policy(calibration, confirm_within=2.0)
+    agg = _agg({"Ada": 0.5}, people)
+    assert policy.decide({1: agg}, 0.0)[1].label == "Ada"
+    assert policy.unconfirm(1, 0.5, "jumped") and not policy.unconfirm(7, 0.5, "jumped")  # (no name: nothing)
+    d = policy.decide({1: agg}, 1.0)[1]
+    assert (d.label, d.confirmed, d.unconfirmed, d.state) == ("Ada?", False, "jumped", NAMED)
+    policy.confirm(1)
+    assert policy.decide({1: agg}, 1.5)[1].label == "Ada"
+    policy.unconfirm(1, 2.0, "crossed #3")
+    assert policy.decide({1: agg}, 3.9)[1].label == "Ada?"
+    gone = policy.decide({1: agg}, 4.0)[1]
+    assert (gone.state, gone.reason, gone.changed) == (UNDECIDED, "unconfirmed (crossed #3)", True)
+    assert policy.withdrawn == {1}
+    # an unconfirmed name yields to another track's claim to it, whatever their rarities
+    policy, people = _policy(calibration)
+    policy.decide({1: _agg({"Ada": 0.6}, people)}, 0.0)
+    policy.unconfirm(1, 0.1, "found again near #2")
+    both = policy.decide({1: _agg({"Ada": 0.6}, people), 2: _agg({"Ada": 0.45}, people)}, 0.2)
+    assert both[2].name == "Ada" and both[1].state == UNDECIDED and both[1].reason == "contested"
+    # with unverified_after, a named track without a confirming face that long is unconfirmed too
+    recognizer, engine, detector = _recognizer(calibration, rate=5.0, unverified_after=3.0)
+    quiet = []
+    for k in range(80):
+        t = k / 10
+        image, boxes, faces = _scene(t, who=("Ada",), turned=() if t < 1.0 else ("Ada",))  # (turns away at 1 s)
+        detector.boxes, engine.faces = boxes, faces
+        quiet.append(recognizer.process(_video_frame(image, k, t)).people[0].decision)
+    named = next(d.time for d in quiet if d.state == NAMED)
+    assert any(d.label == "Ada?" and d.unconfirmed.startswith("no face for 3") for d in quiet)
+    assert quiet[-1].state == UNDECIDED and quiet[-1].time - named > 3.0
+
+
+def test_the_tracker_says_how_far_a_box_jumped_and_when_a_lost_track_was_found_again():
+    from bifold_demo.detection.tracker import PersonTracker, TrackerSettings
+    from bifold_demo.recognition.people import CROSSING, JUMP, _grown, _overlap
+
+    tracker = PersonTracker(TrackerSettings(fps=10.0))
+    box = np.array([100.0, 100.0, 160.0, 260.0])
+    (track,) = tracker.update([box], [0.9], 0.0)
+    tracker.update([box], [0.9], 0.1)
+    assert track.jump == pytest.approx(0.0, abs=1e-6) and track.found_again_at is None
+    tracker.update([], [], 0.2)  # lost
+    taller = np.array([82.0, 52.0, 178.0, 308.0])  # (found again 1.6 times as tall, on the same centre)
+    (again,) = tracker.update([taller], [0.9], 0.3)
+    assert again.id == track.id and again.found_again_at == 0.3
+    assert again.jump == pytest.approx(math.log(1.6), abs=0.02) and again.jump < JUMP  # (not quite a jump)
+    assert 0.0 < CROSSING < 1.0
+    assert _overlap((0, 0, 10, 10), (5, 0, 25, 20)) == pytest.approx(0.5)  # (half of the smaller box)
+    assert _overlap((0, 0, 10, 10), (20, 0, 30, 10)) == 0.0 and _grown((0, 0, 10, 10), 0.5) == (-5, -5, 15, 15)
+
+
 def test_a_face_in_a_tracks_window_goes_to_the_track_whose_head_it_fits(calibration):
     """A window asked for Ada's track also shows Ben's face (he stands behind her, a little to the side; she has
     turned away): the face goes where it fits, to Ben's track, not to the track the window was asked for."""
@@ -1193,8 +1324,8 @@ def _truth(name, avatar, yaw=0.0, eyes=10.0, covered=False):
 
 
 class _D:
-    def __init__(self, state, name=None):
-        self.state, self.name = state, name
+    def __init__(self, state, name=None, confirmed=True, reason=""):
+        self.state, self.name, self.confirmed, self.reason = state, name, confirmed, reason
 
 
 def test_outcomes_count_names_per_segment_from_when_the_face_was_shown():
@@ -1236,6 +1367,24 @@ def test_outcomes_count_every_wrong_name_and_named_tracks_that_follow_nobody():
     assert summary["confused"] == 1.0 and summary["confused_segments"] == 1 and summary["known_all"] == 1
     assert summary["named_unfollowed"] == 1 and summary["named_unfollowed_frames"] == 30
     assert outcomes.unfollowed_named[9]["names"] == ["Ben"]
+
+
+def test_outcomes_keep_unconfirmed_names_apart_and_count_a_right_names_flicker():
+    """An unconfirmed name (``Ada?``) is no name for the shares, but counted apart: on a stranger's segment, and for a
+    known person's right name, the times it went unconfirmed and was withdrawn."""
+    outcomes = Outcomes(known={"Ada", "Ben"})
+    timeline = [(0.0, _D("named", "Ada")), (0.5, _D("named", "Ada", confirmed=False)), (1.0, _D("named", "Ada")),
+                (1.5, _D("named", "Ada", confirmed=False)),
+                (2.0, _D("undecided", reason="unconfirmed (crossing #2)"))]
+    for t, d in timeline:
+        outcomes.update(t, [_truth("p1", "Ada"), _truth("p2", "Zoe")], {"p1": 1, "p2": 2},
+                        {1: d, 2: _D("named", "Ben", confirmed=False)})
+    ada, zoe = outcomes.segments[("p1", 1)], outcomes.segments[("p2", 2)]
+    assert (ada.correct_at, ada.doubted, ada.withdrawn, ada.unconfirmed) == (0.0, 2, 1, ("Ada",))
+    assert zoe.named_at is None and zoe.unconfirmed == ("Ben",) and zoe.unconfirmed_at == 0.0  # (no false alarm)
+    summary = outcomes.summary(shown=0.0)
+    assert summary["fpir"] == 0.0 and summary["unconfirmed_strangers"] == 1 and summary["unconfirmed_wrong"] == 0
+    assert (summary["doubted"], summary["withdrawn"], summary["named_seconds"]) == (2, 1, 2.0)
 
 
 def test_faces_are_attributed_to_their_people_and_counted_when_a_track_following_someone_else_gets_one():

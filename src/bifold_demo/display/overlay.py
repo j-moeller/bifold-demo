@@ -55,6 +55,7 @@ def draw_detections(image: np.ndarray, detections: list[Detection], from_size: t
 
 
 NAMED_COLOUR, UNKNOWN_COLOUR, UNDECIDED_COLOUR = (60, 200, 60), (90, 90, 235), (0, 190, 255)  # BGR
+UNCONFIRMED_COLOUR = (60, 230, 190)  # a name whose track may have changed hands (``Ada?``): yellow-green
 STATE_COLOURS = {"named": NAMED_COLOUR, "unknown": UNKNOWN_COLOUR, "undecided": UNDECIDED_COLOUR}
 
 
@@ -71,15 +72,18 @@ def person_label(person, score: bool = True) -> str:
 
 def draw_people(image: np.ndarray, people, from_size: tuple[int, int] | None = None, score: bool = True) -> None:
     """Draw the followed people in place (:class:`~bifold_demo.recognition.people.Person` items): each person's box
-    in the colour of what is decided (green: a name, red: unknown, amber: not decided yet), their number and the
-    decision above it, and the face found for them in this frame with its five landmarks. ``from_size`` as for
-    :func:`draw_detections`; ``score``: show the named person's similarity."""
+    in the colour of what is decided (green: a name, yellow-green: a name not confirmed since the track may have
+    changed hands, red: unknown, amber: not decided yet), their number and the decision above it, and the face found
+    for them in this frame with its five landmarks. ``from_size`` as for :func:`draw_detections`; ``score``: show the
+    named person's similarity."""
     h, w = image.shape[:2]
     sx, sy = (w / from_size[0], h / from_size[1]) if from_size else (1.0, 1.0)
     s = _ui_scale(image)
     thickness, font_scale, text_thickness = max(1, round(1.5 * s)), 0.5 * s, max(1, round(1.2 * s))
     for person in people:
         colour = STATE_COLOURS.get(person.decision.state, UNDECIDED_COLOUR)
+        if person.decision.state == "named" and not getattr(person.decision, "confirmed", True):
+            colour = UNCONFIRMED_COLOUR
         x0, y0, x1, y1 = person.box
         p0, p1 = (round(x0 * sx), round(y0 * sy)), (round(x1 * sx), round(y1 * sy))
         cv2.rectangle(image, p0, p1, colour, thickness, cv2.LINE_AA)

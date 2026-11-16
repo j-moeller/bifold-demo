@@ -140,6 +140,8 @@ class Track:
     lost_since: float | None = None
     found_again: int = 0  # times it was lost and found again
     confirmed: bool = False  # found in two frames (or in the first frame of all): never tentative again
+    found_again_at: float | None = None  # when it was last found again after being lost
+    jump: float = 0.0  # how far the last matched box was from the filter's prediction (box heights, or log size)
 
     @property
     def box(self) -> tuple[float, float, float, float]:
@@ -255,9 +257,14 @@ class PersonTracker:
         return 1.0 - overlap
 
     def _found(self, track: Track, box, score: float, now: float, frame) -> None:
-        track.mean, track.covariance = self.kalman.update(track.mean, track.covariance, to_xyah(box))
+        measured = to_xyah(box)
+        h = max(float(track.mean[3]), 1e-3)  # (a box far from the prediction may be someone else's)
+        track.jump = float(max(abs(measured[0] - track.mean[0]) / h, abs(measured[1] - track.mean[1]) / h,
+                               abs(np.log(max(measured[3], 1e-3) / h))))
+        track.mean, track.covariance = self.kalman.update(track.mean, track.covariance, measured)
         if track.state == LOST:
             track.found_again += 1
+            track.found_again_at = now
         track.state, track.confirmed = TRACKED, True
         track.detection, track.score = tuple(float(v) for v in box), float(score)
         track.seen, track.frame = now, frame

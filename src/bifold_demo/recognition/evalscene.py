@@ -213,7 +213,8 @@ def run_scene(run, item, profile: str, engine, rate: float | None = None, yolo=N
                 shown = t.frontal and not t.eyes_covered and t.eye_distance >= SHOWN_EYES
                 timeline.setdefault(f"{t.name}|{track}", []).append(
                     [round(result.time, 4), bool(shown), d.candidate, _r(d.calibrated), _r(d.runner_up_calibrated),
-                     _r(d.accept_rarity), round(float(d.progress), 3), d.state, d.name, round(t.eye_distance, 2)])
+                     _r(d.accept_rarity), round(float(d.progress), 3), d.state, d.name, round(t.eye_distance, 2),
+                     bool(getattr(d, "confirmed", True))])
             if k % 50 == 0:
                 progress(f"[eval] {item.id} {profile}: t={result.time:5.1f} s, {len(result.people)} tracks, "
                          f"{embedded} embedded ({time.perf_counter() - started:.0f} s)")
