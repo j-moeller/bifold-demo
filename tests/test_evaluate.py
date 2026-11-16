@@ -591,6 +591,9 @@ def test_a_packs_people_from_duplicates_and_mated_pairs():
     people = E.pack_people(images, same)
     assert people[0] == people[2] == people[4] == people[5]  # (a1 three times; a2 mated with a1)
     assert people[6] == people[7] and len({people[0], people[1], people[3], people[6]}) == 4
+    b, c, d = _unit(np.ones(4)), _unit([1.0, 1.0, 1.0, 0.8]), _unit([1.0, -1.0, 0.0, 0.0])
+    merged = E.pack_people(images, same, {1: b, 3: c, 6: d})  # (b1 and c1: one person's photos, by the model)
+    assert merged[1] == merged[3] and merged[6] != merged[1] and merged[0] != merged[1]
 
 
 def test_real_faces_per_track():

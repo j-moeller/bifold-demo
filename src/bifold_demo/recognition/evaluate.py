@@ -1066,9 +1066,16 @@ def score_pack(vectors_a: np.ndarray, vectors_b: np.ndarray, same: np.ndarray, f
     return report
 
 
-def pack_people(images, same) -> np.ndarray:
+MERGE_COSINE = 0.45  # a reference model's score that only photos of one person reach (LFW's 3,000 stranger pairs:
+# at most 0.28 for AdaFace and the ResNet-50)
+
+
+def pack_people(images, same, vectors: dict | None = None, merge: float = MERGE_COSINE) -> np.ndarray:
     """Who each image of a verification pack shows, without names: identical images (a photo used in several pairs)
-    and the two photos of a mated pair are one person (union-find). One label per image (the smallest index)."""
+    and the two photos of a mated pair are one person (union-find). A pack's frequent people also have photos that
+    only appear in non-mated pairs, which those links leave apart: with ``vectors`` (``{image index: unit
+    embedding}`` of a strong reference model) two photos scoring at least ``merge`` are one person too. One label
+    per image (the smallest index)."""
     parent = list(range(len(images)))
 
     def root(i):
@@ -1092,6 +1099,12 @@ def pack_people(images, same) -> np.ndarray:
     for p, s in enumerate(same):
         if s:
             join(2 * p, 2 * p + 1)
+    if vectors:
+        keys = sorted(vectors)
+        stack = np.stack([np.asarray(vectors[k], np.float64) for k in keys])
+        close = np.argwhere(np.triu(stack @ stack.T, 1) >= merge)
+        for a, b in close:
+            join(keys[a], keys[b])
     return np.array([root(i) for i in range(len(images))])
 
 
@@ -1504,42 +1517,67 @@ class Run:
         for item in manifest.of_kind("pack"):
             path = item.file(manifest.folder)
             index, same, fold = pack_pairs(path, item.extra.get("per_fold"))
-            images, _ = read_pack(path)
-            digest = file_digest(path)[:24]
+            images, all_same = read_pack(path)
+            wanted = sorted({2 * int(i) for i in index} | {2 * int(i) + 1 for i in index})
+            embedded = {profile: self._pack_vectors(item.id, path, images, wanted, engine, decode)
+                        for profile, engine in self.engines.items()}
+            people = reference = None
+            if item.extra.get("tracks"):
+                reference = self._pack_reference(item.id, path, images, wanted, embedded, decode)
+                people = pack_people(images, all_same, reference[1] if reference else None)
+                digests = [hashlib.sha256(data).hexdigest()[:16] for data in images]
             out[item.id] = {}
             for profile, engine in self.engines.items():
-                store = self._store("embeddings", f"{model_key(engine)}.pack-{digest}")
-                wanted = sorted({2 * int(i) for i in index} | {2 * int(i) + 1 for i in index})
-                todo = [w for w in wanted if f"{w}" not in store]
-                if todo:
-                    self.progress(f"[eval] {item.id}: {engine.model_id}: embedding {len(todo)} faces")
-                started = time.perf_counter()
-                for start in range(0, len(todo), 32):
-                    part = todo[start:start + 32]
-                    vectors = engine.embedder.embed(decode([images[w] for w in part])).vectors
-                    for w, v in zip(part, vectors):
-                        store.put(f"{w}", {"vector": np.asarray(v, np.float32)})
-                    if (start // 32) % 10 == 9:
-                        store.save()
-                        self.progress(f"[eval] {engine.model_id}: {start + len(part)}/{len(todo)} "
-                                      f"({time.perf_counter() - started:.0f} s)")
-                store.save()
-                a = np.stack([np.asarray(store.get(f"{2 * int(i)}")["vector"], np.float64) for i in index])
-                b = np.stack([np.asarray(store.get(f"{2 * int(i) + 1}")["vector"], np.float64) for i in index])
+                vectors = embedded[profile]
+                a = np.stack([vectors[2 * int(i)] for i in index])
+                b = np.stack([vectors[2 * int(i) + 1] for i in index])
                 report = score_pack(a, b, same, fold, self.draws, self.seed)
                 report.update(profile=profile, model=engine.model_id, pairs=len(index))
                 calibration, cohort = self.calibration(engine)
-                if item.extra.get("tracks") and calibration is not None:
-                    _, all_same = read_pack(path)
-                    people = pack_people(images, all_same)
-                    digests = [hashlib.sha256(data).hexdigest()[:16] for data in images]
-                    vectors = {w: np.asarray(store.get(f"{w}")["vector"], np.float64) for w in wanted}
+                if people is not None and calibration is not None:
                     offsets = {"calibration": calibration.track_offset(0.01), "none": 0.0,
                                **(self.margins.get(engine.model_id) or {})}
                     report["tracks"] = pack_tracks(vectors, people, digests, calibration, cohort, offsets,
                                                    seed=self.seed, draws=self.draws)
+                    report["tracks"]["people_merged_by"] = reference[0] if reference else None
                 out[item.id][profile] = report
         return out
+
+    def _pack_vectors(self, name: str, path, images, wanted, engine, decode) -> dict:
+        """``{image index: unit embedding}`` of a pack's ``wanted`` images by ``engine`` (cached)."""
+        store = self._store("embeddings", f"{model_key(engine)}.pack-{file_digest(path)[:24]}")
+        todo = [w for w in wanted if f"{w}" not in store]
+        if todo:
+            self.progress(f"[eval] {name}: {engine.model_id}: embedding {len(todo)} faces")
+        started = time.perf_counter()
+        for start in range(0, len(todo), 32):
+            part = todo[start:start + 32]
+            vectors = engine.embedder.embed(decode([images[w] for w in part])).vectors
+            for w, v in zip(part, vectors):
+                store.put(f"{w}", {"vector": np.asarray(v, np.float32)})
+            if (start // 32) % 10 == 9:
+                store.save()
+                self.progress(f"[eval] {engine.model_id}: {start + len(part)}/{len(todo)} "
+                              f"({time.perf_counter() - started:.0f} s)")
+        store.save()
+        return {w: np.asarray(store.get(f"{w}")["vector"], np.float64) for w in wanted}
+
+    def _pack_reference(self, name: str, path, images, wanted, embedded: dict, decode):
+        """``(model id, vectors)`` of the reference model that joins a pack's photos of one person
+        (:func:`pack_people`): the run's ResNet-50 or AdaFace, else the licensed profile's model when it can be had;
+        ``None`` without one."""
+        for profile, engine in self.engines.items():
+            if engine.model_id in ("buffalo_l_r50", "adaface_ir101_wf12m"):
+                return engine.model_id, embedded[profile]
+        try:
+            from .engine import FaceEngine
+
+            engine = FaceEngine(self.models_folder, download=False, profile="licensed", progress=None)
+            if engine.model_id != "buffalo_l_r50":
+                return None
+            return engine.model_id, self._pack_vectors(name, path, images, wanted, engine, decode)
+        except (OSError, ImportError):
+            return None
 
 
 def _folder_name(name: str) -> str:
