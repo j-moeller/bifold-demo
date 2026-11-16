@@ -149,8 +149,8 @@ def run_scene(run, item, profile: str, engine, rate: float | None = None, yolo=N
     ``windows``, ``preset``, ``detector``, ``fpir``, ``rate``; ``unverified_after``: the decisions' seconds a named
     track may go without a confirming face, default 0: no such limit) through the pipeline with ``engine`` (a
     profile's): its outcomes, name events, switches, faces' attribution, costs and each segment's decision timeline
-    (see the module docs). ``run``: the :class:`~.evaluate.Run` (its gallery folders and caches); ``rate``: embeddings a second
-    (default: the item's, else the profile's)."""
+    (see the module docs). ``run``: the :class:`~.evaluate.Run` (its gallery folders and caches); ``rate``:
+    embeddings a second (default: the item's, else the profile's)."""
     from ..sensor import WindowService
     from ..sources import FixedStepClock, SceneSource
     from . import evaluate, protocols
