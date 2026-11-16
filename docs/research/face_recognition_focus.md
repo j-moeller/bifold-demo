@@ -656,3 +656,14 @@ branch and pushed; its results go into the progress log.
     - Still to settle: the shipped calibrations' 64 and 90 px faces were rendered at "high". Their shift under
       "close" is being measured, or those bins are made again.
   - [face_recognition_status.md](face_recognition_status.md) is updated.
+- **16 November, 04:35 UTC: S4's close-ups keep the calibrations valid.**
+  - Measured against F2's shipped calibrations on the fair's 20 avatars, at 8-90 px and 128 px, with AdaFace, the
+    ResNet-50 and SFace: live windows drawn at "close" change no decision.
+    - Known faces of 64-128 px are all named at 1 %.
+    - No stranger track is named, with or without the offsets.
+    - Same-person scores move -0.01 to -0.03, within the calibrations' noise. Nothing needs making again.
+  - Gallery photos drawn at "close" would cost known people's small faces 0.8-1.5 points at 1 %. So the demo's live
+    windows draw close-ups, while the renderer's default (calibration renders, the avatars' gallery photos) stays as
+    the calibrations were made.
+  - The results note [closeups_results.md](closeups_results.md) has begun: the subdivided heads, the outline, the
+    windows, the shading and the calibrations. Recognition up close and the costs follow.
