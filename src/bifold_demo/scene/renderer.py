@@ -442,7 +442,7 @@ class Renderer:
     linear = True  # the light model: linear light (False: the stored sRGB values, as before)
     quality = "high"  # the shading of the whole view: "high" or "low" (see the class docs)
     window_quality = "close"  # the shading of windows
-    subdivide_from = (64.0, 150.0)  # pixels between the eyes from which a close picture subdivides a head once, twice
+    subdivide_from = (64.0, 180.0)  # pixels between the eyes from which a close picture subdivides a head once, twice
     close_from = 64.0  # pixels between the eyes from which a close picture shades a face as a close-up
     skin_wrap = 1.0  # scale of the skin's wrapped light at the close quality (0: Lambert)
     cornea = 1.0  # scale of the corneas' highlight at the close quality (0: none)

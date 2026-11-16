@@ -2444,7 +2444,7 @@ It is the windows' default (`renderer.window_quality`; the 720p view stays
 `"high"` and draws as before, bit for bit, and so do `"high"` and `"low"`
 windows). In a close picture a person whose eyes are at least
 `renderer.subdivide_from[0]` (64) pixels apart is drawn with their head
-subdivided once (x4), from `subdivide_from[1]` (150) twice (x16):
+subdivided once (x4), from `subdivide_from[1]` (180) twice (x16):
 `Character.detailed(level)` is the model the person wears now (the avatar's,
 or with a fitted head after `use_model`) with its head subdivided, sharing
 its skeleton, textures, maps and face rig, so the pose, the face and a face
