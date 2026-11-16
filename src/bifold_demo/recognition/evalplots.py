@@ -1,10 +1,13 @@
 """Curves of an evaluation's results (``bifold-faces eval``, :mod:`.evaluate`) as PNG images, drawn from the results'
-JSON alone (so they can be drawn again without measuring): DET curves and FNIR against FPIR per kind of face, the
-share of known people named against the eye distance, the turn and the ladder's rungs, per profile.
+JSON alone (so they can be drawn again without measuring): DET curves per kind of face; the share of known people
+named against the eye distance (per camera) and the turn, beside the share the scores alone would find at a measured
+false-alarm rate of 1 % (what the calibration costs); the ladder's rungs; a test pack's DET; and, for scene runs, the
+share of known people's tracks named against the seconds since their face was first shown.
 
-The profiles keep one colour each in every figure (best blue, licensed orange, commercial aqua), each line is also
-labelled at its end, and the intervals are shaded; the numbers themselves are in the results' JSON and the results
-note's tables. Needs matplotlib (it comes with Ultralytics; without it no curves are drawn, and the run says so).
+The profiles keep one colour and one marker each in every figure (best blue circles, licensed orange squares,
+commercial aqua triangles), lines are also labelled at their ends where they do not collide, and the intervals are
+shaded; the numbers themselves are in the results' JSON and the results note's tables. Needs matplotlib (it comes with
+Ultralytics; without it no curves are drawn, and the run says so).
 """
 
 from __future__ import annotations
@@ -53,8 +56,32 @@ def _named(entry: dict):
     return r["rate"], r["interval"]
 
 
-def _label_end(ax, x, y, text, colour):
-    ax.annotate(text, (x, y), xytext=(4, 0), textcoords="offset points", va="center", fontsize=7.5, color=MUTED)
+def _found(entry: dict):
+    """The share of known people's probes found at a measured FPIR of 1 % (the detection and identification rate,
+    1 - FNIR, with the threshold set on the condition's own strangers), or ``None``."""
+    e = ((entry.get("open_set") or {}).get("fnir_at_fpir") or {}).get("0.01")
+    return None if not e else 1.0 - e["fnir"]
+
+
+def _label_ends(ax, ends, gap: float = 0.07):
+    """Direct labels at the lines' ends (``ends``: ``[(x, y, text)]``), in muted ink, moved apart vertically so that
+    none overlap (``gap``: the least distance between two, a share of the y axis's span)."""
+    if not ends:
+        return
+    lo, hi = ax.get_ylim()
+    step = (hi - lo) * gap
+    order = sorted(range(len(ends)), key=lambda k: ends[k][1])
+    placed = []
+    for k in order:
+        y = ends[k][1]
+        placed.append(y if not placed or y >= placed[-1] + step else placed[-1] + step)
+    over = placed[-1] - hi  # (pushed above the top: move the column down)
+    if over > 0:
+        placed = [y - over for y in placed]
+    for k, y in zip(order, placed):
+        x, _, text = ends[k]
+        ax.annotate(text, (x, y), xytext=(4, 0), textcoords="offset points", va="center", fontsize=7.5,
+                    color=MUTED, annotation_clip=False)
 
 
 def plot_results(results: dict, folder) -> list[Path]:
@@ -77,13 +104,57 @@ def plot_results(results: dict, folder) -> list[Path]:
         written += _swept(plt, stills, folder, "ied by preset", "ied", "eye distance asked (pixels, log)",
                           "ied.png", fixed={"preset": "ideal"}, log=True)
         written += _swept(plt, stills, folder, "ied by preset", "ied", "eye distance asked (pixels, log)",
+                          "ied_good_4k.png", fixed={"preset": "good 4K"}, log=True)
+        written += _swept(plt, stills, folder, "ied by preset", "ied", "eye distance asked (pixels, log)",
                           "ied_budget.png", fixed={"preset": "budget 1080p"}, log=True)
-        written += _swept(plt, stills, folder, "turn", "turn", "head turned (degrees)", "turn.png")
+        written += _swept(plt, stills, folder, "turn", "turn", "head turned (degrees)", "turn.png",
+                          title="Named against the turn of the head (38 pixels between the eyes)")
         written += _ladder(plt, stills, folder)
     for pack, by_profile in (results.get("packs") or {}).items():
         written += _pack(plt, pack, by_profile, folder)
+    if results.get("scenes"):
+        written += _named_over_time(plt, results["scenes"], folder)
     plt.close("all")
     return written
+
+
+def _named_over_time(plt, scenes: dict, folder: Path, shown: float = 1.0) -> list[Path]:
+    """The scene runs: the share of known people's tracks (their face shown at least ``shown`` seconds) named
+    correctly within t seconds of the face being first shown, per profile."""
+    import numpy as np
+
+    fig, ax = plt.subplots(figsize=(5.0, 3.4))
+    grid = np.linspace(0.0, 12.0, 121)
+    drawn = 0
+    ends = []
+    for key, scored in scenes.items():
+        segments = [g for r in scored.get("runs", []) for g in r["segments"]
+                    if g["known"] and g["first_shown"] is not None and g["shown"] >= shown - 1e-9]
+        if not segments:
+            continue
+        drawn += 1
+        delays = np.array([g["correct_at"] - g["first_shown"] if g["correct_at"] is not None else np.inf
+                           for g in segments])
+        share = [(delays <= t + 1e-9).mean() for t in grid]
+        profile = key.split("@")[0]
+        colour = PROFILE_COLOURS.get(profile, MUTED)
+        style = "--" if "@" in key else "-"
+        ax.plot(grid, share, color=colour, linestyle=style, drawstyle="steps-post", label=f"{key} ({len(segments)})")
+        ends.append((grid[-1], share[-1], key))
+    if not drawn:
+        plt.close(fig)
+        return []
+    ax.axvline(2.0, color=GRID, linewidth=1.0)
+    ax.set_xlabel("seconds since the face was first shown")
+    ax.set_ylabel("known people's tracks named rightly")
+    ax.set_ylim(-0.02, 1.02)
+    _label_ends(ax, ends)
+    ax.legend(loc="lower right", fontsize=7)
+    ax.set_title("Scene runs: named within t (tracks counted in brackets)")
+    fig.tight_layout()
+    path = folder / "named_over_time.png"
+    fig.savefig(path, dpi=150)
+    return [path]
 
 
 def _det_by_variant(plt, stills: dict, folder: Path) -> list[Path]:
@@ -97,23 +168,15 @@ def _det_by_variant(plt, stills: dict, folder: Path) -> list[Path]:
             if v not in variants:
                 variants.append(v)
     panels = [v for v in ("own", "renders", "fitted") if v in variants] or [None]
-    fig, axes = plt.subplots(1, len(panels), figsize=(3.3 * len(panels), 3.2), squeeze=False, sharey=True)
-    ticks = [1e-5, 1e-4, 1e-3, 1e-2, 0.1, 0.5]
+    fig, axes = plt.subplots(1, len(panels), figsize=(3.4 * len(panels), 3.2), squeeze=False, sharey=True)
     for ax, variant in zip(axes[0], panels):
         for profile, report in stills.items():
             entry = report.get("verification") if variant is None else \
                 (report.get("conditions") or {}).get("variant", {}).get(f"variant={variant}", {}).get("verification")
             curve = (entry or {}).get("curve")
-            if not curve:
-                continue
-            far = [max(x, 1e-6) for x in curve["x"]]
-            frr = [min(max(1.0 - t, 1e-5), 0.999) for t in curve["tar"]]
-            colour = PROFILE_COLOURS.get(profile, MUTED)
-            ax.plot(probit(far), probit(frr), color=colour, label=profile, drawstyle="steps-post")
-            _label_end(ax, probit(far[0]), probit(frr[0]), profile, colour)
-        ax.set_xticks(probit(ticks), [f"{t:g}" for t in ticks])
-        ax.set_yticks(probit([1e-3, 1e-2, 0.05, 0.2, 0.5]), ["0.001", "0.01", "0.05", "0.2", "0.5"])
-        ax.set_xlabel("false accept rate")
+            if curve:
+                _det_line(ax, curve, profile, probit)
+        _det_axes(ax, probit)
         ax.set_title(VARIANT_TITLES.get(variant, "all probes"))
     axes[0][0].set_ylabel("false reject rate")
     axes[0][-1].legend(loc="upper right", fontsize=7.5)
@@ -124,10 +187,30 @@ def _det_by_variant(plt, stills: dict, folder: Path) -> list[Path]:
     return [path]
 
 
+def _det_line(ax, curve: dict, profile: str, probit) -> None:
+    """A DET curve (from a report's ``curve``: FAR and TAR) on normal-deviate axes, with the profile's marker at
+    FAR 1e-3, 1e-2 and 0.1 (its identity is not colour alone)."""
+    far = [min(max(x, 1e-6), 0.999) for x in curve["x"]]
+    frr = [min(max(1.0 - t, 1e-4), 0.999) for t in curve["tar"]]
+    marks = [k for k, x in enumerate(curve["x"]) if any(abs(x - m) <= 1e-3 * m for m in (1e-3, 1e-2, 0.1))]
+    ax.plot(probit(far), probit(frr), color=PROFILE_COLOURS.get(profile, MUTED), label=profile,
+            drawstyle="steps-post", marker=MARKERS.get(profile, "o"), markevery=marks)
+
+
+def _det_axes(ax, probit) -> None:
+    ticks = [1e-4, 1e-3, 1e-2, 0.1, 0.5]
+    ax.set_xticks(probit(ticks), ["1e-4", "1e-3", "0.01", "0.1", "0.5"])
+    ax.set_xlim(*probit([6e-5, 0.6]))
+    ax.set_ylim(*probit([5e-4, 0.6]))
+    ax.set_yticks(probit([1e-3, 1e-2, 0.05, 0.2, 0.5]), ["0.001", "0.01", "0.05", "0.2", "0.5"])
+    ax.set_xlabel("false accept rate")
+
+
 def _swept(plt, stills: dict, folder: Path, breakdown: str, key: str, xlabel: str, name: str, fixed=None,
-           log: bool = False) -> list[Path]:
+           log: bool = False, title: str | None = None) -> list[Path]:
     """The share of known people named rightly at 1 % per decision against one swept condition, per kind of face
-    (panels), a line per profile with its interval shaded."""
+    (panels), a line per profile with its interval shaded; dashed, the share found at a measured FPIR of 1 % (the
+    threshold set on the condition's own strangers: what the scores allow, against what the calibration names)."""
     fixed = fixed or {}
     series: dict = {}
     for profile, report in stills.items():
@@ -138,14 +221,16 @@ def _swept(plt, stills: dict, folder: Path, breakdown: str, key: str, xlabel: st
             x, named = _number(parts.get(key)), _named(entry)
             if x is None or named is None:
                 continue
-            series.setdefault(parts.get("variant"), {}).setdefault(profile, []).append((x, *named))
+            series.setdefault(parts.get("variant"), {}).setdefault(profile, []).append((x, *named, _found(entry)))
     if not series:
         return []
     panels = [v for v in ("own", "renders", "fitted") if v in series]
-    fig, axes = plt.subplots(1, len(panels), figsize=(3.3 * len(panels), 3.0), squeeze=False, sharey=True)
+    fig, axes = plt.subplots(1, len(panels), figsize=(3.4 * len(panels), 3.1), squeeze=False, sharey=True)
     for ax, variant in zip(axes[0], panels):
+        ax.set_ylim(-0.02, 1.04)
+        ends = []
         for profile, points in series[variant].items():
-            points.sort()
+            points.sort(key=lambda p: p[0])
             xs = [p[0] for p in points]
             ys = [p[1] for p in points]
             lo = [p[2][0] if p[2][0] is not None else p[1] for p in points]
@@ -153,19 +238,29 @@ def _swept(plt, stills: dict, folder: Path, breakdown: str, key: str, xlabel: st
             colour = PROFILE_COLOURS.get(profile, MUTED)
             ax.fill_between(xs, lo, hi, color=colour, alpha=0.12, linewidth=0)
             ax.plot(xs, ys, color=colour, marker=MARKERS.get(profile, "o"), label=profile)
-            _label_end(ax, xs[-1], ys[-1], profile, colour)
+            found = [(p[0], p[3]) for p in points if p[3] is not None]
+            if found:
+                ax.plot([f[0] for f in found], [f[1] for f in found], color=colour, linestyle="--", linewidth=0.9)
+            ends.append((xs[-1], ys[-1], profile))
+        _label_ends(ax, ends)
         if log:
             ax.set_xscale("log")
             ax.set_xticks([8, 12, 18, 26, 38, 54, 76, 100], ["8", "12", "18", "26", "38", "54", "76", "100"])
             ax.minorticks_off()
-        ax.set_ylim(-0.02, 1.02)
         ax.set_xlabel(xlabel)
         ax.set_title(VARIANT_TITLES.get(variant, variant))
-    axes[0][0].set_ylabel("known probes named rightly (1 % per decision)")
-    axes[0][-1].legend(loc="lower right", fontsize=7.5)
+    axes[0][0].set_ylabel("known probes named rightly")
+    handles, labels = axes[0][-1].get_legend_handles_labels()
+    from matplotlib.lines import Line2D
+
+    handles += [Line2D([], [], color=MUTED, linestyle="-"), Line2D([], [], color=MUTED, linestyle="--")]
+    labels += ["named: calibrated, 1 % per decision, after the quality gate",
+               "found: any face, at a measured FPIR of 1 %"]
+    fig.legend(handles, labels, loc="lower center", ncol=len(labels), fontsize=7, bbox_to_anchor=(0.5, 0.0))
     extra = ", ".join(f"{k} {v}" for k, v in fixed.items())
-    fig.suptitle(f"Named against the {xlabel.split(' (')[0]}" + (f" ({extra})" if extra else ""), fontsize=10)
-    fig.tight_layout()
+    fig.suptitle((title or f"Named against the {xlabel.split(' (')[0]}") + (f" ({extra})" if extra else ""),
+                 fontsize=10)
+    fig.tight_layout(rect=(0, 0.07, 1, 1))
     path = folder / name
     fig.savefig(path, dpi=150)
     return [path]
@@ -218,20 +313,11 @@ def _pack(plt, pack: str, by_profile: dict, folder: Path) -> list[Path]:
     """A pack's DET curve per profile."""
     from .metrics import probit
 
-    fig, ax = plt.subplots(figsize=(4.2, 3.4))
+    fig, ax = plt.subplots(figsize=(4.4, 3.4))
     for profile, report in by_profile.items():
-        curve = report.get("curve")
-        if not curve:
-            continue
-        far = [max(x, 1e-6) for x in curve["x"]]
-        frr = [min(max(1.0 - t, 1e-5), 0.999) for t in curve["tar"]]
-        colour = PROFILE_COLOURS.get(profile, MUTED)
-        ax.plot(probit(far), probit(frr), color=colour, label=profile, drawstyle="steps-post")
-        _label_end(ax, probit(far[0]), probit(frr[0]), profile, colour)
-    ticks = [1e-4, 1e-3, 1e-2, 0.1, 0.5]
-    ax.set_xticks(probit(ticks), [f"{t:g}" for t in ticks])
-    ax.set_yticks(probit([1e-3, 1e-2, 0.05, 0.2, 0.5]), ["0.001", "0.01", "0.05", "0.2", "0.5"])
-    ax.set_xlabel("false accept rate")
+        if report.get("curve"):
+            _det_line(ax, report["curve"], profile, probit)
+    _det_axes(ax, probit)
     ax.set_ylabel("false reject rate")
     ax.legend(loc="upper right", fontsize=7.5)
     ax.set_title(f"{pack}: verification (DET)")

@@ -630,3 +630,31 @@ def test_the_calibrations_hold_none_of_the_fairs_avatars():
     assert len(sides["calibrations"]) == 3
     for made in sides["calibrations"].values():
         assert len(made["avatars"]) > 80 and "overlap_with_evaluation" not in made
+
+
+def test_the_curves_are_drawn_from_the_results_alone(tmp_path):
+    """Every figure is drawn from a results JSON (no measuring): the DET per kind of face, the eye distance per camera,
+    the turn, the ladder, a pack's DET and the scene runs' names over time."""
+    pytest.importorskip("matplotlib")
+    from bifold_demo.recognition.evalplots import plot_results
+
+    curve = {"x": [1e-4, 1e-3, 1e-2, 0.1, 1.0], "tar": [0.6, 0.7, 0.8, 0.9, 1.0]}
+
+    def entry(rate):
+        return {"verification": {"curve": curve}, "open_set": {"fnir_at_fpir": {"0.01": {"fnir": 1 - rate}}},
+                "system": {"targets": {"0.01": {"known": {"named_right": {"rate": rate, "interval": [0.0, 1.0]}}}}}}
+
+    conditions = {"variant": {f"variant={v}": entry(0.5) for v in ("own", "renders", "fitted")},
+                  "ied by preset": {f"variant={v}, preset={p}, ied={i}": entry(i / 100) for v in ("own", "fitted")
+                                    for p in ("ideal", "good 4K", "budget 1080p") for i in (8.0, 38.0, 100.0)},
+                  "turn": {f"variant=own, turn={t}": entry(1 - t / 90) for t in (15.0, 45.0, 90.0)},
+                  "rung": {f"rung={r}, variant={v}": entry(0.6) for r in ("B0", "B1", "B5") for v in ("own", "renders")}}
+    results = {"stills": {p: {"verification": {"curve": curve}, "conditions": conditions}
+                          for p in ("best", "commercial")},
+               "packs": {"lfw": {"best": {"curve": curve}}},
+               "scenes": {"best": {"runs": [{"segments": [{"known": True, "first_shown": 1.0, "shown": 2.0,
+                                                            "correct_at": 2.5}]}]}}}
+    written = plot_results(results, tmp_path)
+    assert sorted(p.name for p in written) == sorted(["det.png", "ied.png", "ied_good_4k.png", "ied_budget.png",
+                                                      "turn.png", "ladder.png", "lfw_det.png", "named_over_time.png"])
+    assert all(p.stat().st_size > 1000 for p in written)
