@@ -269,7 +269,27 @@ for the tracker, not for the faces. Each run goes through the whole pipeline of 
 detector (YOLO26n, or YOLOX-s for the commercial profile), the tracker, up to four windows a frame of the ideal 8K
 camera, the profile's embedding budget, the calibrated decisions at 1 % per stranger track. A segment is one person
 followed by one track; a face is *shown* while turned less than 45 degrees, its eyes not hidden and at least 3 pixels
-apart in the view.
+apart in the view. The tracks counted are those whose face was shown at least a second (the acceptance test's);
+intervals over people.
+
+**Known people's tracks** (the shipped calibrations, the bound's offsets):
+
+| Profile | Segments (people) | Known tracks, face shown 1 s (people) | Named within 2 s | within 5 s | at all | Named wrongly (all known tracks) |
+|---|---|---|---|---|---|---|
+| licensed (ResNet-50) | 232 (19) | 27 (12) | 0 % (0-26) | 0 % | 7 % (0-24) | 0 of 48 |
+| commercial (SFace) | 230 (19) | 25 (12) | 0 % (0-26) | 0 % | 0 % | 0 of 54 |
+
+**Strangers and the tracks themselves:**
+
+| Profile | Strangers' tracks, face shown 1 s (people) | Named | Called unknown | All strangers' tracks named | Name switches | One name on two tracks | Tracks swapping people | Faces given to a wrong track |
+|---|---|---|---|---|---|---|---|---|
+| licensed (ResNet-50) | 24 (15) | 0 % (0-22) | 96 % (86-100) | 1 of 184 | 0 | 0 s | 52 | 36 of 3,312 |
+| commercial (SFace) | 24 (15) | 0 % (0-22) | 88 % (71-100) | 0 of 176 | 0 | 0 s | 50 | 26 of 3,469 |
+
+The one stranger's track named (licensed, run 2) was a crosser's who walked in front of a known person and took
+over her track, name and all, with no face of its own shown: a track swap, not a recognition (the cautious offsets
+and every other margin name it alike). Swaps are the tracker's: about 50 a profile in 4 minutes of 12 people
+walking in lanes and crossing, where two people may also share a body and clothes.
 
 ## P6, LFW: the real-face gap
 
@@ -402,10 +422,27 @@ pixels, turns, nods, lights, occluders), in a random order, decided after each f
 and 200 stranger tracks per margin; the per-camera size sweeps give the same picture). No known person's track was
 named as somebody else under any margin, on the fair's identities or on LFW's.
 
-**P3's scene runs replayed per margin** *(measuring: the commercial profile so far)*: with the shipped bound no known
-person was named (0 of 25 tracks whose face was shown a second, 12 people); the median's offset names 24 % of them
-(4 % within 2 s), the point estimate's 20 % (4 %), no offset 88 % (44 % within 2 s, 24-64 %); no stranger's track was
-named under any margin (0 of 25, 15 people) and no known person was named wrongly.
+**P3's scene runs replayed per margin** *(measuring: the best profile's runs to come)*. The runs decided with the
+bound (the shipped offsets then); each segment's decisions replayed with the other margins' offsets (faithful for
+looser margins, `evalscene.replay`). Known people's tracks whose face was shown a second (25 of 12 people for the
+commercial profile, 27 of 12 for the licensed), strangers' likewise (25 of 15 people) and all strangers' tracks:
+
+| Profile | Margin (offset) | Known: named within 2 s | within 5 s | at all | Strangers named: shown a second | all strangers' tracks |
+|---|---|---|---|---|---|---|
+| commercial (SFace) | bound (2.60) | 0 | 0 | 0 | 0 | 0 of 176 |
+| | point (1.22) | 1 (4 %) | 3 (12 %) | 5 (20 %) | 0 | 0 |
+| | median (1.06) | 1 | 5 | 6 (24 %) | 0 | 3 |
+| | none | 11 (44 %) | 19 (76 %) | 22 (88 %) | 0 | 10 (5.7 %) |
+| licensed (ResNet-50) | bound (2.54) | 0 | 0 | 2 (7 %) | 0 | 1 of 184 (the swap) |
+| | point (1.70) | 0 | 2 | 2 | 0 | 1 (the swap) |
+| | median (1.60) | 0 | 2 | 2 | 0 | 1 (the swap) |
+| | none | 3 (11 %) | 5 | 10 (37 %) | 0 | 6 (3.3 %) |
+
+No known person was named wrongly under any margin. The point estimate named no stranger the bound did not (the one
+is the licensed run's swap); the median, looser for SFace, named three strangers' brief tracks (faces never shown a
+second) and no offset ten, so in the scene runs the point estimate is the loosest margin that adds no false alarm.
+What all margins show: the faces made from photos are rarely named in the fair at 1 % per track, by any margin but
+none (P2: they score at the thresholds).
 
 **Recommendation: make the point estimate the default margin.** Its offsets keep a stranger's track at the target on
 the very avatars the calibration was made from (0.9-1.4 % per track at 1 % asked, within the acceptance test's factor
@@ -422,6 +459,13 @@ target), so it is proposed here, not made: `bifold-faces calibrate` would take t
 per-track check would then show about the target instead of half of it.
 
 ## The acceptance test *(measuring)*
+
+**The test** (`docs/research/face_recognition_sota.md`, section 4.4; `metrics.acceptance`): at least 95 % of the
+enrolled people's tracks whose face was shown for a second (turned less than 45 degrees) named correctly within 2
+seconds; a false-alarm rate per stranger track of 1 %, achieved within a factor of 2 either way; no identity on two
+tracks at once. The verdict also says whether each measured share meets its criterion with its interval (a few dozen
+people cannot show 95 % or 1 % with confidence). It runs as `bifold-faces eval MANIFEST --acceptance` on scene runs
+here (exit status 1 when a profile fails) and on P5's labelled recordings on the Mac (`--review VIDEO --acceptance`).
 
 ## Cost, measured here *(measuring)*
 
@@ -443,3 +487,23 @@ what to report. A smoke test here on the local test photos (6 people, 4 of them 
 numbers only, nothing made from them kept): every known probe was named rightly at 1 % per decision by all three
 profiles, also shrunk to an eighth of the photo, and no stranger was named; with 6 people the 95 % intervals are
 40-100 % and 0-71 %, so this shows the tools work, not how well.
+
+**What the measurements here say to do there.**
+
+1. **Measure first, with consenting people.** P4 with at least 20 enrolled people (enrolment photos from one session,
+   probes from other days, lights and poses) and as many consenting people who are not enrolled, then P5's recorded
+   sessions with `--acceptance`. The numbers to report are listed in the README; nothing made from the photos or
+   recordings leaves the Mac.
+2. **Expect the shipped calibrations to be strict on real faces.** On LFW they let no stranger's track through even
+   without the per-track offset, while the shipped offsets leave a quarter to two fifths of the known people's tracks
+   unnamed (P6). If P4's and P5's strangers show the same (no stranger named, many known people not named), the point
+   estimate's offsets (the recommended margin) are the first step: on LFW they named 79-91 % of the known tracks with
+   no stranger named.
+3. **Then a local calibration from the consenting people.** The calibration's curves are per face-size and turn bin;
+   each pair of consenting people is a stranger pair, so 46 people give the 1,000 pairs needed to see a false-match
+   rate of 1 in 1,000 per comparison (the single decision's threshold at 1 % with 10 people enrolled), and P5's
+   tracks give the per-track check. `bifold-faces calibrate` makes calibrations from renders of avatars only; a
+   calibration from a folder of consenting people's photos (the avatars' curves kept where the photos do not reach)
+   is the tool to add, proposed here. Until then P4's strangers check a calibration rather than make one.
+4. **The speed.** The acceptance test asks for a name within 2 seconds; how the best profile does with the embedding
+   rate a Mac would give it is the P3 run at 10 embeddings a second (below). *(measuring)*
