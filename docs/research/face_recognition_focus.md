@@ -638,3 +638,21 @@ branch and pushed; its results go into the progress log.
     - The neck's edge, the teeth and the tongue are kept; the eyeballs stay on their spheres.
     - The same rig checks as fitted heads, in all 12 faces.
     - 0.07 s (x4) and 0.17 s (x16) per head.
+- **16 November, 03:55 UTC: E1's first results (P2, rendered stills); S4's close-ups in the windows.**
+  - **E1, P2** (2,700 probes of the fair's 20 held-out identities):
+    - avatars' own faces are named from 12 px between the eyes (ideal camera), 18 px (good 4K) and 26 px (budget
+      1080p);
+    - faces made from photos are separable at a measured 1 % false-alarm rate in 90-100 % of probes, but the shipped
+      calibrations name only 25-80 % of them. Per decision they are 9-500 times stricter than asked on these avatars.
+    - fitted heads do better than the avatars' own.
+
+    [face_recognition_e1_results.md](face_recognition_e1_results.md) grows as the ladder, the scene runs, LFW, the
+    margin and the acceptance test are measured.
+  - **S4, parts 2-5:**
+    - windows draw a third quality, "close", only for faces 64 px or more between the eyes;
+    - heads subdivided once from 64 px and twice from 180 px, measured on the jaw's outline;
+    - the skin's wrapped light, the cornea's highlight, and alpha to coverage for lashes and hair cards;
+    - smaller faces are drawn exactly as before.
+    - Still to settle: the shipped calibrations' 64 and 90 px faces were rendered at "high". Their shift under
+      "close" is being measured, or those bins are made again.
+  - [face_recognition_status.md](face_recognition_status.md) is updated.

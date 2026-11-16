@@ -18,7 +18,7 @@ Where the face-recognition work stands, as of 16 November 2026, with the numbers
 | S2 | High-resolution heads: 2048 textures, normal and specular maps, linear light | Done |
 | F2 | From a person to an identity: tracks, faces, evidence, calibrated decisions, demo | Done |
 | S3 | Head shape fitted to a person's photos | Done: built, reviewed, fixed |
-| E1 | Evaluation: metrics, protocols, baselines, acceptance test | Building: the metrics are on the branch |
+| E1 | Evaluation: metrics, protocols, baselines, acceptance test | Building: tools and first results on the branch |
 | S4 | Close-ups: finer head meshes, skin and eye shading | Building |
 
 **The system today.**
@@ -167,6 +167,26 @@ The recognisers' speeds here, per face:
   - tests that catch all 65 deliberately introduced faults.
 
   The full suite: 1043 passed, 9 skipped.
+
+### E1, the evaluation (first results; more are being measured)
+
+The rendered stills, P2: 2,700 probes of the fair's 20 held-out identities, three kinds of face, 45 conditions,
+intervals over people. Details in [face_recognition_e1_results.md](face_recognition_e1_results.md).
+
+- **Avatars' own faces** are named by every profile from 12 px between the eyes with an ideal camera, 18 px with a good
+  4K camera and 26 px with a budget 1080p one.
+- **Faces made from photos** (an avatar standing in for a person) are found, and could be told from strangers. At a
+  measured false-alarm rate of 1 %, 90-100 % of them are separable. But the shipped calibrations name only 25-80 % of
+  them. The fitted heads do better than the avatars' own heads.
+- **The calibrations are much stricter than asked per decision on these held-out avatars,** 9-500 times: at 10 %
+  asked, 0.02 % (AdaFace, the ResNet-50) and 1.1 % (SFace); at 1 %, no stranger was named in 27,000 decisions. That
+  caution costs names. The margin to recommend comes from the scene runs and the real-face tracks still being
+  measured.
+- **The profiles are statistically tied** on faces from photos at an equal measured false-alarm rate. On the avatars'
+  own faces SFace misses twice as many.
+- **What hurts faces from photos:** side and top light and a hidden half do, but not the avatars' own faces.
+- **A test pitfall found and fixed:** a face worn on another avatar's head still carries that avatar's identity (it
+  shows through in 7-18 % of probes). So a worn face is never compared with its carrier.
 
 ## Open issues
 
