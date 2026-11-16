@@ -166,8 +166,9 @@ def test_the_creators_person_wears_the_fitted_head_and_saves_it(tmp_path, monkey
 
 
 def test_a_fitted_persons_cache_key_follows_the_fit(fitted, tmp_path, monkeypatch):
-    """A fitted person is kept by its photos and by everything that changes the head: the fit's code version, its
-    options, the identity space and the data shipped with the code. Changing any of them makes the head again."""
+    """A fitted person is kept by its photos and by everything that changes the head: the fit's and the head space's
+    code versions, the fit's options, the identity space and the data shipped with the code. Changing any of them
+    makes the head again."""
     from bifold_demo.characters.headshape import fit as shapefit
     from bifold_demo.characters.headshape import fitted as fitted_module
     from bifold_demo.characters.headtex.person import PersonCache
@@ -189,6 +190,9 @@ def test_a_fitted_persons_cache_key_follows_the_fit(fitted, tmp_path, monkeypatc
     assert key(options=shapefit.FitOptions(damping=1.0)) != base
     assert key(space=space("def")) != base and key(space=None) != base
     monkeypatch.setattr(fitted_module, "FIT_VERSION", shapefit.FIT_VERSION + 1)
+    assert key() != base
+    monkeypatch.undo()
+    monkeypatch.setattr(s0, "VERSION", s0.VERSION + 1)
     assert key() != base
     monkeypatch.undo()
     monkeypatch.setattr(identity, "shipped_digest", lambda: "other trust")

@@ -25,9 +25,9 @@ are a means of the fit and often far from the truth), and the UV bake, the atlas
 for the new geometry. With ``check`` the identity check reports the renders of the fitted head and of
 the avatar's own head with its own textures from the same photos: the shape's measured value. The result is kept by
 the photos' contents like :func:`~bifold_demo.characters.headtex.person.person_textures`' (``shape.npz`` beside the
-textures, both written at once), with the fit's code version (:data:`~.fit.FIT_VERSION`), its options and the
-identity space in the key (:func:`cache_key`): a changed fit makes the head again. A fitted shape is biometric data
-like the photos: keep it in git-ignored folders only.
+textures, both written at once), with the fit's code version (:data:`~.fit.FIT_VERSION`), the head space's
+(:data:`~.head.VERSION`), the fit's options and the identity space in the key (:func:`cache_key`): a changed fit makes
+the head again. A fitted shape is biometric data like the photos: keep it in git-ignored folders only.
 """
 
 from __future__ import annotations
@@ -313,7 +313,9 @@ def cache_key(store, photos, model, *, views=None, inpainter=None, size=None, sp
               options: FitOptions | None = None) -> str:
     """The key of a fitted person in ``store`` (a :class:`~bifold_demo.characters.headtex.person.PersonCache`): the
     photos' contents, the avatar and what each photo shows, as for the textures, and all that changes the shape: the
-    shape file's format, the fit's code version, its options and the identity space's commit."""
+    shape file's format, the fit's and the head space's code versions, the fit's options and the identity space's
+    commit."""
+    from . import head as headspace
     from . import space as identity
 
     commit = ""
@@ -324,7 +326,8 @@ def cache_key(store, photos, model, *, views=None, inpainter=None, size=None, sp
     elif identity.available():
         commit = identity.files()["commit"]
     return store.key(photos, model, views=views, inpainter=getattr(inpainter, "name", None), size=size,
-                     shape=f"headshape-{rig.FORMAT}-{FIT_VERSION}-{commit}-{identity.shipped_digest()}",
+                     shape=f"headshape-{rig.FORMAT}-{FIT_VERSION}-{headspace.VERSION}-{commit}-"
+                           f"{identity.shipped_digest()}",
                      fit=dataclasses.asdict(options or FitOptions()))
 
 

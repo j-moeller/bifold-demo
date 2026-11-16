@@ -2116,7 +2116,7 @@ avatar's head (proportions where the photos agree, nothing where they do not).
   the 100 modes and 53 expressions as offsets of the avatar's vertices; the
   avatar's own coefficients (the rest is the artist's detail, which a fit
   keeps). The closed lips are tied so that they stay closed.
-- **The fit** (`fit_person`, about 8 s for six photos): all of a person's
+- **The fit** (`fit_person`, about 6 s for six photos): all of a person's
   photos at once, by Levenberg-Marquardt: the coefficients, per photo the
   camera and, only where MediaPipe scores one, the expression (ICT's shapes,
   started from MediaPipe's blendshape scores), the focal length (EXIF data or
@@ -2168,10 +2168,11 @@ avatar's head (proportions where the photos agree, nothing where they do not).
   created character's `character.json` (one that cannot be read leaves the
   avatar's own head, with a note), and for a known face of the fair in its
   folder under `faces/.headtex/`, written with its textures as one, and made
-  again when the fit changes (its code version, options or identity space
-  are in the key). The known faces of the fair, the character creator's
-  person (a face from two or more photos) and created characters wear their
-  fitted heads; characters saved before keep the avatar's head.
+  again when the fit changes (the fit's and the head space's code versions,
+  the fit's options and the identity space are in the key). The known faces
+  of the fair, the character creator's person (a face from two or more
+  photos) and created characters wear their fitted heads; characters saved
+  before keep the avatar's head.
 
 ```python
 from bifold_demo.characters.headshape import fitted_person
@@ -2187,17 +2188,19 @@ and measures; `characters/headshape/evaluate.py`) and with random identities
 of the space: [docs/research/head_shape_results.md](docs/research/head_shape_results.md).
 On the twenty pairs of the test avatars (six renders up to 60° turned, focal
 length unknown) the median landmark error went from 2.65 mm (the avatar's own
-head) to 2.38 mm, most in the mouth, nose, forehead and profile; the cheeks got
-worse, and so did the surface error over the face (1.25 to 1.35 mm). Three
-photos (the front, 30° each way) did better (2.21 mm, surface 1.13), and the
-free-form correction alone (`FitOptions(space=False)`) was as good on the
-landmarks (2.36 mm), better on the surface (1.18 mm) and made no head worse
-by more than 0.1 mm. On the tuning avatars, where the defaults were chosen, the
-space's fit went from 2.82 to 2.29 mm. For the face recognition the shape
+head) to 2.17 mm and the surface error over the face from 1.25 to 1.10 mm;
+18 of the 20 pairs got better, one worse; most in the mouth, forehead,
+outline, profile and nose. (Before an independent review's fixes, which keep
+the 60° photos' landmarks out of the shape and damp the fit, it was 2.38 mm
+and the surface 1.35 mm, worse than the avatar's own head: the turned photos
+pulled the cheeks out of shape.) The free-form correction alone
+(`FitOptions(space=False)`) gave 2.37 mm. For the face recognition the shape
 pays more than its millimetres suggest: avatars wearing textures made from
 another avatar's renders looked more like that avatar to all three engines on
-the fitted head than on their own (AdaFace's genuine score 0.50 to 0.57, its
-rank-1 rate 88 to 100 %, the impostor scores unchanged).
+the fitted head than on their own: on average over eight pairs (AdaFace 0.50
+→ 0.59, the ResNet-50 0.51 → 0.60, SFace 0.66 → 0.70, the impostor scores
+no higher) and in 23 of 24 pairs and engines (AdaFace lost a little on a
+child's renders on an adult's head).
 
 A fitted face shape is biometric data like the photos it comes from: it is
 kept only in git-ignored folders and deleted with the person or character.
