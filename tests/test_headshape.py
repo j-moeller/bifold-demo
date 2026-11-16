@@ -211,7 +211,8 @@ def test_the_space_is_laid_on_the_head_with_its_scale(made, setup):
 
 def test_the_fit_recovers_known_coefficients_and_cameras(made, setup):
     """Exact landmarks of a head with known coefficients, seen by four known cameras, started from wrong ones: the fit
-    finds the coefficients and the cameras."""
+    finds the coefficients and the cameras. Damped (the default), the change of the coefficients from the avatar's is
+    kept at 85 % of what it found, the size as found."""
     model, space, _landmarks, marks = setup
     beta = np.array([0.8, -0.6, 0.5])
     modes = made.modes(space).astype(np.float64)
@@ -236,6 +237,11 @@ def test_the_fit_recovers_known_coefficients_and_cameras(made, setup):
     assert fit.error_after < 0.1 < fit.error_before
     moved = np.linalg.norm(fit.offsets - (target - model.primitives[1].positions), axis=1)
     assert np.median(moved[made.parts == s0.SKIN]) < 5e-4  # (the size is held at the avatar's without irises)
+    kept = shapefit.FitOptions().damping
+    assert 0.5 < kept < 1.0
+    damped = shapefit.fit_person(photos, model, marks, made, space, dataclasses.replace(options, damping=kept))
+    assert np.allclose(damped.beta - made.alpha, kept * (fit.beta - made.alpha), atol=1e-6)
+    assert damped.scale == pytest.approx(fit.scale, abs=0.002)
 
 
 def test_one_photo_or_no_change_keeps_the_avatars_head(made, setup):
@@ -257,8 +263,9 @@ def test_one_photo_or_no_change_keeps_the_avatars_head(made, setup):
 def test_the_size_comes_from_the_irises_and_is_held(made, setup):
     """Photos of the avatar whose irises say the person's head is 10 % smaller than the avatar's: the landmarks
     cannot tell sizes apart (a larger head farther away looks the same), the irises and the avatar's size as the
-    prior can; the fitted head is uniformly scaled to the size between them (its shape the avatar's), and without
-    irises it keeps the avatar's size."""
+    prior can; the fitted head is uniformly scaled to the size between them (its shape the avatar's), held there
+    while the shape is fitted (undamped too, where nothing sets the size again at the end), and without irises it
+    keeps the avatar's size."""
     model, space, _landmarks, marks = setup
     rims = list(cf.RIGHT_IRIS[1:] + cf.LEFT_IRIS[1:])
     reliability = marks.reliability.copy()
@@ -293,6 +300,8 @@ def test_the_size_comes_from_the_irises_and_is_held(made, setup):
     assert eye_distance(fit.offsets) == pytest.approx(own * expected, abs=3e-4)
     assert np.abs(fit.beta - made.alpha).max() < 0.1  # the shape is the avatar's
     assert fit.iris_radius == pytest.approx(0.00585 * expected / 0.9, rel=0.02)
+    whole = shapefit.fit_person(photos, model, marks, made, space, shapefit.FitOptions(damping=1.0, **options))
+    assert whole.scale == pytest.approx(expected, abs=0.003)
     plain = shapefit.fit_person(photos, model, marks, made, space, shapefit.FitOptions(iris=False, **options))
     assert plain.scale_from == "the avatar's own size" and math.isnan(plain.iris_radius)
     assert plain.scale == pytest.approx(1.0, abs=0.003)

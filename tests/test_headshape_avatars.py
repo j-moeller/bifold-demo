@@ -19,6 +19,7 @@ from bifold_demo.characters.headshape import space as identity
 
 CHARACTERS = Path(os.environ.get("BIFOLD_CHARACTERS_TEST_DIR", "/nonexistent")).expanduser()
 PERSON, HEAD = "Male_Adult_04", "Male_Adult_10"  # (a pair of the tuning half)
+SHORT_NECK = "Female_Child_01"  # (of the tuning half too: its chin near the neck's edge in space)
 
 
 @pytest.fixture(scope="module")
@@ -201,6 +202,32 @@ def test_the_rig_checks_catch_broken_heads(heads):
     assert not any("lip comes behind" in problem for problem in check.problems), check.problems
 
 
+def test_an_open_mouth_is_judged_from_the_front(heads, monkeypatch):
+    """A mouth is judged shut from the front: in a face whose open mouth the side view nearly hides, a fitted head may
+    show more of the teeth from the side (no problem); where the mouth is shut seen from the front it may not. (The
+    threshold is raised so that this head has such a face: sideways.)"""
+    model, _head, hs = heads[HEAD]
+    p = np.asarray(model.primitives[hs.primitive].positions, np.float64)
+    mouth = np.mean([model.skeleton.rest_global[model.skeleton.index(n), :3, 3]
+                     for n in ("Bip01 RMouthCorner", "Bip01 LMouthCorner")], axis=0)
+    jaw = s0._avatar_sides(model, hs.primitive)[:, 0] > 0.5
+    lower = (hs.parts == s0.SKIN) & jaw & (np.linalg.norm(p - mouth, axis=1) < 0.02) & (p[:, 2] > mouth[2] - 0.005)
+    down = np.zeros_like(p)
+    down[lower] = [0, -0.004, 0]
+    monkeypatch.setattr(rig, "CLOSED_MOUTH", 100)
+    own = rig.rig_checks(model, model, hs).shown
+    faces = sorted({key.rsplit(", ", 1)[0] for key in own})
+    hidden = [face for face in faces if own[f"{face}, side"][0][2] < rig.CLOSED_MOUTH <= own[f"{face}, front"][0][2]]
+    assert hidden
+    check = rig.rig_checks(model, _broken(model, hs, down), hs)
+    for face in hidden:
+        avatar, fitted = check.shown[f"{face}, side"][0][2], check.shown[f"{face}, side"][1][2]
+        assert fitted > avatar * (1.0 + rig.SHOW_TOLERANCE) + rig.SHOW_PIXELS  # (judged shut from the side: a problem)
+        assert not any(problem.startswith(f"{face}, ") and "of the teeth" in problem for problem in check.problems)
+    assert any(problem.startswith("neutral, front") and "shows more of the teeth" in problem
+               for problem in check.where.get("mouth", [])), check.where
+
+
 def test_a_failing_part_is_kept_smaller_there_only(heads, space, tmp_path):
     """A shape that sinks the right lids into the eyeball is kept smaller round the right eye until it passes; the
     rest of the head keeps the full shape, and the shape says what was kept smaller."""
@@ -247,6 +274,28 @@ def test_the_jaw_line_is_free_of_the_neck(heads):
     near = np.argmin(np.linalg.norm(points[None] - jaw[:, None], axis=2), axis=1)
     assert hs.fade[near].min() > 0.999
     assert hs.fade[hs.fade <= 0.0].size > 0  # (the edge itself stays)
+
+
+def test_a_short_necks_jaw_line_is_free_along_the_skin(library, mediapipe, renderer):
+    """Female_Child_01's chin is near the neck's edge in space (a short neck), not along the skin: the fade goes
+    along the skin and is done by the jaw line, so the jaw line moves (by the review's measure, the lowest fade over
+    its landmarks' triangles, 0.97; straight from the edge 0.88, and 0.57 before the fade was done by the jaw line)."""
+    from bifold_demo.characters.headtex import landmarks as stage0_module
+    from bifold_demo.characters.headtex.landmarks import head_landmarks, render_views
+    from bifold_demo.scene.renderer import Renderer
+
+    if SHORT_NECK not in library.available():
+        pytest.skip(f"the character library lacks {SHORT_NECK}")
+    model = library.load(SHORT_NECK)
+    stage0 = Renderer(stage0_module.RENDER_SIZE, stage0_module.RENDER_SIZE)
+    try:
+        head = head_landmarks(model, mediapipe[0], render=lambda m, cameras: render_views(m, cameras, stage0))
+    finally:
+        stage0.release()
+    parts = s0.head_parts(model, head.primitive)
+    tri = np.asarray(model.primitives[head.primitive].indices, np.int64).reshape(-1, 3)
+    fade = s0.neck_fade(model, head.primitive, parts, jaw=np.asarray(head.points, np.float64)[list(s0.JAW_LINE)])
+    assert fade[tri[head.triangle]].min(axis=1)[:468].min() > 0.95
 
 
 def test_the_camera_plays_face_rig_follows_a_new_head(heads, space):

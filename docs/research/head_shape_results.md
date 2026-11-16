@@ -199,6 +199,13 @@ fit's options, the identity space and the shipped landmarks and trust, so a chan
 textures and their shape are written as one; a fitted head's atlas stays in memory. A created character whose shape
 file cannot be read keeps its avatar's head, with a note, instead of being unreadable.
 
+**The tests** now cover the fit's tuned choices and every rig check with a broken head. Mutation checks, each mutant
+run against the four head-shape test files with the identity space present, the avatar tests included and the head
+spaces made by the mutant: the review's 32 mutants (22 had survived the tests), the builder's 13 and 20 for the
+review's fixes. Four survived at first: the size held while the shape is fitted (the damping's last step, which
+solves the size again, hid it), the default fit's damping, the mouth judged shut from either view, and the fade
+straight from the neck's edge; with tests for them, all 65 are caught.
+
 ## D1 on the test half
 
 Twenty pairs of the test half: ten of same-sex adults, six cross-sex, four of the child and an adult (either way).
