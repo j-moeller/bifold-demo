@@ -867,8 +867,11 @@ def check(model: CharacterModel, level: int = 1, labels: HeadLabels | None = Non
 def detail_model(model: CharacterModel, level: int, wait: bool = True) -> CharacterModel | None:
     """The model a picture draws where it shows ``model``'s face up close: :func:`subdivide` at ``level`` (cached
     per model). ``wait`` False makes it on a background thread the first time and returns ``None`` until it is there
-    (the renderer draws the coarse head meanwhile, so a frame never waits); ``None`` also for a model without a head
-    to subdivide."""
+    (the renderer draws the coarse head meanwhile, so a frame never waits); ``wait`` True makes it at once, or waits
+    for the background's. ``None`` also for a model without a head to subdivide, or whose head could not be: the
+    outcome is kept, so it is not tried again every frame."""
+    from concurrent.futures import Future
+
     key = (id(model), int(level))
     with _lock:
         known = _models.get((*key, True))
@@ -879,12 +882,15 @@ def detail_model(model: CharacterModel, level: int, wait: bool = True) -> Charac
             job = None
     if job is None:
         if wait:
-            return _detail(model, level)
-        job = (weakref.ref(model), _background().submit(_detail, model, level))
+            future = Future()
+            future.set_result(_detail(model, level))
+        else:
+            future = _background().submit(_detail, model, level)
+        job = (weakref.ref(model), future)
         with _lock:
             _jobs[key] = job
         weakref.finalize(model, _jobs.pop, key, None)
-    if not job[1].done():
+    if not wait and not job[1].done():
         return None
     return job[1].result()
 
@@ -893,6 +899,10 @@ def _detail(model, level):
     try:
         return subdivide(model, level)
     except ValueError:  # no head with face bones: drawn as it is
+        return None
+    except Exception as exc:  # noqa: BLE001 - a frame is never lost for a finer head: the coarse one is drawn
+        print(f"[subdivide] cannot subdivide the head of {model.name}, drawing it as it is: "
+              f"{type(exc).__name__}: {exc}")
         return None
 
 

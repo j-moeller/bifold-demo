@@ -485,6 +485,32 @@ def test_two_models_of_one_head_wear_their_own_textures(avatar, cache):
     assert b.positions is a.positions and b.indices is a.indices  # (one geometry)
 
 
+def test_a_head_that_cannot_be_subdivided_is_drawn_as_it_is_and_not_tried_again(avatar, monkeypatch, capsys):
+    """Whatever goes wrong making the finer head, the detailed model is None (the picture draws the coarse head), it
+    is said once, and the next frames do not try again; a caller that waits gets the background's result."""
+    import threading
+
+    from bifold_demo.characters.model import CharacterModel
+
+    copy = CharacterModel(avatar.name, avatar.skeleton, list(avatar.primitives), avatar.inverse_bind, {})
+    calls = []
+
+    def broken(model, level):
+        calls.append(level)
+        raise IndexError("a part the subdivision did not expect")
+
+    monkeypatch.setattr(sd, "subdivide", broken)
+    assert sd.detail_model(copy, 1) is None and sd.detail_model(copy, 1) is None
+    assert sd.detail_model(copy, 1, wait=False) is None and calls == [1]
+    assert "cannot subdivide the head of" in capsys.readouterr().out
+    other = CharacterModel(avatar.name, avatar.skeleton, list(avatar.primitives), avatar.inverse_bind, {})
+    gate = threading.Event()
+    monkeypatch.setattr(sd, "subdivide", lambda model, level: (gate.wait(10), ("finer", level))[1])
+    assert sd.detail_model(other, 2, wait=False) is None  # on its way
+    threading.Timer(0.2, gate.set).start()
+    assert sd.detail_model(other, 2) == ("finer", 2)  # (waited for it)
+
+
 def test_the_face_rig_is_shared(monkeypatch, avatar):
     marker = object()
     monkeypatch.setattr(faces, "face_rig", lambda model: marker)
