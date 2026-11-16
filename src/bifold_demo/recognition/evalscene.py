@@ -146,9 +146,10 @@ def person_detector(profile: str, scene, kind: str = "profile", yolo=None, model
 
 def run_scene(run, item, profile: str, engine, rate: float | None = None, yolo=None, progress=None) -> dict:
     """One scene item of a manifest (``item.extra``: ``scene``, ``seconds``, ``fps``, ``seed``, ``people``, ``known``,
-    ``windows``, ``preset``, ``detector``, ``fpir``, ``rate``) through the pipeline with ``engine`` (a profile's):
-    its outcomes, name events, switches, faces' attribution, costs and each segment's decision timeline (see the
-    module docs). ``run``: the :class:`~.evaluate.Run` (its gallery folders and caches); ``rate``: embeddings a second
+    ``windows``, ``preset``, ``detector``, ``fpir``, ``rate``; ``unverified_after``: the decisions' seconds a named
+    track may go without a confirming face, default 0: no such limit) through the pipeline with ``engine`` (a
+    profile's): its outcomes, name events, switches, faces' attribution, costs and each segment's decision timeline
+    (see the module docs). ``run``: the :class:`~.evaluate.Run` (its gallery folders and caches); ``rate``: embeddings a second
     (default: the item's, else the profile's)."""
     from ..sensor import WindowService
     from ..sources import FixedStepClock, SceneSource
@@ -182,7 +183,8 @@ def run_scene(run, item, profile: str, engine, rate: float | None = None, yolo=N
     log = DecisionLog(keep=10)
     rate = rate if rate is not None else p.get("rate")
     recognizer = PeopleRecognizer(gallery, detector, windows=service, rate=rate, log=log,
-                                  settings=DecisionSettings(fpir=float(p.get("fpir", 0.01))),
+                                  settings=DecisionSettings(fpir=float(p.get("fpir", 0.01)),
+                                                            unverified_after=float(p.get("unverified_after", 0.0))),
                                   models_folder=run.models_folder)
     outcomes, switches, names, given = Outcomes(known), IdSwitches(), metrics.NameEvents(), FaceAttribution()
     timeline: dict = {}
