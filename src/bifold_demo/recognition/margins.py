@@ -109,3 +109,84 @@ def check(tracks: cal.StrangerTracks, chosen: dict, draws: int = 2000, seed: int
     """Each margin's offsets (``chosen``: ``{choice: offsets}``) measured on other simulated ``tracks``: per target the
     share of stranger tracks named, with a 90 % interval over identity pairs (:func:`~.calibrate.track_rates`)."""
     return {choice: cal.track_rates(tracks, track, draws=draws, seed=seed) for choice, track in chosen.items()}
+
+
+def simulated_tracks(stills, rows, owners, calibration, cohort, group, offsets: dict, fpir: float = 0.01,
+                     count: int = 20, seed: int = 0, margin: float = 1.0, min_weight: float = 0.5,
+                     min_frames: int = 2, single_face: float = 40.0, single_yaw: float = 25.0, draws: int = 1000,
+                     level: float = 0.95) -> dict:
+    """Tracks of held-out people simulated from stills (:class:`~.evaluate.Stills` of the evaluation) as live: an
+    identity's usable faces of one ``group`` (``group(item)``: a track's key, e.g. the kind of face and the camera)
+    arrive one by one in a seeded random order, and after each (from the ``min_frames``-th, or the first while the
+    mean face is ``single_face`` pixels between the eyes and turned less than ``single_yaw``, once the quality weights
+    reach ``min_weight``) the running quality-weighted mean is decided against the enrolled half's gallery (``rows``,
+    ``owners``; a worn face never against its carrier), normalised as the calibration says, in its bin: named when the
+    best rarity reaches the accept rarity at ``fpir`` plus each of ``offsets`` (``{name: decades}``) and beats the
+    runner-up by ``margin``. Over ``count`` seeded halvings: per offset the share of enrolled people's tracks named
+    rightly (and how many faces it took, the median), named wrongly, and of strangers' tracks named, with intervals
+    over people (strangers' over identity pairs: the stranger and whom they were named as, else their best
+    candidate)."""
+    from .calibrate import rarities
+    from .evaluate import carriers, person_scores
+
+    worn = carriers(stills)
+    usable = stills.found & stills.passed
+    keys = np.array([str(group(item)) for item in stills.items])
+    rng = np.random.default_rng(seed)
+    enrollable = sorted(set(owners.tolist()))
+    acc = {name: {"known": [], "faces": [], "wrong": [], "known_people": [], "strangers": [], "pairs": []}
+           for name in offsets}
+    for _ in range(count):
+        order = rng.permutation(len(enrollable))
+        enrolled = sorted(enrollable[i] for i in order[: len(enrollable) // 2])
+        mask = np.isin(owners, enrolled)
+        accept = -math.log10(per_person(fpir, len(enrolled)))
+        for identity in sorted(set(stills.identity.tolist())):
+            for key in sorted(set(keys[stills.identity == identity].tolist())):
+                idx = np.flatnonzero((stills.identity == identity) & (keys == key) & usable)
+                if not len(idx):
+                    continue
+                idx = rng.permutation(idx)
+                w = np.maximum(stills.weight[idx], 1e-6)
+                total = np.cumsum(w)
+                mean = np.cumsum(w[:, None] * stills.vectors[idx], axis=0)
+                mean /= np.maximum(np.linalg.norm(mean, axis=1, keepdims=True), 1e-12)
+                size = np.cumsum(w * stills.size[idx]) / total
+                yaw = np.cumsum(w * np.abs(stills.yaw[idx])) / total
+                one = (size >= single_face) & (yaw < single_yaw)
+                decide = ((np.arange(1, len(idx) + 1) >= min_frames) | one) & (total >= min_weight - 1e-9)
+                scores = person_scores(mean, rows[mask], owners[mask], enrolled, cohort, calibration.normalisation)
+                carrier = worn[idx[0]]
+                if carrier in enrolled:
+                    scores[:, enrolled.index(carrier)] = -np.inf
+                rarity = rarities(calibration, scores, size, yaw)
+                ranked = np.argsort(-rarity, axis=1, kind="stable")
+                best = rarity[np.arange(len(idx)), ranked[:, 0]]
+                second = rarity[np.arange(len(idx)), ranked[:, 1]] if len(enrolled) > 1 else np.zeros(len(idx))
+                is_known = identity in enrolled
+                for name, offset in offsets.items():
+                    named = decide & (best >= accept + offset - 1e-12) & (best - second >= margin - 1e-12)
+                    first = int(np.argmax(named)) if named.any() else None
+                    who = enrolled[ranked[first, 0]] if first is not None else enrolled[ranked[int(np.argmax(best)), 0]]
+                    a = acc[name]
+                    if is_known:
+                        a["known"].append(first is not None and who == identity)
+                        a["wrong"].append(first is not None and who != identity)
+                        a["faces"].append(first + 1 if first is not None and who == identity else None)
+                        a["known_people"].append(identity)
+                    else:
+                        a["strangers"].append(first is not None)
+                        a["pairs"].append("|".join(sorted((identity, who))))
+    from . import metrics
+
+    out = {"splits": count, "fpir": fpir, "margin": margin, "offsets": {k: round(float(v), 4) for k, v in
+                                                                        offsets.items()}}
+    for name, a in acc.items():
+        faces = [f for f in a["faces"] if f is not None]
+        out[name] = {"known_named": metrics.bootstrap_rate(a["known"], a["known_people"], draws, seed, level),
+                     "faces_to_name": float(np.median(faces)) if faces else None,
+                     "known_wrong": metrics.bootstrap_rate(a["wrong"], a["known_people"], draws, seed, level),
+                     "strangers_named": metrics.bootstrap_rate(a["strangers"], a["pairs"], draws, seed, level),
+                     "known_tracks": len(a["known"]), "stranger_tracks": len(a["strangers"]),
+                     "people": len(set(a["known_people"])), "pairs": len(set(a["pairs"]))}
+    return out

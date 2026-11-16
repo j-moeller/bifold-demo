@@ -294,7 +294,7 @@ def lfw(pack, per_fold=(75, 75)) -> dict:
     """P6: LFW's pairs from InsightFace's ``lfw.bin`` (``pack``): F1's subset (the first 75 mated and 75 non-mated
     pairs of each fold), or every pair (``per_fold`` ``None``)."""
     item = {"id": "lfw" if per_fold is None else f"lfw-{per_fold[0]}-{per_fold[1]}", "kind": "pack",
-            "path": str(Path(pack).resolve())}
+            "path": str(Path(pack).resolve()), "tracks": True}
     if per_fold is not None:
         item["per_fold"] = list(per_fold)
     return {"format": FORMAT, "name": item["id"], "protocol": "P6",

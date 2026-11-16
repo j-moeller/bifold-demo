@@ -1066,6 +1066,115 @@ def score_pack(vectors_a: np.ndarray, vectors_b: np.ndarray, same: np.ndarray, f
     return report
 
 
+def pack_people(images, same) -> np.ndarray:
+    """Who each image of a verification pack shows, without names: identical images (a photo used in several pairs)
+    and the two photos of a mated pair are one person (union-find). One label per image (the smallest index)."""
+    parent = list(range(len(images)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def join(a, b):
+        a, b = root(a), root(b)
+        if a != b:
+            parent[max(a, b)] = min(a, b)
+
+    first: dict[bytes, int] = {}
+    for i, data in enumerate(images):
+        key = hashlib.sha256(data).digest()
+        if key in first:
+            join(i, first[key])
+        else:
+            first[key] = i
+    for p, s in enumerate(same):
+        if s:
+            join(2 * p, 2 * p + 1)
+    return np.array([root(i) for i in range(len(images))])
+
+
+def pack_tracks(vectors: dict, people: np.ndarray, digests: list, calibration, cohort=None, offsets=None,
+                fpir: float = 0.01, margin: float = 1.0, size: float = 35.0, count: int = SPLITS, seed: int = 0,
+                draws: int = metrics.DRAWS, level: float = metrics.LEVEL) -> dict:
+    """Real faces per **track** (a pack's photos of one person as the faces a track gathers, P6): the people with at
+    least three distinct photos are split many times into enrolled and strangers (seeded halves); an enrolled
+    person's gallery is their first photo, their track their other photos; a stranger's track is all their photos
+    (strangers with two photos too). As live, a track is decided after each new face from its second on, on the
+    running mean of its faces (the pack's aligned faces count as ``size`` pixels between the eyes, frontal), against
+    the accept rarity at ``fpir`` per stranger track plus the calibration's offset (``offsets``: ``{name: offset}``
+    in decades to compare, default the calibration's own), with the runner-up ``margin``. Per offset: the share of
+    enrolled people's tracks named rightly (and wrongly) and of strangers' tracks named, with intervals over people;
+    and the single faces' own share for comparison. ``vectors``: ``{image index: unit embedding}``; ``people``: who
+    each image shows (:func:`pack_people`); ``digests``: each image's content (duplicates count once)."""
+    from .calibrate import rarities
+    from .calibration import per_person
+
+    photos: dict = {}
+    for index in sorted(vectors):
+        photos.setdefault(int(people[index]), {}).setdefault(digests[index], index)
+    multi = sorted(p for p, v in photos.items() if len(v) >= 3)
+    pairs_only = sorted(p for p, v in photos.items() if len(v) == 2)
+    offsets = offsets or {"calibration": calibration.track_offset(fpir)}
+    rng = np.random.default_rng(seed)
+    out = {"people": {"three_or_more": len(multi), "two": len(pairs_only)}, "size": size, "fpir": fpir,
+           "margin": margin, "splits": count, "offsets": {k: round(float(v), 4) for k, v in offsets.items()}}
+    results = {name: {"known": [], "known_people": [], "wrong": [], "strangers": [], "stranger_people": [],
+                      "single": [], "single_people": []} for name in offsets}
+
+    def normalised(scores, probe):
+        if calibration.normalisation == "tnorm" and cohort is not None:
+            mean, spread = cohort.stats(probe[None], top=0)
+            return (scores - mean[0]) / spread[0]
+        return scores
+
+    for _ in range(count):
+        order = rng.permutation(len(multi))
+        enrolled = [multi[i] for i in order[: len(multi) // 2]]
+        strangers = [multi[i] for i in order[len(multi) // 2:]] + pairs_only
+        indices = {p: list(photos[p].values()) for p in enrolled + strangers}
+        gallery = np.stack([np.asarray(vectors[indices[p][0]], np.float64) for p in enrolled])
+        n = len(enrolled)
+        accept = -math.log10(per_person(fpir, n))
+        for person in enrolled + strangers:
+            mine = indices[person][1:] if person in enrolled else indices[person]
+            faces = np.stack([np.asarray(vectors[i], np.float64) for i in mine])
+            running = np.cumsum(faces, axis=0)
+            running /= np.linalg.norm(running, axis=1, keepdims=True)
+            best, second, who = [], [], []
+            for k in range(1, len(running)):  # (decided from the second face on)
+                s = normalised(running[k] @ gallery.T, running[k])
+                r = rarities(calibration, s[None], [size], [0.0])[0]
+                j = np.argsort(-r, kind="stable")
+                best.append(r[j[0]])
+                second.append(r[j[1]] if n > 1 else 0.0)
+                who.append(enrolled[j[0]])
+            single = rarities(calibration, normalised(faces[0] @ gallery.T, faces[0])[None], [size], [0.0])[0]
+            for name, offset in offsets.items():
+                named = [b >= accept + offset - 1e-12 and b - c >= margin - 1e-12 for b, c in zip(best, second)]
+                first = next((w for w, ok in zip(who, named) if ok), None)
+                res = results[name]
+                if person in enrolled:
+                    res["known"].append(first == person)
+                    res["wrong"].append(first is not None and first != person)
+                    res["known_people"].append(str(person))
+                    order_ = np.argsort(-single)
+                    res["single"].append(bool(single[order_[0]] >= accept + offset and enrolled[order_[0]] == person
+                                              and single[order_[0]] - (single[order_[1]] if n > 1 else 0) >= margin))
+                    res["single_people"].append(str(person))
+                else:
+                    res["strangers"].append(first is not None)
+                    res["stranger_people"].append(str(person))
+    for name, res in results.items():
+        out[name] = {
+            "known_named": metrics.bootstrap_rate(res["known"], res["known_people"], draws, seed, level),
+            "known_wrong": metrics.bootstrap_rate(res["wrong"], res["known_people"], draws, seed, level),
+            "known_single_face": metrics.bootstrap_rate(res["single"], res["single_people"], draws, seed, level),
+            "strangers_named": metrics.bootstrap_rate(res["strangers"], res["stranger_people"], draws, seed, level)}
+    return out
+
+
 # -- results -----------------------------------------------------------------------------------------------------------
 
 
@@ -1172,7 +1281,7 @@ class Run:
     (``None``: nowhere)."""
 
     def __init__(self, engines: dict, out=DEFAULT_OUT, library=None, renderer=None, progress=print,
-                 draws: int = metrics.DRAWS, seed: int = 0, models_folder=None):
+                 draws: int = metrics.DRAWS, seed: int = 0, models_folder=None, margins=None):
         self.engines = dict(engines)
         self.out = Path(out)
         self.library = library
@@ -1181,6 +1290,7 @@ class Run:
         self.progress = progress or (lambda *_: None)
         self.draws, self.seed = int(draws), int(seed)
         self.models_folder = models_folder
+        self.margins = dict(margins or {})  # {model id: {margin: offset at 1 % per stranger track}} to compare
         self._avatars: dict[str, str] = {}
         self._keys: dict[tuple, str] = {}
 
@@ -1418,6 +1528,16 @@ class Run:
                 b = np.stack([np.asarray(store.get(f"{2 * int(i) + 1}")["vector"], np.float64) for i in index])
                 report = score_pack(a, b, same, fold, self.draws, self.seed)
                 report.update(profile=profile, model=engine.model_id, pairs=len(index))
+                calibration, cohort = self.calibration(engine)
+                if item.extra.get("tracks") and calibration is not None:
+                    _, all_same = read_pack(path)
+                    people = pack_people(images, all_same)
+                    digests = [hashlib.sha256(data).hexdigest()[:16] for data in images]
+                    vectors = {w: np.asarray(store.get(f"{w}")["vector"], np.float64) for w in wanted}
+                    offsets = {"calibration": calibration.track_offset(0.01), "none": 0.0,
+                               **(self.margins.get(engine.model_id) or {})}
+                    report["tracks"] = pack_tracks(vectors, people, digests, calibration, cohort, offsets,
+                                                   seed=self.seed, draws=self.draws)
                 out[item.id][profile] = report
         return out
 

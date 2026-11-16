@@ -537,13 +537,84 @@ def test_labels_carried_to_another_profiles_tracks_and_scored(tmp_path):
                                                                           "unknown", None],
              [1.5, True, None, None, None, None, 1.0, "unknown", None]]
     reference = run({"1": ((0, 0, 50, 150), named), "2": ((200, 0, 250, 150), waits), "4": ((400, 0, 450, 150), waits)})
-    other = run({"7": ((2, 1, 52, 151), named), "8": ((198, 0, 251, 149), waits), "9": ((600, 0, 650, 150), waits)})
+    other = run({"7": ((2, 1, 52, 151), named), "8": ((198, 0, 251, 149), waits), "9": ((600, 0, 650, 150), waits),
+                 "10": ((40, 0, 90, 150), waits)})
     carried = evalvideo.carry_labels(reference, labels, other)
-    assert carried == {"7": "Ada", "8": "stranger"}  # (track 9 overlaps nobody labelled)
+    assert carried == {"7": "Ada", "8": "stranger"}  # (9 overlaps nobody labelled, 10 Ada's track too little)
     segments = evalvideo.score_video(other | {"tracks": other["tracks"]}, carried, known=["Ada"])
     by = {g.avatar: g for g in segments}
     assert by["Ada"].known and by["Ada"].correct_at == 0.5 and by["Ada"].first_shown == 0.0
     assert not by["stranger"].known and by["stranger"].named_at is None and by["stranger"].unknown_at == 0.5
+
+
+def test_simulated_tracks_of_held_out_people():
+    """Stills of clear identities as tracks: the enrolled named by their first decision (the second face), strangers
+    never; an offset out of reach names nobody; a worn face is never named as its carrier."""
+    from bifold_demo.recognition import margins
+    from bifold_demo.recognition.calibration import Calibration
+
+    rng = np.random.default_rng(4)
+    dim = 512
+    centres = {f"p{k}": _unit(rng.normal(size=dim)) for k in range(8)}
+    items, vectors = [], []
+    for name, centre in centres.items():
+        for j in range(4):
+            items.append(E.Item(f"{name}-{j}", "still", "probe", name, "render", None,
+                                {"face": "own", "body": name, "preset": "ideal"}))
+            vectors.append(_unit(centre + rng.normal(0, 0.02, dim)))
+    n = len(items)
+    stills = E.Stills(items, np.array([i.identity for i in items]), np.ones(n, bool), np.ones(n, bool),
+                      np.full(n, 30.0), np.zeros(n), np.ones(n), np.array(vectors), np.full(n, np.nan))
+    calibration = Calibration.fit("tiny", np.r_[rng.normal(0.0, 0.05, 4000), rng.normal(0.9, 0.03, 400)],
+                                  np.r_[np.zeros(4000, bool), np.ones(400, bool)], np.full(4400, 30.0),
+                                  np.zeros(4400), np.arange(4400) % 20)
+    rows, owners = np.array(list(centres.values())), np.array(list(centres))
+    out = margins.simulated_tracks(stills, rows, owners, calibration, None, lambda i: i.conditions["preset"],
+                                   {"none": 0.0, "far": 40.0}, count=5, draws=50)
+    assert out["none"]["known_named"]["rate"] == 1.0 and out["none"]["faces_to_name"] == 2
+    assert out["none"]["strangers_named"]["rate"] == 0.0 and out["none"]["known_tracks"] == 5 * 4
+    assert out["far"]["known_named"]["rate"] == 0.0
+    # two lookalikes (p0 and its twin) enrolled together, p0's faces between them: never named, by the margin
+    twin = _unit(centres["p0"] + rng.normal(0, 0.012, dim))
+    between = [_unit(centres["p0"] + twin + rng.normal(0, 0.005, dim)) for _ in range(4)]
+    twins = E.Stills(items[:4], stills.identity[:4], np.ones(4, bool), np.ones(4, bool), np.full(4, 30.0),
+                     np.zeros(4), np.ones(4), np.array(between), np.full(4, np.nan))
+    few = np.array([centres["p0"], twin, centres["p1"], centres["p2"]])
+    both = margins.simulated_tracks(twins, few, np.array(["p0", "p0 twin", "p1", "p2"]), calibration, None,
+                                    lambda i: i.conditions["preset"], {"none": 0.0}, count=40, draws=50)
+    assert both["none"]["known_wrong"]["rate"] == 0.0 and both["none"]["known_named"]["rate"] < 1.0
+
+
+def test_a_packs_people_from_duplicates_and_mated_pairs():
+    images = [b"a1", b"b1", b"a1", b"c1", b"a2", b"a1", b"d1", b"d2"]  # pairs (a1,b1) (a1,c1) (a2,a1) (d1,d2)
+    same = [False, False, True, True]
+    people = E.pack_people(images, same)
+    assert people[0] == people[2] == people[4] == people[5]  # (a1 three times; a2 mated with a1)
+    assert people[6] == people[7] and len({people[0], people[1], people[3], people[6]}) == 4
+
+
+def test_real_faces_per_track():
+    """Tracks of a pack's people decided as live: the enrolled people named by their running mean, strangers not; an
+    offset beyond reach names nobody."""
+    from bifold_demo.recognition.calibration import Calibration
+
+    rng = np.random.default_rng(2)
+    dim, vectors, people, digests = 512, {}, [], []
+    for person in range(40):
+        centre = _unit(rng.normal(size=dim))
+        for k in range(3 if person < 30 else 2):
+            vectors[len(people)] = _unit(centre + rng.normal(0, 0.03, dim))
+            people.append(person)
+            digests.append(f"{person}-{k}")
+    calibration = Calibration.fit("tiny", np.r_[rng.normal(0.0, 0.05, 4000), rng.normal(0.85, 0.03, 400)],
+                                  np.r_[np.zeros(4000, bool), np.ones(400, bool)], np.full(4400, 35.0),
+                                  np.zeros(4400), np.arange(4400) % 20)
+    out = E.pack_tracks(vectors, np.array(people), digests, calibration, offsets={"none": 0.0, "far": 30.0},
+                        count=4, draws=50)
+    assert out["people"] == {"three_or_more": 30, "two": 10}
+    assert out["none"]["known_named"]["rate"] == 1.0 and out["none"]["strangers_named"]["rate"] == 0.0
+    assert out["none"]["known_named"]["n"] == 4 * 15 and out["none"]["strangers_named"]["n"] == 4 * 25
+    assert out["far"]["known_named"]["rate"] == 0.0
 
 
 def test_the_calibrations_hold_none_of_the_fairs_avatars():

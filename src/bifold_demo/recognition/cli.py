@@ -461,8 +461,13 @@ def cmd_eval(args) -> int:
         for note in engine.notes:
             print(f"[faces] {note}", file=sys.stderr)
         engines[name] = engine
+    margins = {}
+    if args.margins:  # (scripts' margins: per profile the offsets of each margin at each target per stranger track)
+        for entry in json.loads(Path(args.margins).read_text()).values():
+            k = entry["targets"].index(0.01)
+            margins[entry["model"]] = {f"margin {c}": offs[k] for c, offs in entry["offsets"].items()}
     run = evaluate.Run(engines, out, library=args.characters, draws=args.draws, seed=args.seed,
-                       models_folder=args.models)
+                       models_folder=args.models, margins=margins)
     status = 0
     try:
         for manifest in manifests:
@@ -646,6 +651,9 @@ def main(argv=None) -> int:
                             help="run the pipeline over a recording: the first time, write its review sheets "
                                  "(<video>.review.jpg, <video>.labels.csv) to label; once labelled, score it")
     evaluation.add_argument("--labels", default=None, metavar="CSV", help="--review: the labels sheet's name")
+    evaluation.add_argument("--margins", default=None, metavar="FILE",
+                            help="the offsets of other margins to compare (JSON: per profile its model, targets and "
+                                 "offsets per margin; recognition/margins.py)")
     evaluation.add_argument("--splits", type=int, default=None,
                             help="splits of the identities into enrolled and strangers (default: the manifest's)")
     evaluation.add_argument("--draws", type=int, default=1000, help="bootstrap draws (default 1000)")
