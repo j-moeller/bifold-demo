@@ -288,10 +288,10 @@ class Outcomes:
         """The shares over the segments whose face was shown at least ``shown`` seconds (``eligible``) and over all:
 
         * known people: ``named_within`` (named correctly within each of ``within`` seconds of the face being first
-          shown), ``named`` (at all), the median and 90th percentile ``time_to_name``, ``confused`` (another known
-          person's name given), ``unknown`` ("unknown" said); and over every known segment, eligible or not (a wrong
-          name comes exactly when someone else's face reaches a track whose own person is turned away):
-          ``confused_all`` and ``confused_segments`` (how many);
+          shown), ``named`` (at all), the median and 90th percentile ``time_to_name``, ``unknown`` ("unknown"
+          said), ``confused_eligible`` (another person's name given); and over every known segment, eligible or not
+          (a wrong name comes exactly when someone else's face reaches a track whose own person is turned away):
+          ``confused`` and ``confused_segments`` (how many);
         * strangers: ``fpir`` (named at all: the false-alarm rate per track), ``called_unknown``; and over every
           stranger segment, eligible or not, ``fpir_all``;
         * named tracks that follow nobody: ``named_unfollowed`` (tracks) and ``named_unfollowed_frames``.
@@ -313,13 +313,13 @@ class Outcomes:
             "named": share(known, lambda g: g.correct_at is not None),
             "time_to_name": {"median": float(np.median(times)) if times else None,
                              "p90": float(np.quantile(times, 0.9)) if times else None, "n": len(times)},
-            "confused": share(known, lambda g: bool(g.wrong)),
+            "confused_eligible": share(known, lambda g: bool(g.wrong)),
             "unknown": share(known, lambda g: g.unknown_at is not None),
             "fpir": share(strangers, lambda g: g.named_at is not None),
             "called_unknown": share(strangers, lambda g: g.unknown_at is not None),
             "fpir_all": share(all_strangers, lambda g: g.named_at is not None),
             "strangers_all": len(all_strangers),
-            "confused_all": share(all_known, lambda g: bool(g.wrong)),
+            "confused": share(all_known, lambda g: bool(g.wrong)),
             "confused_segments": sum(1 for g in all_known if g.wrong), "known_all": len(all_known),
             "named_unfollowed": len(self.unfollowed_named),
             "named_unfollowed_frames": sum(e["frames"] for e in self.unfollowed_named.values()),

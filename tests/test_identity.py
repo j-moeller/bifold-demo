@@ -1232,8 +1232,8 @@ def test_outcomes_count_every_wrong_name_and_named_tracks_that_follow_nobody():
     for k in range(30):
         outcomes.update(k / 10, [_truth("p1", "Ben", 80.0)], {"p1": 7}, {7: _D("named", "Ada"), 9: _D("named", "Ben")})
     summary = outcomes.summary()
-    assert summary["known_eligible"] == 0 and summary["confused"] is None  # (no eligible segment)
-    assert summary["confused_all"] == 1.0 and summary["confused_segments"] == 1 and summary["known_all"] == 1
+    assert summary["known_eligible"] == 0 and summary["confused_eligible"] is None  # (no eligible segment)
+    assert summary["confused"] == 1.0 and summary["confused_segments"] == 1 and summary["known_all"] == 1
     assert summary["named_unfollowed"] == 1 and summary["named_unfollowed_frames"] == 30
     assert outcomes.unfollowed_named[9]["names"] == ["Ben"]
 

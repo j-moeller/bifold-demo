@@ -297,9 +297,9 @@ profile's person detector; YOLOX-tiny is registered too but misses most people u
   (`fits`), the resets and the faces held out as unlike the track's name).
 - **Track-level results**: `PeopleResult.people` per frame (track id, box, decision, face), and `recognition/truth.py`
   to score them against the scene: `frame_truth`, `match_tracks`, `IdSwitches`, `Outcomes` (the shares of this note;
-  wrong names also over segments whose face was never shown: `confused_all`; named tracks that follow nobody:
-  `named_unfollowed`), `face_owner` and `FaceAttribution` (whose face each face given to a track is, and how many
-  went to a track following someone else, embedded or not).
+  wrong names over every known segment, also those whose face was never shown: `confused`; named tracks that follow
+  nobody: `named_unfollowed`), `face_owner` and `FaceAttribution` (whose face each face given to a track is, and how
+  many went to a track following someone else, embedded or not).
 - **The calibration and the cohort as inputs**: `PeopleRecognizer(calibration=..., cohort=...)`,
   `Calibration.load/save`, `Cohort.load/save` (a calibration records its cohort's digest; the decisions refuse
   another); `recognition/calibrate.py` makes them (`render`, `gallery_photos`, `faces`, `same_faces`,
