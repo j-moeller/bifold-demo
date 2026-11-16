@@ -1159,7 +1159,7 @@ def test_a_name_whose_track_may_have_changed_hands_is_unconfirmed_and_withdrawn_
     assert person_label(shown, score=False) == f"#{ada} Ada?"
     canvas = np.zeros((720, 1280, 3), np.uint8)
     draw_people(canvas, [shown], score=False)
-    x0, y0, x1, y1 = (round(v) for v in shown.box)
+    x0, y0, _x1, y1 = (round(v) for v in shown.box)
     assert tuple(canvas[(y0 + y1) // 2, x0]) == UNCONFIRMED_COLOUR  # (the box in the unconfirmed name's colour)
     withdrawn = next(d for t, ds in sorted(by_time.items()) for d in ds.values() if d.state != NAMED and t > 4.0)
     assert 5.5 <= withdrawn.time <= swapped + 2.0 and withdrawn.reason == "unconfirmed (crossing #2)"
