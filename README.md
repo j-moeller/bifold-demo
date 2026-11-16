@@ -1817,9 +1817,10 @@ above than from below, as much as the scene's `hemisphere` says (the fair:
 `renderer.quality = "low"` draws everything as before (Lambert and a constant
 ambient light, in linear light), and `renderer.window_quality` sets the
 windows' own, so a software renderer can keep the whole view cheap while the
-windows get everything (`bifold-demo --quality low`; since S4 the windows'
-default is `"close"`, the high quality with close-ups: see "Close-ups"). `renderer.specular` and
-`renderer.normal_strength` scale the lobe and the maps.
+windows get everything (`bifold-demo --quality low`; since S4 the demo's
+windows are drawn at `"close"`, the high quality with close-ups: see
+"Close-ups"). `renderer.specular` and `renderer.normal_strength` scale the
+lobe and the maps.
 
 **Faces from photos** (the cast's, the head-texture stages', a created
 character's: a head's `texture_overrides`) are drawn without the avatar's
@@ -2442,9 +2443,14 @@ print(check(model, 2).ok)          # the rig's checks in the 12 faces
 
 **In windows.** The renderer has a third quality, `"close"`: the high
 quality, and faces seen up close get the finer head and the shading below.
-It is the windows' default (`renderer.window_quality`; the 720p view stays
-`"high"` and draws as before, bit for bit, and so do `"high"` and `"low"`
-windows). In a close picture a person whose eyes are at least
+The demo's live windows are drawn at it (`SceneSource.window_quality`, and
+`bifold-scene windows`); the 720p view stays `"high"` and draws as before,
+bit for bit, and so do `"high"` and `"low"` windows. A renderer made for
+anything else keeps `renderer.window_quality = "high"`: the recognition's
+shipped calibrations and the avatars' gallery photos were drawn that way,
+and gallery photos drawn at close cost known people's small faces names
+(about 1 point at 1 %; the close-ups themselves change no decision: the
+results note, section 6). In a close picture a person whose eyes are at least
 `renderer.subdivide_from[0]` (64) pixels apart is drawn with their head
 subdivided once (x4), from `subdivide_from[1]` (180) twice (x16):
 `Character.detailed(level)` is the model the person wears now (the avatar's,
@@ -2458,7 +2464,9 @@ is what the finer heads' buffers take on the GPU.
 **Shading up close** (the close quality, for faces at least
 `renderer.close_from` (64) pixels between the eyes; smaller faces in a close
 picture are drawn exactly as at the high quality, bit for bit, so the faces
-the recognition's calibrations measure at 8-44 pixels do not change):
+the recognition's calibrations measure at 8-44 pixels do not change; at 64
+and 90 pixels they do, and against the shipped calibrations the change is
+within their noise: the results note, section 6):
 
 - **skin**: the key light wraps round the heads' skin, red furthest
   (`SKIN_WRAP`: 0.35, 0.18, 0.12; light that goes into skin comes out

@@ -584,6 +584,9 @@ def test_the_demo_source_sets_the_quality_and_reads_detail_in_the_background_whe
         live.start()
         recorded.start()
         assert live.renderer.quality == "low" and live.renderer.window_quality == "close"  # (windows: close-ups)
+        from bifold_demo.scene.renderer import Renderer
+
+        assert Renderer.window_quality == "high"  # (a renderer of its own, the calibration's: as they were made)
         assert not live.renderer.detail_wait and recorded.renderer.detail_wait  # a recording waits for them
     finally:
         live.stop()

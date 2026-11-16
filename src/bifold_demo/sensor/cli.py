@@ -144,6 +144,7 @@ def _face_size(face) -> float:
 def cmd_windows(args) -> int:
     from ..loader import load_scene
     from ..scene.renderer import Renderer
+    from ..sources.scene_source import SceneSource
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -153,6 +154,7 @@ def cmd_windows(args) -> int:
     advance(scene, args.time, args.fps, motion)
     size = args.size
     renderer = Renderer(*size)
+    renderer.window_quality = SceneSource.window_quality  # (the windows as the demo draws them)
     try:
         view = renderer.render(scene)
         sensor = Sensor(*args.sensor, size) if args.sensor else Sensor.scaled(DEFAULT_SCALE, size)

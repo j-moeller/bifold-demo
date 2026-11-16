@@ -29,6 +29,7 @@ def renderer(gl, tmp_path, monkeypatch):
 
     monkeypatch.setenv("BIFOLD_HEADTEX_CACHE", str(tmp_path))
     made = Renderer(320, 180, samples=4)
+    made.window_quality = "close"  # (the demo's live windows'; a renderer's own default is high)
     yield made
     made.release()
 

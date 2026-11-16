@@ -4,10 +4,10 @@ Besides the whole view (:meth:`Renderer.render`) it draws *windows* (:meth:`Rend
 the camera's picture through an off-axis part of the same frustum, at a higher pixel scale than the view, with the
 GPU resources the view already uploaded. That is the virtual high-resolution sensor of :mod:`bifold_demo.sensor`.
 
-**Close-ups** (the ``"close"`` quality, windows' by default; step S4, ``docs/research/closeups_results.md``): a person
-whose face a picture shows large (``Renderer.close_from``, ``subdivide_from``: 64 pixels between the eyes and more) is
-drawn with a subdivided head (:mod:`bifold_demo.characters.subdivide`), the key light wrapped round the head's skin
-(red furthest, :data:`SKIN_WRAP`), a cornea's sharp highlight on the eyeballs (found by their bones in the vertex
+**Close-ups** (the ``"close"`` quality, the demo's live windows'; step S4, ``docs/research/closeups_results.md``): a
+person whose face a picture shows large (``Renderer.close_from``, ``subdivide_from``: 64 pixels between the eyes and
+more) is drawn with a subdivided head (:mod:`bifold_demo.characters.subdivide`), the key light wrapped round the head's
+skin (red furthest, :data:`SKIN_WRAP`), a cornea's sharp highlight on the eyeballs (found by their bones in the vertex
 shader) and the lashes' and hair cards' cut-outs antialiased by alpha to coverage; smaller faces are drawn as at the
 high quality.
 
@@ -413,8 +413,12 @@ class Renderer:
     :attr:`linear` (True): shade, filter and blend in linear light (see the module docs); False: on the stored sRGB
     values, as the renderer did before (textures uploaded again when it changes).
 
-    **Quality.** :attr:`quality` (the whole view; ``"high"`` by default) and :attr:`window_quality` (windows;
-    ``"close"`` by default) are ``"close"``, ``"high"`` or ``"low"``. High: mesh parts with ``tangents`` and ``maps``
+    **Quality.** :attr:`quality` (the whole view) and :attr:`window_quality` (windows) are ``"close"``, ``"high"``
+    (both by default) or ``"low"``. The demo's live windows are drawn at ``"close"``
+    (:attr:`~bifold_demo.sources.scene_source.SceneSource.window_quality`); a renderer made for anything else keeps
+    ``"high"``, as the recognition's shipped calibrations and their gallery photos were drawn (gallery photos drawn at
+    close cost known people's small faces names: ``docs/research/closeups_results.md``). High: mesh parts with
+    ``tangents`` and ``maps``
     (the heads) are drawn with their normal and specular maps, and the ambient light comes more from above than from
     below as much as the scene's ``hemisphere`` says. Close: high, and faces seen up close get a finer head and skin,
     eye and lash shading (see "Close-ups" below). Low: the shading of before (Lambert and a constant ambient light, in
@@ -441,7 +445,7 @@ class Renderer:
 
     linear = True  # the light model: linear light (False: the stored sRGB values, as before)
     quality = "high"  # the shading of the whole view: "high" or "low" (see the class docs)
-    window_quality = "close"  # the shading of windows
+    window_quality = "high"  # the shading of windows (the demo's live windows: "close", SceneSource.window_quality)
     subdivide_from = (64.0, 180.0)  # pixels between the eyes from which a close picture subdivides a head once, twice
     close_from = 64.0  # pixels between the eyes from which a close picture shades a face as a close-up
     skin_wrap = 1.0  # scale of the skin's wrapped light at the close quality (0: Lambert)

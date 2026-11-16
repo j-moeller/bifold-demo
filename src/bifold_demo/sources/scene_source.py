@@ -16,7 +16,8 @@ class SceneSource(FrameSource):
     same moment, and delivered on the frame (``frame.windows``). It can be set later too; setting it tells the
     service the frames' size (and fails there when the service's sensor is for another view). ``quality``: the
     renderer's shading of the frames (``"high"`` or ``"low"``, see :class:`~bifold_demo.scene.renderer.Renderer`);
-    windows are always drawn at the high quality.
+    ``window_quality``: the windows' (``"close"``: the high quality, and faces seen up close drawn with finer heads
+    and skin, eye and lash shading; ``"high"`` draws them as the recognition's calibrations were made).
     """
 
     @property
@@ -31,6 +32,7 @@ class SceneSource(FrameSource):
 
     name = "scene"
     quality = "high"
+    window_quality = "close"  # the windows' (close-ups: docs/research/closeups_results.md)
 
     def __init__(self, scene: Scene, width: int = 1280, height: int = 720, fps: float = 30.0,
                  clock: SimulationClock | None = None, samples: int = 4, windows=None):
@@ -50,6 +52,7 @@ class SceneSource(FrameSource):
 
             self.renderer = Renderer(self.width, self.height, self.samples)
             self.renderer.quality = self.quality
+            self.renderer.window_quality = self.window_quality
             # live, a frame never waits for a head's 2048 textures (they are read in the background); a fixed-step
             # run (a recording) gets each frame as it should be
             self.renderer.detail_wait = isinstance(self.clock, FixedStepClock)
