@@ -1815,7 +1815,8 @@ above than from below, as much as the scene's `hemisphere` says (the fair:
 `renderer.quality = "low"` draws everything as before (Lambert and a constant
 ambient light, in linear light), and `renderer.window_quality` sets the
 windows' own, so a software renderer can keep the whole view cheap while the
-windows get everything (`bifold-demo --quality low`). `renderer.specular` and
+windows get everything (`bifold-demo --quality low`; since S4 the windows'
+default is `"close"`, the high quality with close-ups: see "Close-ups"). `renderer.specular` and
 `renderer.normal_strength` scale the lobe and the maps.
 
 **Faces from photos** (the cast's, the head-texture stages', a created
@@ -2375,7 +2376,7 @@ child's renders on an adult's head).
 A fitted face shape is biometric data like the photos it comes from: it is
 kept only in git-ignored folders and deleted with the person or character.
 
-## Close-ups: subdivided heads
+## Close-ups: subdivided heads, skin, eyes and lashes
 
 The Rocketbox heads have about 1,700 vertices and 3,100 triangles; a face
 edge is 10 mm long on the median and 23 mm at the 90th percentile. In a
@@ -2436,6 +2437,41 @@ from bifold_demo.characters.subdivide import check, subdivide
 finer = subdivide(model, 2)        # the head with 16 times the triangles; the rest shared
 print(check(model, 2).ok)          # the rig's checks in the 12 faces
 ```
+
+**In windows.** The renderer has a third quality, `"close"`: the high
+quality, and faces seen up close get the finer head and the shading below.
+It is the windows' default (`renderer.window_quality`; the 720p view stays
+`"high"` and draws as before, bit for bit, and so do `"high"` and `"low"`
+windows). In a close picture a person whose eyes are at least
+`renderer.subdivide_from[0]` (64) pixels apart is drawn with their head
+subdivided once (x4), from `subdivide_from[1]` (150) twice (x16):
+`Character.detailed(level)` is the model the person wears now (the avatar's,
+or with a fitted head after `use_model`) with its head subdivided, sharing
+its skeleton, textures, maps and face rig, so the pose, the face and a face
+from photos apply to it as they are. Tests and measurements make it at once
+(`renderer.detail_wait`); the demo makes it on a background thread and
+draws the coarse head until it is there. `renderer.memory()["subdivided"]`
+is what the finer heads' buffers take on the GPU.
+
+**Shading up close** (the close quality):
+
+- **skin**: the key light wraps round the heads' skin, red furthest
+  (`SKIN_WRAP`: 0.35, 0.18, 0.12; light that goes into skin comes out
+  further on, so skin is lit a little past where the light grazes it, and
+  reddish there; pre-integrated skin's look without its table);
+  `renderer.skin_wrap` scales it;
+- **eyes**: a cornea's sharp highlight on the eyeballs (found by their bones
+  in the vertex shader; the cornea taken twice as curved as the eyeball, so
+  the highlight of a light from above lands in the iris, not under the lid);
+  `renderer.cornea` scales it;
+- **lashes and hair cards**: their cut-outs are drawn with alpha to coverage
+  (with the picture's MSAA), so their edges are antialiased instead of
+  stair-stepped.
+
+Faces from photos keep S2's rule (no avatar maps where the photo face is,
+no hemisphere variation there): the wrap and the cornea's highlight are not
+the avatar's features, and their effect on the identity scores of faces from
+real photos is measured in the results note.
 
 ## Character creator
 

@@ -111,6 +111,17 @@ class Character(SceneObject):
         if self.current_visible:
             self._pose(self.state)
 
+    def detailed(self, level: int, wait: bool = True):
+        """The model a picture draws where it shows this person's face up close: the model the person wears now
+        (:attr:`skinned_model`: the avatar's, or with a head fitted to the person) with its head subdivided
+        ``level`` times (1: four triangles for each, 2: sixteen; :func:`.subdivide.detail_model`), so it stays in
+        step with the shape the person wears; it shares the skeleton and the face rig, so the person's pose, face and
+        textures apply to it as they are. ``wait`` False: made on a background thread, ``None`` until it is there
+        (and for a model without a head to subdivide)."""
+        from .subdivide import detail_model
+
+        return detail_model(self.skinned_model, level, wait)
+
     def photo_mask(self, primitive):
         """Where this person's own texture of ``primitive`` (``texture_overrides``) is a face from photos, for the
         renderer: a data texture (red 0-1, :func:`.face_photo.face_mask`) when the part is the head and wears a

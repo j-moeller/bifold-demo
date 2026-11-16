@@ -244,6 +244,7 @@ def _windows_against_full_renders(scene, sensor, cases, min_psnr=50.0):
             assert image.shape == (w.height, w.width, 3) and image.dtype == np.uint8
             if level not in fulls:
                 full = Renderer(*sensor.frame(level))
+                full.quality = view.window_quality  # (drawn as the windows are: up close, finer heads and shading)
                 try:
                     fulls[level] = full.render(scene)
                 finally:

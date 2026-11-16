@@ -126,6 +126,8 @@ def test_the_calibration_renders_an_avatars_gallery_and_its_faces_through_window
     assert len(probes.found) == 4 and probes.found.all()
     assert np.allclose(probes.sizes / probes.eye_px, 1.0, atol=0.15)  # the face's size from its box
     rendered = probes.rendering()
-    assert rendered["hemisphere"] == pytest.approx(0.3) and rendered["quality"] == "high"
+    from bifold_demo.scene.renderer import Renderer
+
+    assert rendered["hemisphere"] == pytest.approx(0.3) and rendered["quality"] == Renderer.window_quality
     again = cal.Probes.load(probes.save(tmp_path / "probes.npz"))
     assert again.rendering() == rendered and np.array_equal(again.crops, probes.crops)

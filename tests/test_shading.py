@@ -583,7 +583,7 @@ def test_the_demo_source_sets_the_quality_and_reads_detail_in_the_background_whe
     try:
         live.start()
         recorded.start()
-        assert live.renderer.quality == "low" and live.renderer.window_quality == "high"
+        assert live.renderer.quality == "low" and live.renderer.window_quality == "close"  # (windows: close-ups)
         assert not live.renderer.detail_wait and recorded.renderer.detail_wait  # a recording waits for them
     finally:
         live.stop()

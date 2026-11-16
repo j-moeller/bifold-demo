@@ -437,6 +437,23 @@ def test_the_subdivided_model_shares_the_rest_and_is_cached(avatar, cache):
     assert sd.subdivision(copy, 1) is sd.subdivision(avatar, 1)  # cached by the head's geometry
 
 
+def test_two_models_of_one_head_wear_their_own_textures(avatar, cache):
+    """The subdivided geometry is cached by itself: another model with the same head but other textures (a person's
+    own) shares it and keeps its own textures and maps."""
+    import dataclasses
+
+    from bifold_demo.characters.model import CharacterModel
+
+    head = avatar.primitives[1]
+    other = dataclasses.replace(head, texture=np.full((4, 4, 4), 90, np.uint8), maps=np.zeros((4, 4, 4), np.uint8))
+    copy = CharacterModel(avatar.name, avatar.skeleton, [avatar.primitives[0], other, avatar.primitives[2]],
+                          avatar.inverse_bind, dict(avatar.metadata))
+    a, b = sd.subdivide(avatar, 1).primitives[1], sd.subdivide(copy, 1).primitives[1]
+    assert a.texture is head.texture and a.maps is head.maps
+    assert b.texture is other.texture and b.maps is other.maps
+    assert b.positions is a.positions and b.indices is a.indices  # (one geometry)
+
+
 def test_the_face_rig_is_shared(monkeypatch, avatar):
     marker = object()
     monkeypatch.setattr(faces, "face_rig", lambda model: marker)

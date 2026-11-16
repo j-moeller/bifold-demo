@@ -61,7 +61,7 @@ import threading
 import time
 import weakref
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -160,6 +160,7 @@ def head_labels(model, primitive: int | None = None, cache_dir=None) -> HeadLabe
 
 
 _parts_memory: OrderedDict[str, np.ndarray] = OrderedDict()
+_parts_lock = threading.Lock()
 
 
 def _parts(model, primitive: int, cache_dir) -> np.ndarray:
@@ -180,9 +181,10 @@ def _parts(model, primitive: int, cache_dir) -> np.ndarray:
         h.update(np.ascontiguousarray(array).tobytes())
     h.update("\n".join(model.skeleton.names).encode())
     key = h.hexdigest()
-    if key in _parts_memory:
-        _parts_memory.move_to_end(key)
-        return _parts_memory[key]
+    with _parts_lock:
+        if key in _parts_memory:
+            _parts_memory.move_to_end(key)
+            return _parts_memory[key]
     personal = "head_shape" in getattr(model, "metadata", {})  # a head fitted to a person: biometric, memory only
     path = None if personal or cache_dir is False else cache_folder(cache_dir) / f"subdivide-parts-{key}.npz"
     parts = None
@@ -204,9 +206,10 @@ def _parts(model, primitive: int, cache_dir) -> np.ndarray:
                 tmp.replace(path)
             except OSError:
                 pass  # a read-only folder: kept in memory only
-    _parts_memory[key] = parts
-    while len(_parts_memory) > CACHED:
-        _parts_memory.popitem(last=False)
+    with _parts_lock:
+        _parts_memory[key] = parts
+        while len(_parts_memory) > CACHED:
+            _parts_memory.popitem(last=False)
     return parts
 
 
@@ -772,7 +775,9 @@ def _blend_weights(joints, weights, corners, bary) -> tuple[np.ndarray, np.ndarr
 
 _primitives: OrderedDict[str, Subdivided] = OrderedDict()  # geometry key -> the subdivision (bounded)
 _models: dict[tuple, tuple] = {}  # (id(model), level, smooth) -> (weakref to the model, the subdivided model)
+_jobs: dict[tuple, tuple] = {}  # (id(model), level) -> (weakref to the model, a Future of detail_model)
 _lock = threading.Lock()
+_pool = None
 
 
 def _key(prim, labels, level: int, smooth: bool) -> str:
@@ -821,7 +826,12 @@ def subdivide(model: CharacterModel, level: int = 1, labels: HeadLabels | None =
             return known[1]
     done = subdivision(model, level, labels, smooth)
     primitives = list(model.primitives)
-    primitives[done.labels.primitive] = done.primitive
+    own, fine = model.primitives[done.labels.primitive], done.primitive
+    if fine.name != own.name or any(a is not b for a, b in ((fine.texture, own.texture), (fine.maps, own.maps),
+                                                            (fine.detail, own.detail))):
+        fine = replace(fine, name=own.name, texture=own.texture, maps=own.maps, detail=own.detail)  # (the geometry
+        # is cached by itself: another model of the same head may wear other textures)
+    primitives[done.labels.primitive] = fine
     metadata = dict(model.metadata)
     metadata["subdivided"] = {"level": int(level), "smooth": bool(smooth), "of": model.name}
     made = CharacterModel(model.name, model.skeleton, primitives, model.inverse_bind, metadata)
@@ -845,3 +855,46 @@ def check(model: CharacterModel, level: int = 1, labels: HeadLabels | None = Non
     curved = subdivide(model, level, labels)
     carried = subdivision(model, level, labels).labels
     return rig.rig_checks(flat, curved, carried, size or rig.CHECK_SIZE)
+
+
+def detail_model(model: CharacterModel, level: int, wait: bool = True) -> CharacterModel | None:
+    """The model a picture draws where it shows ``model``'s face up close: :func:`subdivide` at ``level`` (cached
+    per model). ``wait`` False makes it on a background thread the first time and returns ``None`` until it is there
+    (the renderer draws the coarse head meanwhile, so a frame never waits); ``None`` also for a model without a head
+    to subdivide."""
+    key = (id(model), int(level))
+    with _lock:
+        known = _models.get((*key, True))
+        if known is not None and known[0]() is model:
+            return known[1]
+        job = _jobs.get(key)
+        if job is not None and job[0]() is not model:
+            job = None
+    if job is None:
+        if wait:
+            return _detail(model, level)
+        job = (weakref.ref(model), _background().submit(_detail, model, level))
+        with _lock:
+            _jobs[key] = job
+        weakref.finalize(model, _jobs.pop, key, None)
+    if not job[1].done():
+        return None
+    return job[1].result()
+
+
+def _detail(model, level):
+    try:
+        return subdivide(model, level)
+    except ValueError:  # no head with face bones: drawn as it is
+        return None
+
+
+def _background():
+    from concurrent.futures import ThreadPoolExecutor
+
+    global _pool
+    with _lock:
+        if _pool is None:
+            _pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="subdivide")
+        return _pool
+

@@ -71,7 +71,7 @@ class DemoConfig:
     sensor: tuple[int, int] | None = None  # the declared high-resolution sensor (None: six times the frame)
     camera_preset: str = "ideal"  # the camera model of the windows (sensor.camera_model.PRESETS)
     webcam_capture: tuple[int, int] | None = None  # capture the webcam at this size, windows cut from it
-    quality: str = "high"  # the view's shading: "high" (normal and specular maps on heads) or "low"; windows: high
+    quality: str = "high"  # the view's shading: "high" (normal and specular maps on heads) or "low"; windows: close
     title: str = "bifold demo"
 
 
@@ -802,7 +802,8 @@ def parse_args(argv=None) -> DemoConfig:
     g.add_argument("--no-reload", dest="reload", action="store_false", help="do not reload the scene file on save")
     g.add_argument("--quality", choices=["high", "low"], default="high",
                    help="the view's shading: high (heads with their normal and specular maps, light from above) or "
-                        "low (cheaper on a software renderer); windows are always high (default high)")
+                        "low (cheaper on a software renderer); windows are always close (high, and close-ups: "
+                        "finer heads, skin, eye and lash shading) (default high)")
     g.add_argument("--faces", default="faces",
                    help="folder of photos of the people to recognise, a folder per person (default: faces)")
     g.add_argument("--face-profile", default=None, choices=("best", "licensed", "commercial"),

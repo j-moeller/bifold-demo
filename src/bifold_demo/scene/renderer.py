@@ -4,6 +4,11 @@ Besides the whole view (:meth:`Renderer.render`) it draws *windows* (:meth:`Rend
 the camera's picture through an off-axis part of the same frustum, at a higher pixel scale than the view, with the
 GPU resources the view already uploaded. That is the virtual high-resolution sensor of :mod:`bifold_demo.sensor`.
 
+**Close-ups** (the ``"close"`` quality, windows' by default; step S4, ``docs/research/closeups_results.md``): a person
+whose face a picture shows large is drawn with a subdivided head (:mod:`bifold_demo.characters.subdivide`), the key
+light wrapped round the head's skin (red furthest, :data:`SKIN_WRAP`), a cornea's sharp highlight on the eyeballs
+(found by their bones in the vertex shader) and the lashes' and hair cards' cut-outs antialiased by alpha to coverage.
+
 **Linear light.** Light adds up and pixels average in linear light, while images hold sRGB-encoded colours. So
 textures are sRGB textures (the GPU decodes a colour when it samples it) with mipmaps averaged in linear light
 (:func:`~.textures.mip_chain`), shading, fog and the blending of shadows happen in linear light, and the picture is
@@ -120,18 +125,32 @@ vec3 hemisphere_light(vec3 n, float occlusion, float hemisphere) {
 vec3 diffuse_light(vec3 n, float occlusion) {
     return hemisphere_light(n, occlusion, u_hemisphere);
 }
+// the key light wrapped round the surface by ``wrap`` per colour (0: Lambert): skin, which light goes into and comes
+// out of further on, red furthest, is lit a little past where the light grazes it
+vec3 wrapped_light(vec3 n, float occlusion, float hemisphere, vec3 wrap) {
+    float ambient = u_ambient * (1.0 + hemisphere * n.y) * occlusion;
+    vec3 nl = vec3(dot(n, -u_light_dir));
+    return vec3(ambient) + (1.0 - u_ambient) * max((nl + wrap) / (1.0 + wrap), 0.0) * u_light_color;
+}
 """
 
 _OBJECT_FS = "#version 330 core\n" + _FOG + _LIGHT + """
 uniform sampler2D u_texture;
 uniform vec3 u_color;
+uniform bool u_coverage;  // alpha to coverage (lashes and hair cards up close): alpha is the share of the pixel covered
 in vec3 v_normal;
 in vec2 v_uv;
 in float v_depth;
 out vec4 f_color;
 void main() {
     vec4 texel = texture(u_texture, v_uv);
-    if (texel.a < 0.5) discard;  // cut-outs from transparent PNGs
+    float alpha = 1.0;
+    if (u_coverage) {  // the cut-out where its alpha crosses 0.5, as before, with its edge a pixel wide
+        alpha = clamp((texel.a - 0.5) / max(fwidth(texel.a), 1e-4) + 0.5, 0.0, 1.0);
+        if (alpha <= 0.0) discard;
+    } else if (texel.a < 0.5) {
+        discard;  // cut-outs from transparent PNGs
+    }
     vec3 rgb = texel.rgb * u_color;
     if (u_lit) {
         vec3 n = normalize(v_normal);
@@ -139,7 +158,7 @@ void main() {
         rgb *= diffuse_light(n, 1.0);
     }
     rgb = mix(rgb, u_fog_color, fog_amount(v_depth));
-    f_color = vec4(rgb.bgr, 1.0);  // BGR so OpenCV can use the pixels directly
+    f_color = vec4(rgb.bgr, alpha);  // BGR so OpenCV can use the pixels directly
 }
 """
 
@@ -150,18 +169,23 @@ _MAPPED_VS = "#version 330 core\n" + _SKIN + """
 uniform mat4 u_mvp;
 uniform mat4 u_model;
 uniform mat3 u_normal_matrix;
+uniform ivec2 u_eye_bones;  // the eyeballs' bones (-1: none)
 in vec4 in_tangent;
 out vec3 v_normal;
 out vec4 v_tangent;
 out vec3 v_world;
 out vec2 v_uv;
 out float v_depth;
+out float v_eye;  // how much of the vertex the eyeballs' bones move: 1 on an eyeball
+out vec3 v_eye_axis;  // the way the eyeball looks (its rest pose's +z, turned with its bone)
 void main() {
     ivec4 j = ivec4(in_joints + 0.5);
+    v_eye = dot(in_weights, vec4(equal(j, ivec4(u_eye_bones.x))) + vec4(equal(j, ivec4(u_eye_bones.y))));
     vec4 r0 = skin_row(0, j), r1 = skin_row(1, j), r2 = skin_row(2, j);
     vec4 q = vec4(in_position, 1.0);
     vec4 p = vec4(dot(r0, q), dot(r1, q), dot(r2, q), 1.0);
     v_normal = u_normal_matrix * skin_direction(r0, r1, r2, in_normal);
+    v_eye_axis = u_normal_matrix * skin_direction(r0, r1, r2, vec3(0.0, 0.0, 1.0));
     // (the tangent lies in the surface: the model matrix would carry it, the normal matrix does the same for the
     // turns and the even scales characters have; a character scaled unevenly would need the model matrix's)
     v_tangent = vec4(u_normal_matrix * skin_direction(r0, r1, r2, in_tangent.xyz), in_tangent.w);
@@ -182,15 +206,31 @@ uniform float u_specular;
 uniform float u_normal_strength;
 uniform float u_photo_hemisphere;  // the share of the hemisphere light's variation a face from photos gets
 uniform float u_photo_level;  // the specular level a face from photos gets instead of the map's
+uniform bool u_close;  // the close quality: skin with the light wrapped round it, a cornea's highlight on the eyes
+uniform vec3 u_wrap;  // how far the key light wraps round skin, per colour
+uniform float u_photo_wrap;  // the share of it a face from photos gets
+uniform float u_cornea;  // the strength of the cornea's highlight
 const float PI = 3.14159265;
 const float SKIN_LEVEL = 0.07;  // the specular maps' level on most of the skin
 const float SKIN_F0 = 0.028;  // Fresnel reflectance of skin head-on
+const float CORNEA_F0 = 0.025;  // ... of a cornea (refractive index 1.376)
+uniform float u_cornea_rough;  // a cornea is smooth: a small sharp highlight
+const float CORNEA_BULGE = 0.5;  // the cornea's radius is about half the eyeball's: its normal turns twice as fast
 in vec3 v_normal;
+in vec3 v_eye_axis;
 in vec4 v_tangent;
 in vec3 v_world;
 in vec2 v_uv;
 in float v_depth;
+in float v_eye;
 out vec4 f_color;
+float ggx(float nh, float nl, float nv, float rough) {  // the GGX lobe with Smith's shadowing (times pi, over 4 nl nv)
+    float a2 = rough * rough * rough * rough;
+    float dd = nh * nh * (a2 - 1.0) + 1.0;
+    float k = (rough + 1.0) * (rough + 1.0) / 8.0;
+    float g = nl / (nl * (1.0 - k) + k) * nv / (nv * (1.0 - k) + k);
+    return a2 / (dd * dd) * g / (4.0 * nv);
+}
 void main() {
     vec4 texel = texture(u_texture, v_uv);
     if (texel.a < 0.5) discard;
@@ -210,7 +250,11 @@ void main() {
             vec2 xy = (maps.rg * 2.0 - 1.0) * (u_normal_strength * own);
             n = normalize(t * xy.x + b * xy.y + ng * sqrt(max(1.0 - dot(xy, xy), 0.0)));
         }
-        vec3 lit = rgb * hemisphere_light(n, maps.a, u_hemisphere * mix(1.0, u_photo_hemisphere, photo));
+        float hemisphere = u_hemisphere * mix(1.0, u_photo_hemisphere, photo);
+        float eyeball = u_close ? clamp(v_eye, 0.0, 1.0) : 0.0;
+        vec3 lit = rgb * (u_close ? wrapped_light(n, maps.a, hemisphere, u_wrap * (1.0 - eyeball)
+                                                 * mix(1.0, u_photo_wrap, photo))
+                                  : hemisphere_light(n, maps.a, hemisphere));
         vec3 l = -u_light_dir;
         float nl = max(dot(n, l), 0.0);
         float level = maps.b * own + u_photo_level * photo;
@@ -229,6 +273,16 @@ void main() {
             float strength = min(level / SKIN_LEVEL, 3.0) * u_specular;
             // GGX lobe (times pi: the diffuse term above leaves out Lambert's 1/pi too)
             lit += (1.0 - u_ambient) * u_light_color * (a2 / (dd * dd) * g * fresnel * strength / (4.0 * nv));
+        }
+        // the cornea: smooth over the iris's relief, and more curved than the eyeball round its middle
+        vec3 nc = normalize(ng - CORNEA_BULGE * normalize(v_eye_axis));
+        float cl = max(dot(nc, l), 0.0);
+        if (eyeball > 0.0 && cl > 0.0 && u_cornea > 0.0) {
+            vec3 v = normalize(u_eye - v_world);
+            vec3 h = normalize(l + v);
+            float fresnel = CORNEA_F0 + (1.0 - CORNEA_F0) * pow(1.0 - max(dot(v, h), 0.0), 5.0);
+            lit += eyeball * u_cornea * (1.0 - u_ambient) * u_light_color
+                * ggx(max(dot(nc, h), 0.0), cl, max(dot(nc, v), 1e-3), u_cornea_rough) * fresnel;
         }
         rgb = lit;
     }
@@ -273,6 +327,16 @@ void main() {
 # scores then are those of the low quality, and 0.04-0.09 lower with the maps and the hemisphere (see the README).
 PHOTO_HEMISPHERE = 0.0  # the share of the hemisphere light's variation a face from photos gets
 PHOTO_LEVEL = 0.0  # the specular level a face from photos gets instead of the avatar's map's
+# Close-ups (the close quality, step S4): the key light wrapped round the heads' skin (red furthest: light that went
+# into the skin comes out further on, so skin is lit a little past where the light grazes it, and reddish there; an
+# approximation of pre-integrated skin without its table), a cornea's sharp highlight on the eyeballs, the lashes'
+# and hair cards' cut-outs antialiased (alpha to coverage). Measured in docs/research/closeups_results.md.
+SKIN_WRAP = (0.35, 0.18, 0.12)  # how far the key light wraps round skin, red, green, blue
+PHOTO_WRAP = 1.0  # the share of it a face from photos gets
+CORNEA = 1.0  # the strength of a cornea's highlight
+CORNEA_ROUGH = 0.12  # its roughness (the key light is a point: a lamp's size spreads its highlight)
+HAIR_CARDS = ("opacity", "hair")  # name parts of the mesh parts with lashes and hair cards (alpha to coverage)
+SAMPLE_ALPHA_TO_COVERAGE = 0x809E
 SHADOW_STRENGTH = 0.45  # darkening at the centre of a blob shadow (0-1)
 SHADOW_LIFT = 0.015  # metres above the feet: above the floor and flat floor decals (carpets) up to 1 cm high
 _SHADOW_CORNERS = np.array([(-1, -1), (1, -1), (1, 1), (-1, -1), (1, 1), (-1, 1)], dtype=np.float64)
@@ -347,12 +411,18 @@ class Renderer:
     :attr:`linear` (True): shade, filter and blend in linear light (see the module docs); False: on the stored sRGB
     values, as the renderer did before (textures uploaded again when it changes).
 
-    **Quality.** :attr:`quality` (the whole view) and :attr:`window_quality` (windows) are ``"high"`` or ``"low"``.
-    High: mesh parts with ``tangents`` and ``maps`` (the heads) are drawn with their normal and specular maps, and the
-    ambient light comes more from above than from below as much as the scene's ``hemisphere`` says. Low: the shading
-    of before (Lambert and a constant ambient light, in linear light), a little cheaper per pixel on a software
-    renderer. :attr:`specular` and :attr:`normal_strength` scale the specular lobe and the normal maps (1: as the maps
-    say).
+    **Quality.** :attr:`quality` (the whole view; ``"high"`` by default) and :attr:`window_quality` (windows;
+    ``"close"`` by default) are ``"close"``, ``"high"`` or ``"low"``. High: mesh parts with ``tangents`` and ``maps``
+    (the heads) are drawn with their normal and specular maps, and the ambient light comes more from above than from
+    below as much as the scene's ``hemisphere`` says. Close: high, and faces seen up close get a finer head and skin,
+    eye and lash shading (see "Close-ups" below). Low: the shading of before (Lambert and a constant ambient light, in
+    linear light), a little cheaper per pixel on a software renderer. :attr:`specular` and :attr:`normal_strength`
+    scale the specular lobe and the normal maps (1: as the maps say).
+
+    **Close-ups** (step S4; ``docs/research/closeups_results.md``). In a picture of the close quality a person whose
+    eyes are at least ``subdivide_from[k]`` pixels apart is drawn with their head subdivided ``k + 1`` times
+    (:meth:`~bifold_demo.characters.character.Character.detailed`: 4 and 16 triangles for each; the same skeleton,
+    textures and maps), made in the background when :attr:`detail_wait` is False (the coarse head until it is there).
 
     **Detail.** A person whose eyes are at least :attr:`detail_from` pixels apart in the picture being drawn gets
     their head's 2048-pixel ``detail`` textures there (and a texture larger than 1024 that they wear instead of the
@@ -367,7 +437,10 @@ class Renderer:
 
     linear = True  # the light model: linear light (False: the stored sRGB values, as before)
     quality = "high"  # the shading of the whole view: "high" or "low" (see the class docs)
-    window_quality = "high"  # the shading of windows
+    window_quality = "close"  # the shading of windows
+    subdivide_from = (64.0, 150.0)  # pixels between the eyes from which a close picture subdivides a head once, twice
+    skin_wrap = 1.0  # scale of the skin's wrapped light at the close quality (0: Lambert)
+    cornea = 1.0  # scale of the corneas' highlight at the close quality (0: none)
     specular = 1.0  # scale of the heads' specular lobe (0: none)
     normal_strength = 1.0  # scale of the heads' normal maps' slopes (0: flat)
     detail_from = 64.0  # pixels between the eyes from which a head is drawn with its 2048 textures (inf: never)
@@ -415,6 +488,9 @@ class Renderer:
         self._details = DetailCache()  # the 2048 textures of the heads that need them most
         self._details_linear = None  # the light model the detail textures were uploaded for
         self._head_bones = weakref.WeakKeyDictionary()  # skeleton -> its head bone (-1: none)
+        self._eyes_of = weakref.WeakKeyDictionary()  # skeleton -> its eyeballs' bones (-1: none)
+        self._finer_parts: dict[int, weakref.ref] = {}  # id(subdivided head drawn) -> weakref (for memory())
+        self._window_finer: dict[int, tuple] = {}  # id(person) -> (weakref, the finer model) of the last window
         self._probes = None  # (object program, skinned program, shadow program): see visible_pixels
         self._drawn = None  # (view-projection, camera position) of the last frame
         self._samples = samples  # MSAA samples per pixel (0: none), for windows too
@@ -493,7 +569,9 @@ class Renderer:
                 skinned["u_mvp"].write(gl_bytes(view_proj @ model))
                 self._joint_texture(person, reuse=True).use(1)
                 overrides = getattr(person, "texture_overrides", None)
-                for primitive in (*person.skinned_model.primitives, *getattr(person, "worn", ())):
+                finer = self._window_finer.get(id(person))  # the head the window drew, subdivided or not
+                finer = finer[1] if finer is not None and finer[0]() is person else None
+                for primitive in (*(finer or person.skinned_model).primitives, *getattr(person, "worn", ())):
                     _vao, texture = self._skinned_primitive(primitive)
                     if overrides:
                         texture = overrides.get(primitive.name, texture)
@@ -600,7 +678,8 @@ class Renderer:
         ctx.enable(self._moderngl.DEPTH_TEST)
         ctx.disable(self._moderngl.CULL_FACE)
         eye = scene.camera.current_position
-        high = _check_quality(self.window_quality if window else self.quality) == "high"
+        quality = _check_quality(self.window_quality if window else self.quality)
+        high = quality in ("close", "high")
         uniforms = _scene_uniforms(scene, high, self.linear)
         _set_uniforms(self._program, uniforms)
 
@@ -626,7 +705,8 @@ class Renderer:
         if characters or shadows:
             right = np.asarray(scene.camera.view_matrix(), np.float64)[0, :3]  # the camera's right in the scene
             self._draw_characters(characters, view_proj, eye, uniforms, scene.time, shadows, fbo, reuse=window,
-                                  mapped=high, picture=(size, right / max(np.linalg.norm(right), 1e-12)))
+                                  mapped=high, picture=(size, right / max(np.linalg.norm(right), 1e-12)),
+                                  close=quality == "close")
 
         if fbo is not resolve:
             ctx.copy_framebuffer(resolve, fbo)
@@ -706,12 +786,14 @@ class Renderer:
         return objects, characters, shadows
 
     def _draw_characters(self, characters, view_proj, camera_position, uniforms: dict, t: float, shadows=None,
-                         fbo=None, reuse: bool = False, mapped: bool = False, picture=None) -> None:
+                         fbo=None, reuse: bool = False, mapped: bool = False, picture=None,
+                         close: bool = False) -> None:
         """GPU-skinned characters (opaque, alpha-tested), then blob shadows (those of ``characters`` that have one,
         or of ``shadows``) blended over the scene in ``fbo`` (the view's by default). ``reuse``: use the joint
         palettes this frame uploaded where the characters were not posed again since (windows of the frame).
         ``mapped``: draw mesh parts with tangents and maps with them (the high quality). ``picture``: ``(size, the
-        camera's right)`` of the picture, for the heads' detail textures (``None``: never)."""
+        camera's right)`` of the picture, for the heads' detail textures (``None``: never). ``close``: the close
+        quality (subdivided heads where faces are large, see the class docs)."""
         if self._details_linear != self.linear:  # detail textures give their pixels up once on the GPU: read anew
             for texture in self._details.clear():
                 self._forget_texture(texture)
@@ -720,6 +802,8 @@ class Renderer:
         _set_uniforms(prog, uniforms)
         u, triangles = self._skinned_uniforms, self._moderngl.TRIANGLES
         mapped_program = None
+        if reuse:
+            self._window_finer = {}
         for obj in characters:
             model, normal_matrix = obj.matrices(camera_position)
             mvp, colour = gl_bytes(view_proj @ model), self._colour(obj.current_color)
@@ -732,8 +816,20 @@ class Renderer:
             own_maps = getattr(obj, "maps_overrides", None)  # this person's own packed maps, by part
             eye = None  # pixels between this person's eyes in the picture: worked out when it matters
             later = []  # the parts drawn with their maps
-            for primitive in (*obj.skinned_model.primitives, *getattr(obj, "worn", ())):
-                vao, texture = self._skinned_primitive(primitive)
+            parts = obj.skinned_model.primitives
+            shapes = parts  # the parts' geometry: a subdivided head where the face is large in a close picture
+            if close and picture is not None and self.subdivide_from and hasattr(obj, "detailed"):
+                eye = self._eye_pixels(obj, view_proj, camera_position, picture)
+                level = sum(eye >= float(threshold) for threshold in self.subdivide_from)
+                finer = obj.detailed(level, self.detail_wait) if level else None
+                if finer is not None and len(finer.primitives) == len(parts):
+                    shapes = finer.primitives
+                    self._finer_parts.update((id(s), weakref.ref(s)) for s, p in zip(shapes, parts) if s is not p)
+                    if reuse:
+                        self._window_finer[id(obj)] = (weakref.ref(obj), finer)
+            worn = tuple(getattr(obj, "worn", ()))
+            for primitive, shape in zip((*parts, *worn), (*shapes, *worn)):
+                vao, texture = self._skinned_primitive(shape)
                 override = overrides.get(primitive.name) if overrides else None
                 if override is not None:
                     texture = override.at_time(t)
@@ -753,14 +849,14 @@ class Renderer:
                         detail = self._details.get(primitive, eye, self.detail_wait, self.detail_heads, maps_only=True)
                     elif not near and is_large(texture):
                         texture = base_copy(texture)
-                if mapped and _has_maps(primitive):
+                if mapped and _has_maps(shape):
                     maps = own_maps.get(primitive.name) if own_maps else None
                     if maps is None and detail is not None:
                         maps = detail[1]
                     photo = None  # a face from photos without maps of its own: where it is
                     if override is not None and hasattr(obj, "photo_mask"):
                         photo = obj.photo_mask(primitive)
-                    later.append((primitive, texture, maps, photo))
+                    later.append((shape, texture, maps, photo))
                     continue
                 self._gl_texture(texture.at_time(t)).use(0)
                 if override is not None and uniforms["u_hemisphere"] and hasattr(obj, "photo_mask") and \
@@ -768,6 +864,9 @@ class Renderer:
                     prog["u_hemisphere"].value = uniforms["u_hemisphere"] * PHOTO_HEMISPHERE
                     vao.render(triangles)
                     prog["u_hemisphere"].value = uniforms["u_hemisphere"]
+                    continue
+                if close and self._samples and any(w in primitive.name.lower() for w in HAIR_CARDS):
+                    self._covered(prog, vao)  # lashes and hair cards: antialiased cut-outs
                     continue
                 vao.render(triangles)
             if not later:
@@ -779,8 +878,14 @@ class Renderer:
                                                "u_specular": float(self.specular),
                                                "u_normal_strength": float(self.normal_strength),
                                                "u_photo_hemisphere": float(PHOTO_HEMISPHERE),
-                                               "u_photo_level": float(PHOTO_LEVEL)})
+                                               "u_photo_level": float(PHOTO_LEVEL),
+                                               "u_close": bool(close),
+                                               "u_wrap": tuple(float(self.skin_wrap) * w for w in SKIN_WRAP),
+                                               "u_photo_wrap": float(PHOTO_WRAP),
+                                               "u_cornea": float(self.cornea) * CORNEA,
+                                               "u_cornea_rough": float(CORNEA_ROUGH)})
             m = self._mapped_uniforms
+            m["u_eye_bones"].value = self._eye_bones(obj.skinned_model.skeleton)
             m["u_mvp"].write(mvp)
             m["u_model"].write(gl_bytes(model))
             m["u_normal_matrix"].write(gl_bytes(normal_matrix))
@@ -798,6 +903,25 @@ class Renderer:
             shadows = [obj for obj in characters if getattr(obj, "shadow", False)]
         if shadows:
             self._draw_shadows(shadows, view_proj, camera_position, uniforms, fbo)
+
+    def _covered(self, program, vao) -> None:
+        """Draw ``vao`` with ``program`` (of ``_OBJECT_FS``) with alpha to coverage: a cut-out's alpha is the share of
+        the pixel's samples it covers, so its edges are antialiased like a triangle's (with the picture's MSAA)."""
+        program["u_coverage"].value = True
+        self.ctx.enable_direct(SAMPLE_ALPHA_TO_COVERAGE)
+        try:
+            vao.render(self._moderngl.TRIANGLES)
+        finally:
+            self.ctx.disable_direct(SAMPLE_ALPHA_TO_COVERAGE)
+            program["u_coverage"].value = False
+
+    def _eye_bones(self, skeleton) -> tuple[int, int]:
+        """The bones of a skeleton's eyeballs (right, left; -1 where there is none), for the cornea's highlight."""
+        bones = self._eyes_of.get(skeleton)
+        if bones is None:
+            found = [skeleton.find(name) for name in ("Bip01 REye", "Bip01 LEye")]
+            bones = self._eyes_of[skeleton] = tuple(-1 if b is None else int(b) for b in found)
+        return bones
 
     def _draw_shadows(self, characters, view_proj, camera_position, uniforms: dict, fbo=None) -> None:
         """Soft dark ellipses on the floor in one draw call: depth-tested, blended, without writing depth."""
@@ -1012,7 +1136,7 @@ class Renderer:
             prog["u_maps"].value = 2
             prog["u_photo"].value = 3
             self._mapped_uniforms = {name: prog[name] for name in ("u_mvp", "u_model", "u_normal_matrix", "u_color",
-                                                                   "u_lit")}
+                                                                   "u_lit", "u_eye_bones")}
             self._mapped_program = prog
         return self._mapped_program
 
@@ -1094,18 +1218,25 @@ class Renderer:
         ``detail`` the heads' 2048 textures among them (``detail_heads``: how many heads have them), and how many
         detail texture pairs were read so far (``detail_loads``) and refused to a picture because the heads that hold
         them need them more (``detail_refused``); ``detail_cpu`` what the detail textures take in memory besides
-        (their pixels until they are on the GPU)."""
+        (their pixels until they are on the GPU); ``meshes`` the characters' vertex, index and tangent buffers and
+        ``subdivided`` those of the subdivided heads among them."""
         def size(entry) -> int:
             gl_tex = entry[1]
             pixels = gl_tex.width * gl_tex.height * 4
             return pixels * 4 // 3 if entry[3] else pixels
 
+        def buffers(entry) -> int:
+            return sum(b.size for b in (entry[2], entry[3], entry[9]) if b is not None)
+
         detail_ids = {t.id for t in self._details.textures()}
         total = sum(size(e) for e in self._textures.values())
         detail = sum(size(e) for key, e in self._textures.items() if key in detail_ids)
+        finer = {key for key, ref in self._finer_parts.items() if ref() is not None}
         return {"textures": total, "detail": detail, "detail_heads": len(self._details),
                 "detail_loads": self._details.loads, "detail_refused": self._details.refused,
-                "detail_cpu": self._details.cpu_bytes()}
+                "detail_cpu": self._details.cpu_bytes(),
+                "meshes": sum(buffers(e) for e in self._primitives.values()),
+                "subdivided": sum(buffers(e) for key, e in self._primitives.items() if key in finer)}
 
     def _joint_texture(self, obj, reuse: bool = False):
         """The character's joint-palette texture (one per character, rewritten every frame). With ``reuse`` it is
@@ -1227,6 +1358,7 @@ class Renderer:
             if ref() is None:
                 vao.release()
                 del self._probe_vaos[key]
+        self._finer_parts = {key: ref for key, ref in self._finer_parts.items() if ref() is not None}
         self._bounds.forget_unused()
 
     def _release_mesh(self, key: int) -> None:
@@ -1284,7 +1416,7 @@ class Renderer:
         self._last_window = None
 
 
-QUALITIES = ("high", "low")
+QUALITIES = ("close", "high", "low")
 
 
 def _check_quality(quality: str) -> str:
