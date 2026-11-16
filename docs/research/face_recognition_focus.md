@@ -568,3 +568,10 @@ branch and pushed; its results go into the progress log.
   - **E1** (evaluation: metrics, `bifold-faces eval` with manifests, rendered stills and video, the ablation ladder,
     the acceptance test, the margin to recommend, real-face guidance for the Mac) started from the branch's head.
   - S3's review fixes are being finished.
+- **16 November, 01:20 UTC: paused on request; results written down** in
+  [face_recognition_status.md](face_recognition_status.md): where each step stands, the measured numbers, the open
+  issues and how to resume.
+  - F1, S1, S2 and F2 are done.
+  - S3's review fixes 1-3 are on the branch. Its re-measurement on the held-out avatars is unfinished, uncommitted in
+    its worktree.
+  - E1 was paused before its first commit. S4 is not started.
