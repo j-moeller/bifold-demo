@@ -87,6 +87,21 @@ def test_windows_of_the_close_quality_draw_a_finer_head_where_the_face_is_large(
     assert _drawn_level(renderer, person) == 0
 
 
+def test_small_faces_in_close_pictures_are_drawn_as_at_the_high_quality(renderer, avatar):
+    """Below ``close_from`` and ``subdivide_from`` a close picture draws a face exactly as the high quality does
+    (bit for bit: the faces a calibration measures at 8-44 pixels between the eyes do not change); at and above, it
+    does not."""
+    person = Character(avatar, shadow=False)
+    scene = _scene(person)
+    renderer.render(scene)
+    for eye_px, same in ((40, True), (100, False)):
+        renderer.window_quality = "high"
+        high = _window(renderer, scene, eye_px)
+        renderer.window_quality = "close"
+        close = _window(renderer, scene, eye_px)
+        assert np.array_equal(high, close) == same, eye_px
+
+
 def test_a_window_draws_the_finer_head_where_the_coarse_one_was(renderer, avatar):
     """The finer head covers the coarse head's pixels but at its outline (where the curved surface bulges a little)."""
     person = Character(avatar, shadow=False)
@@ -193,6 +208,7 @@ def test_skin_is_lit_past_where_the_light_grazes_it_up_close(gl):
     from bifold_demo.scene.renderer import Renderer
 
     renderer = Renderer(64, 64, samples=0)
+    renderer.close_from = 0.0  # (the ball's "eyes" are 29 pixels apart here)
     try:
         person = _ball()
         light = (-1.0, 0.0, 0.0)  # from +x: the ball's +x half lit, its middle (facing the camera) grazed
@@ -204,6 +220,8 @@ def test_skin_is_lit_past_where_the_light_grazes_it_up_close(gl):
         assert abs(close[lit] - high[lit]).max() <= 6
         renderer.skin_wrap = 0.0
         assert np.abs(_shot(renderer, person, "close", light) - high).max() <= 1  # (no wrap: as the high quality)
+        renderer.skin_wrap, renderer.close_from = 1.0, 64.0
+        assert np.array_equal(_shot(renderer, person, "close", light), high)  # (a face too small to be a close-up)
     finally:
         renderer.release()
 
@@ -214,6 +232,7 @@ def test_an_eyeball_gets_a_corneas_highlight_up_close(gl):
     from bifold_demo.scene.renderer import Renderer
 
     renderer = Renderer(256, 256, samples=0)  # (the highlight is a few pixels across here)
+    renderer.close_from = 0.0
     try:
         light = (0.0, 0.0, -1.0)  # from the camera
         eye = _ball("b_head", ("Bip01 Head", "Bip01 REye"), joint=1)
@@ -247,6 +266,7 @@ def test_lashes_and_hair_cards_are_antialiased_up_close(gl):
     model = CharacterModel("card", Skeleton(["Root"], [-1], np.eye(4)[None]), [card], np.eye(4)[None])
     person = Character(model, shadow=False)
     renderer = Renderer(64, 64, samples=4)
+    renderer.close_from = 0.0
     try:
         edges = {}
         for quality in ("high", "close"):
@@ -254,5 +274,8 @@ def test_lashes_and_hair_cards_are_antialiased_up_close(gl):
             grey = image.max(axis=2)
             edges[quality] = int(((grey > 10) & (grey < grey.max() - 10)).sum())
         assert edges["close"] > 3 * max(edges["high"], 1)
+        renderer.coverage = False
+        image = _shot(renderer, person, "close", (0.0, 0.0, -1.0), distance=0.3).max(axis=2)
+        assert int(((image > 10) & (image < image.max() - 10)).sum()) == edges["high"]  # (cut out as at high)
     finally:
         renderer.release()

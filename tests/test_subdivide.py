@@ -309,6 +309,37 @@ def test_the_skin_weights_are_the_four_strongest_renormalised(band):
     assert pairs.keys() == {30, 31} and abs(pairs[30] - 0.5) < 1e-6
 
 
+def test_every_new_vertex_follows_its_stencil(band):
+    """A new vertex's UV, normal and skin weights are its coarse triangle's corners' by its barycentric weights (the
+    weights' four strongest, renormalised); on an open edge its place is too."""
+    prim, labels = band
+    n = len(prim.positions)
+    joints = np.stack([np.arange(n) % 5, (np.arange(n) + 1) % 5, np.zeros(n), np.zeros(n)], axis=1).astype(np.int64)
+    weights = np.tile([0.75, 0.25, 0.0, 0.0], (n, 1)).astype(np.float32)
+    weighted = _primitive(prim.positions, prim.uvs, prim.indices, prim.normals, joints, weights)
+    made = sd.subdivide_primitive(weighted, labels, 2)
+    q = made.primitive
+    corners, bary = made.corners, made.bary
+    assert corners.shape == bary.shape == (len(q.positions) - n, 3) and np.allclose(bary.sum(axis=1), 1.0)
+    assert np.allclose(q.uvs[n:], np.einsum("mc,mcd->md", bary, prim.uvs[corners].astype(np.float64)), atol=1e-6)
+    mixed = np.einsum("mc,mcd->md", bary, prim.normals[corners].astype(np.float64))
+    assert np.allclose(q.normals[n:], mixed / np.linalg.norm(mixed, axis=1, keepdims=True), atol=1e-5)
+    dense = np.zeros((len(corners), 5))
+    for c in range(3):
+        for k in range(4):
+            share = bary[:, c] * weights[corners[:, c], k]
+            np.add.at(dense, (np.arange(len(corners)), joints[corners[:, c], k]), share)
+    got = np.zeros_like(dense)
+    np.add.at(got, (np.repeat(np.arange(len(corners)), 4), q.joints[n:].ravel()), q.weights[n:].ravel())
+    top = np.sort(dense, axis=1)[:, ::-1][:, :4]
+    assert np.allclose(np.sort(got, axis=1)[:, ::-1][:, :4], top / top.sum(axis=1, keepdims=True), atol=1e-5)
+    on_open = made.edge >= 0
+    open_edge = np.isin(made.edge, np.flatnonzero(made.rules == sd.LINEAR))
+    assert on_open.sum() > 0 and open_edge.any()
+    flat = np.einsum("mc,mcd->md", bary, prim.positions[corners].astype(np.float64))
+    assert np.abs(q.positions[n:][open_edge] - flat[open_edge]).max() < 1e-6
+
+
 def test_uvs_are_per_triangle_and_a_seam_splits_new_vertices(band):
     prim, labels = band
     made = sd.subdivide_primitive(prim, labels, 1)

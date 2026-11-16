@@ -5,9 +5,11 @@ the camera's picture through an off-axis part of the same frustum, at a higher p
 GPU resources the view already uploaded. That is the virtual high-resolution sensor of :mod:`bifold_demo.sensor`.
 
 **Close-ups** (the ``"close"`` quality, windows' by default; step S4, ``docs/research/closeups_results.md``): a person
-whose face a picture shows large is drawn with a subdivided head (:mod:`bifold_demo.characters.subdivide`), the key
-light wrapped round the head's skin (red furthest, :data:`SKIN_WRAP`), a cornea's sharp highlight on the eyeballs
-(found by their bones in the vertex shader) and the lashes' and hair cards' cut-outs antialiased by alpha to coverage.
+whose face a picture shows large (``Renderer.close_from``, ``subdivide_from``: 64 pixels between the eyes and more) is
+drawn with a subdivided head (:mod:`bifold_demo.characters.subdivide`), the key light wrapped round the head's skin
+(red furthest, :data:`SKIN_WRAP`), a cornea's sharp highlight on the eyeballs (found by their bones in the vertex
+shader) and the lashes' and hair cards' cut-outs antialiased by alpha to coverage; smaller faces are drawn as at the
+high quality.
 
 **Linear light.** Light adds up and pixels average in linear light, while images hold sRGB-encoded colours. So
 textures are sRGB textures (the GPU decodes a colour when it samples it) with mipmaps averaged in linear light
@@ -422,7 +424,9 @@ class Renderer:
     **Close-ups** (step S4; ``docs/research/closeups_results.md``). In a picture of the close quality a person whose
     eyes are at least ``subdivide_from[k]`` pixels apart is drawn with their head subdivided ``k + 1`` times
     (:meth:`~bifold_demo.characters.character.Character.detailed`: 4 and 16 triangles for each; the same skeleton,
-    textures and maps), made in the background when :attr:`detail_wait` is False (the coarse head until it is there).
+    textures and maps), made in the background when :attr:`detail_wait` is False (the coarse head until it is there);
+    one whose eyes are at least :attr:`close_from` pixels apart gets the close-up shading (the module docs). Smaller
+    faces are drawn exactly as at the high quality.
 
     **Detail.** A person whose eyes are at least :attr:`detail_from` pixels apart in the picture being drawn gets
     their head's 2048-pixel ``detail`` textures there (and a texture larger than 1024 that they wear instead of the
@@ -439,8 +443,10 @@ class Renderer:
     quality = "high"  # the shading of the whole view: "high" or "low" (see the class docs)
     window_quality = "close"  # the shading of windows
     subdivide_from = (64.0, 150.0)  # pixels between the eyes from which a close picture subdivides a head once, twice
+    close_from = 64.0  # pixels between the eyes from which a close picture shades a face as a close-up
     skin_wrap = 1.0  # scale of the skin's wrapped light at the close quality (0: Lambert)
     cornea = 1.0  # scale of the corneas' highlight at the close quality (0: none)
+    coverage = True  # lashes and hair cards with alpha to coverage at the close quality (False: cut out as at high)
     specular = 1.0  # scale of the heads' specular lobe (0: none)
     normal_strength = 1.0  # scale of the heads' normal maps' slopes (0: flat)
     detail_from = 64.0  # pixels between the eyes from which a head is drawn with its 2048 textures (inf: never)
@@ -818,8 +824,11 @@ class Renderer:
             later = []  # the parts drawn with their maps
             parts = obj.skinned_model.primitives
             shapes = parts  # the parts' geometry: a subdivided head where the face is large in a close picture
-            if close and picture is not None and self.subdivide_from and hasattr(obj, "detailed"):
+            near = False  # a face seen up close: the close-up shading
+            if close and picture is not None:
                 eye = self._eye_pixels(obj, view_proj, camera_position, picture)
+                near = eye >= float(self.close_from)
+            if close and picture is not None and self.subdivide_from and hasattr(obj, "detailed"):
                 level = sum(eye >= float(threshold) for threshold in self.subdivide_from)
                 finer = obj.detailed(level, self.detail_wait) if level else None
                 if finer is not None and len(finer.primitives) == len(parts):
@@ -839,15 +848,15 @@ class Renderer:
                     if eye is None:
                         eye = 0.0 if picture is None else self._eye_pixels(obj, view_proj, camera_position,
                                                                            picture)
-                    near = eye >= self.detail_from
-                    if near and prepared:
+                    sharp = eye >= self.detail_from
+                    if sharp and prepared:
                         detail = self._details.get(primitive, eye, self.detail_wait, self.detail_heads)
                         if detail is not None:
                             texture = detail[0]
-                    elif near and mapped and _has_maps(primitive) and getattr(primitive.detail, "maps", None) \
+                    elif sharp and mapped and _has_maps(primitive) and getattr(primitive.detail, "maps", None) \
                             is not None:  # a face of its own at 2048: the head's 2048 maps beside it
                         detail = self._details.get(primitive, eye, self.detail_wait, self.detail_heads, maps_only=True)
-                    elif not near and is_large(texture):
+                    elif not sharp and is_large(texture):
                         texture = base_copy(texture)
                 if mapped and _has_maps(shape):
                     maps = own_maps.get(primitive.name) if own_maps else None
@@ -865,7 +874,8 @@ class Renderer:
                     vao.render(triangles)
                     prog["u_hemisphere"].value = uniforms["u_hemisphere"]
                     continue
-                if close and self._samples and any(w in primitive.name.lower() for w in HAIR_CARDS):
+                if near and self.coverage and self._samples and \
+                        any(w in primitive.name.lower() for w in HAIR_CARDS):
                     self._covered(prog, vao)  # lashes and hair cards: antialiased cut-outs
                     continue
                 vao.render(triangles)
@@ -879,13 +889,13 @@ class Renderer:
                                                "u_normal_strength": float(self.normal_strength),
                                                "u_photo_hemisphere": float(PHOTO_HEMISPHERE),
                                                "u_photo_level": float(PHOTO_LEVEL),
-                                               "u_close": bool(close),
                                                "u_wrap": tuple(float(self.skin_wrap) * w for w in SKIN_WRAP),
                                                "u_photo_wrap": float(PHOTO_WRAP),
                                                "u_cornea": float(self.cornea) * CORNEA,
                                                "u_cornea_rough": float(CORNEA_ROUGH)})
             m = self._mapped_uniforms
             m["u_eye_bones"].value = self._eye_bones(obj.skinned_model.skeleton)
+            m["u_close"].value = bool(near)
             m["u_mvp"].write(mvp)
             m["u_model"].write(gl_bytes(model))
             m["u_normal_matrix"].write(gl_bytes(normal_matrix))
@@ -1136,7 +1146,7 @@ class Renderer:
             prog["u_maps"].value = 2
             prog["u_photo"].value = 3
             self._mapped_uniforms = {name: prog[name] for name in ("u_mvp", "u_model", "u_normal_matrix", "u_color",
-                                                                   "u_lit", "u_eye_bones")}
+                                                                   "u_lit", "u_eye_bones", "u_close")}
             self._mapped_program = prog
         return self._mapped_program
 

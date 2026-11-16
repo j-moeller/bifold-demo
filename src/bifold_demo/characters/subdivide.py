@@ -105,7 +105,9 @@ class HeadLabels:
 class Subdivided:
     """A head primitive subdivided (:func:`subdivide_primitive`): the new ``primitive``, its carried ``labels``, the
     coarse triangle each new triangle lies in (``parent``), the coarse mesh's welded ``edges`` (node pairs) with the
-    ``rules`` they were split by (:data:`RULES`), and how long it took."""
+    ``rules`` they were split by (:data:`RULES`), each new vertex's stencil (``corners``: the coarse triangle's
+    vertices it comes from, ``bary``: their barycentric weights, ``edge``: the coarse edge it lies on, or -1 inside a
+    triangle; one row per vertex after the original ones), and how long it took."""
 
     primitive: SkinnedPrimitive
     labels: HeadLabels
@@ -115,6 +117,9 @@ class Subdivided:
     edges: np.ndarray
     rules: np.ndarray
     seconds: float = 0.0
+    corners: np.ndarray = None
+    bary: np.ndarray = None
+    edge: np.ndarray = None
 
     def counts(self) -> dict:
         """How many coarse edges each rule split (by name)."""
@@ -599,8 +604,10 @@ def subdivide_primitive(prim: SkinnedPrimitive, labels: HeadLabels, level: int =
     made = SkinnedPrimitive(prim.name, positions.astype(np.float32), normals.astype(np.float32),
                             uvs.astype(np.float32), indices.astype(np.uint32), joints, weights, prim.texture,
                             tangents, prim.maps, prim.detail)
-    return Subdivided(made, carried, int(level), bool(smooth), parent, edges, rules,
-                      time.perf_counter() - start)
+    edge_of_new = np.full(total - count_v, -1, np.int64)
+    edge_of_new[np.nonzero(is_edge)[0]] = unique_keys[edge_part, 0]
+    return Subdivided(made, carried, int(level), bool(smooth), parent, edges, rules, time.perf_counter() - start,
+                      rv, rb_, edge_of_new)
 
 
 def _untangle(positions, flat, indices, parent, count_v, tie, same=None) -> np.ndarray:

@@ -2453,7 +2453,10 @@ from photos apply to it as they are. Tests and measurements make it at once
 draws the coarse head until it is there. `renderer.memory()["subdivided"]`
 is what the finer heads' buffers take on the GPU.
 
-**Shading up close** (the close quality):
+**Shading up close** (the close quality, for faces at least
+`renderer.close_from` (64) pixels between the eyes; smaller faces in a close
+picture are drawn exactly as at the high quality, bit for bit, so the faces
+the recognition's calibrations measure at 8-44 pixels do not change):
 
 - **skin**: the key light wraps round the heads' skin, red furthest
   (`SKIN_WRAP`: 0.35, 0.18, 0.12; light that goes into skin comes out
