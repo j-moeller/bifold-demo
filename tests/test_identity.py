@@ -452,15 +452,23 @@ def test_calibrations_are_found_per_model_and_a_model_without_one_gets_a_provisi
 @pytest.mark.parametrize("model", ["adaface_ir101_wf12m", "buffalo_l_r50", "sface_2021dec"])
 def test_the_package_ships_a_calibration_for_each_recogniser_made_from_avatars(model):
     """The recognisers of the three profiles (as far as they run here) each have the package's calibration, made from
-    38 avatars (those showing one face counted once), with the cohort it was made with when it normalises."""
+    the Rocketbox avatars that are not in the fair's library (those showing one face counted once, those wearing a
+    fair face left out), with the cohort it was made with when it normalises, and the offsets that make the target a
+    rate per stranger track, checked on other halvings."""
     from bifold_demo.recognition.calibration import PACKAGED
 
     calibration = Calibration.load(PACKAGED / f"{model}.json")
     made = calibration.made
     assert calibration.model == model and not calibration.is_provisional
-    assert len(made["avatars"]) == 38 and made["same_faces"] == {"Security_Male_01": "Male_Adult_03"}
+    assert len(made["avatars"]) >= 80 and made["same_faces"]["Security_Male_01"] == "Male_Adult_03"
+    assert made["left_out"]["Wood_Male_01"] == "Male_Adult_17" and "Wood_Male_01" not in made["avatars"]
     assert made["rendered"]["hemisphere"] == pytest.approx(0.3) and made["rendered"]["quality"] == "high"
     assert made["check"][calibration.normalisation]["0.01"]["fpir"] <= 0.02  # held out: within twice the target
+    track = calibration.track
+    assert len(track["offsets"]) == len(track["targets"]) >= 3 and min(track["offsets"]) >= 0.0
+    assert calibration.track_offset(0.01) == pytest.approx(track["offsets"][track["targets"].index(0.01)])
+    checked = track["checked"]["0.01"]["with"]  # per track, on halvings the offsets were not made on
+    assert checked["interval"][0] <= 0.01 and track["checked"]["0.01"]["without"]["per_track"] >= checked["per_track"]
     cohort = find_cohort(model, Path("/nonexistent"), calibration)
     if calibration.normalisation == "none":
         assert cohort is None and "cohort" not in made
