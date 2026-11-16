@@ -178,7 +178,7 @@ The recognisers' speeds here, per face:
 6. **Head shapes:**
    - the ears keep the avatar's shape;
    - the iris-based size is not validated on real heads;
-   - the head-shape space alone moves little; the outlines and the free-form correction carry much of the gain.
+   - a child standing in for a person on an adult avatar loses a little, the one exception measured.
 
 ## Resuming
 
