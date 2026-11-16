@@ -202,6 +202,28 @@ def _shot(renderer, person, quality, light, size=64, distance=0.4):
     return renderer.render(scene).astype(int)
 
 
+def test_maps_are_uploaded_ahead_for_windows_of_the_close_quality(gl):
+    """With the view at the low quality and windows at close, preparing a person uploads its parts' maps and tangents
+    ahead, as for windows at high, so the frame a close window first draws them has none of it left to do."""
+    from bifold_demo.scene.renderer import Renderer
+
+    def prepared(window_quality):
+        renderer = Renderer(64, 64, samples=0)
+        try:
+            renderer.quality, renderer.window_quality = "low", window_quality
+            person = _ball()
+            calls = 1
+            while not renderer.prepare(person):
+                calls += 1
+                assert calls < 20
+            return calls, renderer._primitives[id(person.skinned_model.primitives[0])][8] is not None
+        finally:
+            renderer.release()
+
+    assert prepared("close") == prepared("high") == (5, True)  # the part, its texture, maps and tangents, pixels
+    assert prepared("low") == (3, False)  # (nothing draws the maps)
+
+
 def test_skin_is_lit_past_where_the_light_grazes_it_up_close(gl):
     """The close quality wraps the key light round a head's skin, red furthest: where the light grazes the ball's
     edge the close picture is lighter and redder; where it falls straight on, the same."""

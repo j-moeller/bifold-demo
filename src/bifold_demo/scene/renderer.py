@@ -1040,7 +1040,7 @@ class Renderer:
     def _prepare_character(self, obj) -> bool:
         t = getattr(obj, "_time", 0.0)
         overrides = getattr(obj, "texture_overrides", None) or {}
-        mapped = "high" in (self.quality, self.window_quality)
+        mapped = bool({"close", "high"} & {self.quality, self.window_quality})  # maps uploaded ahead of use
         for primitive in (*obj.skinned_model.primitives, *getattr(obj, "worn", ())):
             entry = self._primitives.get(id(primitive))
             if entry is None or entry[0]() is not primitive or entry[4] is not primitive.texture:
