@@ -827,8 +827,10 @@ default):
    Only faces worth it are embedded: big enough, turned less than 55 degrees,
    sharp, mostly in the picture. Embeddings cost (on four CPU cores AdaFace
    takes about half a second per face), so the machine's *budget* of
-   embeddings a second is shared out: people not decided yet first, better
-   faces first, decided people re-checked now and then. A person's embeddings
+   embeddings a second is shared out: people not decided yet first (and among
+   them those already started, so that one is finished before the next),
+   better faces first, decided people re-checked now and then (every second
+   when their faces are too small to tell a swap). A person's embeddings
    are averaged, the better faces counting more; consecutive frames are nearly
    the same picture, so the average is scored once, never frame by frame.
 5. **Decide** ([`decision.py`](src/bifold_demo/recognition/decision.py),
@@ -1062,6 +1064,15 @@ profile (SFace), 7 of 8 with the licensed one (the ResNet-50), 1 of 8 with
 the best one (AdaFace). The best profile is held back by this CPU's budget of
 one AdaFace embedding a second (a name needs two faces, and every new track
 shares the budget); with ten a second it named the same people in 0.8 s.
+Those runs used the first calibrations (per decision). With the target per
+stranger track and the new calibrations (one crowd, 5 known people shown):
+the commercial profile names 2 of 5 within 2 s (5 of 5 before: one person,
+whose faces come only through windows at 5-7 pixels between the eyes, is out of
+reach of SFace's stricter thresholds), the best one 1 of 5 within 2 s and 3
+within 5 s (median 3.0 s, 5.0 before: the scheduler finishes one track before
+starting the next, and one big frontal face is enough); still nobody named
+wrongly and no stranger named, and a fifth as many faces of people the
+detector missed went to a neighbour's track.
 
 ### The recognition core: models, profiles, licences
 

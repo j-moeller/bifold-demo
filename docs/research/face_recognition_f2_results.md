@@ -15,11 +15,20 @@ numbers alone are reported.
 
 ## Summary
 
-- **The calibrations ship** (`recognition/calibrations/`), made from renders of 38 avatars that are not in the
-  fair, each with T-norm and its cohort: the held-out check chose T-norm for all three recognisers, which named the
-  most known faces and kept the measured false-alarm rate nearest the asked one (at 1 % asked: 0.66 % for AdaFace,
-  1.7 % for the ResNet-50, 0.32 % for SFace; without normalisation 2.3 %, 3.5 % and 0.9 %). Two avatars that wear
-  one face had to count as one identity.
+- **After the review** (section 9): the target is a false-alarm rate per stranger track. The calibrations ship made
+  again from 87 avatars that are not in the fair and wear none of its faces (about 72 identities), with offsets that
+  keep the share of stranger tracks named at the target with a margin for the uncertainty: at 1 % asked 0.52-0.70 %
+  measured on halvings the offsets were not made on (90 % intervals up to 0.9-1.3 %), 2.5-3.6 % without them. The
+  cost: on LFW's real pairs no stranger pair passes at 1 % but 34-49 % of the pairs of one person fall below the
+  threshold, and in the fair the commercial profile names 2 of 5 known people (5 of 5 before); the best profile names
+  sooner (median 3.0 s instead of 5.0). The paths to a wrong name the review found are closed. The sections below
+  describe the first build (9 November) and keep its numbers, corrected where the review found them overstated.
+- **The first calibrations** (`recognition/calibrations/` then), made from renders of 38 avatars that are not in the
+  fair (one of them wears a fair avatar's face, section 3), each with T-norm and its cohort: the held-out check chose
+  T-norm for all three recognisers, which named the most known faces and kept the measured false-alarm rate nearest
+  the asked one (at 1 % asked: 0.66 % for AdaFace, 1.7 % for the ResNet-50, 0.32 % for SFace over 10 halvings; the
+  review's 60 more: 1.6-1.9 %; without normalisation 2.3 %, 3.5 % and 0.9 %). Two avatars that wear one face had to
+  count as one identity.
 - **On real faces** (LFW's pairs; numbers only) the avatar-made T-norm calibrations roughly hold 1 % per person
   (1.0-1.6 % measured for SFace and the ResNet-50) but let 3-6 times more strangers through at 1 in 1,000, while raw
   thresholds made from avatars are far stricter than asked (no LFW stranger pair reaches AdaFace's): avatars are
@@ -302,25 +311,158 @@ profile's person detector; YOLOX-tiny is registered too but misses most people u
 ## 8. Open
 
 - **Calibrations from avatars on real faces.** Avatars are more alike to each other than real people are (section
-  3): raw thresholds made from them are far stricter on real strangers than asked, and T-norm against a cohort of
-  avatars, which measures a real face against faces unlike it, lets 3-6 times more real strangers through than asked
-  at 1 in 1,000 per person (SFace, the ResNet-50; AdaFace's was not measured). A calibration and cohort made from
-  real faces that may be shipped (licensed photos, consented recordings) would fix both; E1 should measure the rate
-  asked against the one measured on real people.
-- **The best profile's budget on this CPU.** One AdaFace embedding a second cannot name a crowd within 2 s (a name
-  needs two faces); a faster machine (the Mac) or a scheduler that finishes one track's evidence before starting the
-  next (the first people sooner, the last no sooner) would help.
-- **Few identities.** 37 identities make the far tail uncertain: in the held-out check the ResNet-50's measured rate
-  with T-norm was 1.7 times the asked one at 1 % and the halvings ranged from 0 to 7.6 %. More avatars (Rocketbox has
-  115) would narrow it.
-- **AuraFace** (the commercial profile where Hugging Face can be reached) has no calibration yet: it gets provisional
-  thresholds until `bifold-faces calibrate --profiles commercial` runs there.
+  3). The first calibrations (per decision, T-norm) let 3-6 times more real strangers through than asked at 1 in
+  1,000; the new ones (per track, section 9) let no LFW stranger pair through at 1 % but miss 34-49 % of real
+  same-person comparisons there. A calibration made from real faces that may be shipped (licensed photos, consented
+  recordings) would fix both; E1 should measure the rate asked against the one measured on real people.
+- **The target per track costs names.** Lookalike avatars force offsets of 2.2-2.6 decades at 1 %; in the fair the
+  commercial profile names 2 of 5 known people instead of 5. More identities (and real ones) would narrow the
+  intervals and so the margins; a looser margin (or the point estimate instead of the 95 % bound) is a choice E1 can
+  weigh. The offsets stop at 3 decades: at 0.1 % asked AdaFace measured 0.25 % per track, SFace 0.34 %.
+- **The best profile's budget on this CPU.** One AdaFace embedding a second cannot name a crowd within 2 s; finish
+  first and one big frontal face per name (section 9) bring the median to 3.0 s; a faster machine (the Mac), the
+  licensed profile, or a cascade (SFace screening, AdaFace confirming; not tried) would do more.
+- **Few identities.** The first calibrations had 37 identities; the new ones about 72 (Rocketbox reuses faces, and
+  the fair's own and those wearing its faces are left out), and the per-track rates still rest on 5-11 identity pairs
+  at 1 %.
+- **AuraFace** (the commercial profile where Hugging Face can be reached) has no calibration yet: the profile uses
+  SFace until `bifold-faces calibrate --profiles commercial` has made one there (a model without one names nobody).
 - **Returns.** A person out of sight for more than a second comes back under a new track number and is identified
   again from scratch; re-identification by appearance (clothes, the face's evidence) would join the two.
-- **Swaps** when two walkers of the same size cross: the name goes at once (the switch check), and comes back only
-  with new evidence.
+- **Swaps** when two walkers of the same size cross: the name goes at once (the switch check; at small sizes after
+  two faces unlike the name's photos), and comes back only with new evidence.
 - **Windows render on the main thread** (S1): with `W` on, the view slows down on a software renderer.
 - **The Mac** (CoreML) is not measured: the budgets per profile are this CPU's.
 - **Painted faces** (the face cast: real people's photos on avatars) score lower against their photos than renders
   against renders (S2's measurements); a face unlike everyone known and unlike strangers too waits as "not decided
   yet" instead of being called unknown, but how long such faces take to be named was not measured here.
+
+## 9. After the review (15 November)
+
+The independent review found paths to wrong names, a calibration that missed its target in the demo's own setting,
+and gaps for E1. What changed, and what it measured (same sandbox, shared with other work; every time is slower than
+on a quiet machine):
+
+**Paths to a wrong name, closed.**
+- *One name per person*: a track holding a name while its evidence proposes another now claims both, so another
+  track can no longer win the held name meanwhile (the review's case: both tracks "Ada" at 1.0-1.5 s; now never).
+- *A clock that goes back* (R, the webcam and back, a reload): the recognition starts afresh (tracks, names, the
+  budget's clock). The review's three cases: named again 0.5 s after R and after the webcam, and the stranger standing
+  where Ada stood is never shown as "Ada" (it was for 2.9 s).
+- *"Unknown" to a name* needs the name held a second (it took one frame).
+- *No calibration, no names*: a model without a calibration made for it names nobody ("? no calibration"); on
+  avatars the provisional thresholds had named 35-43 % of strangers' decisions. The commercial profile uses AuraFace
+  only once it has a calibration, SFace until then.
+- *Swaps at small sizes* (the switch check's floor is not decisive there: SFace under 14 pixels between the eyes): a
+  named track's faces are checked against the photos of its name; one face unlike them is held out of the evidence,
+  a second within two seconds withdraws the name; with windows such a track also asks for one a second after its last
+  big face (it waited five). The review's case without windows (14 pixels): "Ada" for 0.5 s instead of 5.0 s. On
+  the renders of the 57 avatars the first calibrations were not made from, 8 to 14 pixels, two faces a second:
+  SFace found 81 % of swaps within the 15 faces of a track (median the second face, 90 % by the sixth; 0 % before),
+  the ResNet-50 84 % (68 %); a person's own faces withdrew their name in 12 of 11,016 checks with SFace (all from 3
+  of the 57 people; for two of them a same-face twin was in that calibration's cohort), 0 of 11,400 with the
+  ResNet-50: about once in 15 minutes per person seen only that small, with SFace.
+- *Faces of people the detector missed* go to nobody more often: the head fit's limit is 6 (it was 12).
+
+**The tests catch what they missed.** The review's mutation run left 11 of 50 changes unnoticed; tests now catch 10
+(the Kalman update by hand, weak boxes neither bringing lost tracks back nor confirming new ones, a runner-up 0.7
+decades behind, YOLOX's boxes and scores on the sample photo, a face in a track's window given by where it fits), and
+12 mutations of the fixes themselves. The 11th, the head region's margin, changes nothing any more: with the new
+head-fit limit every face outside the bare region costs more than 10.
+
+**For E1.** The decision log has the target, the per-track offset, the gallery's size, the calibration's digest and
+file, whether the bin may say "unknown" and whether its faces can tell a swap, and per face its head-fit cost;
+`Outcomes` counts wrong names over every known segment (also where the person's face was never shown) and named
+tracks that follow nobody; `face_owner` and `FaceAttribution` say whose face each face given to a track is.
+
+**The calibrations, made again** (`bifold-faces calibrate --refit --profiles best licensed commercial`, 26 minutes
+here once the faces were embedded). From the 95 Rocketbox avatars prepared that are not in the fair's library (the
+38 before and 57 more; rendering their 5,510 new windows took 13 minutes, embedding them 44 s with SFace, about 16
+minutes with the ResNet-50 and about an hour with AdaFace, on this shared CPU): 5 avatars wear a face of the fair's
+library and are left out (Wood_Male_01, Construction_Female_01, Construction_Male_02, Construction_Male_03,
+Gardener_Male_01; the ResNet-50 and SFace found one and two more, left out of theirs), 15 pairs show one face
+(AdaFace decides for all three), leaving about 72 identities; windows of 90 pixels between the eyes give the bin of
+80 pixels and more its own scores; faces the live gate would not embed are left out (22 % of AdaFace's and the
+ResNet-50's, 8 % of SFace's). The held-out check (10 halvings, per decision; in brackets the lowest and highest
+halving) now keeps no normalisation for AdaFace and the ResNet-50, T-norm for SFace:
+
+| Recogniser | Normalisation | 0.1 % asked: measured (halvings) | named | 1 % asked: measured (halvings) | named |
+|---|---|---|---|---|---|
+| AdaFace IR-101 | **none** | 0.40 % (0-2.7 %) | 92.3 % | 1.60 % (0-5.3 %) | 95.4 % |
+| | T-norm | 0.94 % (0-6.6 %) | 72.4 % | 1.69 % (0-8.3 %) | 88.5 % |
+| ResNet-50 | **none** | 0.32 % (0-1.9 %) | 93.1 % | 1.81 % (0-6.4 %) | 96.4 % |
+| | T-norm | 1.32 % (0-5.9 %) | 84.5 % | 2.10 % (0-8.0 %) | 95.4 % |
+| SFace | none | 0.52 % (0-2.1 %) | 76.6 % | 2.27 % (0-6.1 %) | 83.1 % |
+| | **T-norm** | 0.43 % (0-1.7 %) | 62.4 % | 1.59 % (0-4.2 %) | 83.5 % |
+
+With more identities, raw scores are calibrated better and T-norm no longer helps AdaFace and the ResNet-50 (its
+cohort, 16 renders of each calibrating avatar, now holds many helmets, masks and reused faces). Known people named
+as somebody else: none for AdaFace and the ResNet-50 at 0.1 % and 1 %; SFace with T-norm 2 decisions at 0.1 %, 8 at 1 %.
+
+**Per stranger track.** The target is now a rate per stranger track. Strangers' tracks were simulated as live (a
+stranger's faces at one camera and one class of sizes arrive one by one; the running mean is decided after each, with
+the live rules: enough evidence, one big frontal face enough, the margin): the offsets come from 60 halvings (about
+8,300 tracks from 600-760 identity pairs per model) and were checked on 60 other halvings of the same avatars. Rates
+per track, with 90 % intervals from a bootstrap over identity pairs:
+
+| Recogniser | target | offset (decades) | per track, with the offset | without it | per decision, with it |
+|---|---|---|---|---|---|
+| AdaFace IR-101 | 1 % | 2.20 | 0.70 % (0.33-1.15 %) | 3.62 % (1.95-5.46 %) | 0.42 % |
+| | 0.1 % | 3.00 (the most) | 0.25 % (0.08-0.46 %) | 1.74 % | 0.11 % |
+| ResNet-50 | 1 % | 2.54 | 0.52 % (0.18-0.90 %) | 3.01 % (1.62-4.52 %) | 0.27 % |
+| | 0.1 % | 3.00 (the most) | 0.07 % (0.01-0.14 %) | 1.52 % | 0.05 % |
+| SFace | 1 % | 2.60 | 0.61 % (0.08-1.26 %) | 2.48 % (1.25-3.92 %) | 0.40 % |
+| | 0.1 % | 3.00 (the most) | 0.34 % (0.03-0.73 %) | 1.13 % | 0.16 % |
+
+At 10 % asked the measured rates were 7.5-8.2 %, at 3 % 1.5-2.1 %. Without the offsets, at 1 % asked, 2.5-3.6 % of
+stranger tracks were named and 1.6-3.0 % of their decisions: a running mean of many faces is cleaner than the single
+faces and averages of two and three that the curves are made of, so a lookalike stranger's mean scores higher, and
+deciding again after every face adds the rest. The false alarms come from few pairs of avatars that look alike to the
+model
+(at 1 % with the offsets: 5-11 pairs; AdaFace's most frequent, Business_Male_03 and Pilot_Male_01, score 55-59 % of
+their own against each other's photos: different faces, not a reused one). That is why the offsets are large, why
+the intervals are wide, and why at 0.1 % the offsets reach their limit of 3 decades before AdaFace and SFace meet
+it. What they cost known people: AdaFace (20 halvings, its known people's tracks of faces 44 to 90 pixels between
+the eyes) named 98.5 % by their second face and 99.6 % at all at 1 % asked; strangers' tracks of such faces were
+named in 0.67 %.
+
+**On real faces** (LFW, numbers only; 3,000 pairs of strangers and 1,000 of one person, aligned faces of about 35
+pixels between the eyes, each new calibration's thresholds for 10 known people in the bins of 28-40 and 40-56 pixels):
+
+| Recogniser | calibration | target | stranger pairs above the threshold | pairs of one person below it |
+|---|---|---|---|---|
+| SFace (T-norm) | first (per decision) | 1 % | 10 (3.3 % per decision) | 0.9 % |
+| | new (per track) | 1 % | 0 | 34 % / 60 % |
+| | new | 0.1 % | 0 | 63 % / 94 % |
+| ResNet-50 | first (T-norm, per decision) | 1 % | 9 and 4 (3.0 % and 1.3 %) | 0.3 % |
+| | new (none, per track) | 1 % | 0 | 49 % / 46 % |
+| | new | 0.1 % | 0 | 70 % / 60 % |
+
+The offsets, made from lookalike avatars, are far on the safe side for real strangers, and cost real people's single
+comparisons dearly. A stricter target for real faces would cost more without a measured gain, so the webcam and the
+face cast get the scene's 1 % (`REAL_FPIR` in the app). AdaFace's LFW check did not fit in the time (about an hour of
+CPU here); its raw avatar thresholds were already stricter than asked on LFW (section 3). A user's own consented
+photos could check a calibration on the spot, but a few people give tens of stranger pairs, too few to place a
+threshold at 1 in 1,000 or to replace the avatars; so no local calibration from them was added.
+
+**The fair again** (the review's protocol: 30 s, crowd 5, known seed 0, windows; the new calibrations, the target 1 %
+per stranger track; one run per profile, so a handful of people):
+
+| Profile | Named within 2 s | within 5 s | time to name, median | named wrongly | strangers named / called unknown | faces given to someone else's track (embedded) |
+|---|---|---|---|---|---|---|
+| commercial (SFace), before | 5 of 5 | 5 of 5 | 0.8 s | 0 | 0 / 3 of 3 | 58 of 748 (10) |
+| commercial, now | 2 of 5 | 2 of 5 | 0.5 s | 0 | 0 / 3 of 3 | 12 of 753 (3) |
+| best (AdaFace), before | 1 of 5 | 2 of 5 | 5.0 s | 0 | 0 / 3 of 3 | 12 of 772 (1) |
+| best, now | 1 of 5 | 3 of 5 | 3.0 s | 0 | 0 / 3 of 3 | 6 of 764 (1) |
+
+The head fit's tighter limit gives a fifth as many faces of people the detector missed to their neighbours' tracks
+(all 12 left in the commercial run belonged to people no track followed). The commercial profile names the audience
+as before (faster: 0.2 and 0.8 s), but no longer Female_Party_02, whose faces are 5-7 pixels between the eyes in the
+frame and come through windows: SFace's offset of 2.6 decades puts her scores out of reach. That is the price of the
+target per track with its margin on this calibration (on avatars, a stranger's track named in 2.5 % without the
+offset). The best profile, with finish-first scheduling and one big frontal face enough, names its people sooner
+(median 3.0 s instead of 5.0; the review's finish-first experiment alone: 4.0 s), but at one AdaFace embedding a second
+a crowd still cannot be named within 2 s: a name from one big frontal face takes one embedding, so the k-th person
+shown at once can be named after about k seconds instead of 2k. A
+cascade (SFace screening, AdaFace confirming) was not tried: what this CPU allows for the best profile is what is
+measured here; the Mac, or the licensed profile, does more.
