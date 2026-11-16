@@ -21,6 +21,12 @@ event gets the exact bound with the people as the independent units (about 3 ove
 three), not a point. Operating points are counted on the scores (the threshold that lets at most the asked share
 through), never interpolated, and rates the counts cannot resolve (fewer than one impostor allowed) are not reported.
 
+**The metrics are checked** (`tests/test_metrics.py`, `tests/test_evaluate.py`) against exact hand-computed cases and
+against scikit-learn's `roc_curve` (a test skipped where scikit-learn is not installed, since it is no dependency; with
+scikit-learn installed beside the environment it passed, with the rest of the metrics tests); and the tests catch the
+mutations the plan names (a false-accept rate off by one pair, FNIR counted per frame, a bootstrap over frames instead
+of people, a manifest's condition ignored, a stale cache) and 25 more, 30 of 30.
+
 **Who is on which side.** The identities measured are the fair's 20 avatars. The shipped calibrations were made from
 87 other Rocketbox avatars (86 for the ResNet-50's and SFace's), and those wearing a face of the fair's were left out of
 them; no avatar is on both sides (`protocols.sides`, recorded in every manifest). Within the measurements, an identity
@@ -265,29 +271,155 @@ camera, the profile's embedding budget, the calibrated decisions at 1 % per stra
 followed by one track; a face is *shown* while turned less than 45 degrees, its eyes not hidden and at least 3 pixels
 apart in the view.
 
-## P6, LFW: the real-face gap *(measuring)*
+## P6, LFW: the real-face gap
+
+**Verification on F1's subset** (the first 75 mated and 75 non-mated pairs of each of LFW's ten folds: 1,500 pairs,
+aligned faces of about 35 pixels between the eyes; intervals from a bootstrap over the folds, which hold disjoint
+people; F1's numbers again):
+
+| Profile | Accuracy (10-fold) | d' | EER | TAR at FAR 1e-2 |
+|---|---|---|---|---|
+| best (AdaFace) | 99.87 % | 8.2 (7.6-8.9) | 0.3 % (0-0.7) | 99.7 % (99.3-100) |
+| licensed (ResNet-50) | 99.87 % | 7.8 (7.2-8.5) | 0.3 % (0-0.7) | 99.7 % (99.3-100) |
+| commercial (SFace) | 99.47 % | 5.7 (5.4-6.1) | 0.7 % (0.3-1.1) | 99.5 % (98.5-99.9) |
+
+**The shipped calibrations on real pairs**, per comparison (the bin of frontal faces of 28-40 pixels; 750 stranger
+pairs and 750 of one person; as F2 checked SFace and the ResNet-50 on LFW's 3,000 and 1,000 pairs, now with AdaFace):
+
+| Profile | 10 % asked: strangers above | 1 % asked | 0.1 % asked | Pairs of one person below: at 1 % per decision, 10 enrolled | at 1 % per stranger track (with the offset) |
+|---|---|---|---|---|---|
+| best (AdaFace, no normalisation) | 0 of 750 | 0 | 0 | 11.1 % (8.4-13.6) | 54.9 % (52.0-57.6) |
+| licensed (ResNet-50, no normalisation) | 0 of 750 | 0 | 0 | 13.6 % (11.2-16.0) | 50.5 % (48.3-53.1) |
+| commercial (SFace, T-norm) | 59 of 750 (7.9 %) | 7 (0.9 %) | 0 | 3.5 % (1.7-5.5) | 36.1 % (31.7-40.1) |
+
+SFace's T-norm calibration holds on real faces as asked (F2 measured 1.4-1.6 % at 1 % on all 3,000 stranger pairs).
+AdaFace's and the ResNet-50's, made without normalisation from avatars, let no real stranger pair through even at
+10 % asked: avatars are more alike to each other than real people are, so raw thresholds made from them sit far up
+on real faces, and the per-track offset on top misses half the pairs of one person.
+
+**AdaFace with T-norm on LFW** (the question F2 left open): measured here on F1's subset, the pack's AdaFace
+embeddings being made once for this section (40 minutes). The cohort was made as a shipped cohort is made (16 single
+faces of each calibrating avatar, from F2's kept embeddings; for SFace this reproduces the shipped cohort exactly,
+digest 8e9a18fca2d6149b), probe-side T-norm as live:
+
+| Profile | d': raw | with T-norm | EER: raw | with T-norm | TAR at FAR 1e-2: raw | with T-norm |
+|---|---|---|---|---|---|---|
+| best (AdaFace) | 8.2 (7.6-8.9) | 7.0 (6.5-7.6) | 0.3 % (0-0.7) | 0.3 % (0-0.7) | 99.7 % (99.3-100) | 99.7 % (99.3-100) |
+| licensed (ResNet-50) | 7.8 (7.2-8.5) | 6.7 (6.3-7.3) | 0.3 % (0-0.7) | 0.3 % (0-0.7) | 99.7 % (99.3-100) | 99.7 % (99.3-100) |
+| commercial (SFace) | 5.7 (5.4-6.1) | 5.2 (4.9-5.5) | 0.7 % (0.3-1.1) | 0.8 % (0.3-1.2) | 99.5 % (98.5-99.9) | 99.2 % (98.1-99.9) |
+
+T-norm with a cohort of avatars does not separate real faces better for any of the three: d' falls by a tenth to a
+sixth, the EER and the TAR at FAR 1e-2 stay where they were (1,500 pairs cannot resolve 1e-3). So for AdaFace the
+shipped choice (no normalisation, F2's held-out check) stands on real faces too; what T-norm does for SFace is carry
+its calibration over to real faces (above), not separate them. With the pack's embeddings made, the check took about
+a quarter of an hour here (most of it making F2's calibration faces and gallery again for the cohort).
 
 **Real faces per track.** LFW's test pack has no names, but its identical images (a photo used in several pairs) and
 its mated pairs say which photos show one person, and the ResNet-50 joins the rest (two photos scoring at least 0.45,
-which no stranger pair of LFW's 3,000 reaches): F1's 1,500-pair subset then holds people with three photos or more,
-and many with two. Each person's photos stand in for the faces a track gathers: enrolled people (half of those with
-three or more photos, 20 seeded halvings) have their first photo as the gallery and the others as their track;
+which no stranger pair of LFW's 3,000 reaches): F1's 1,500-pair subset then holds 185 people with three photos or
+more and 229 with two. Each person's photos stand in for the faces a track gathers: enrolled people (half of those
+with three or more photos, 20 seeded halvings) have their first photo as the gallery and the others as their track;
 strangers (the other half, and everyone with two photos) have all theirs. A track is decided as live, after each new
 face from the second on, on the running mean, against the target of 1 % per stranger track with the calibration's
 offset (and the other margins'), the runner-up a decade behind. The pack's aligned faces count as 35 pixels between
-the eyes, frontal.
+the eyes, frontal. Over the 20 halvings: 1,840 known people's tracks (185 people) and 6,440 strangers' tracks (414
+people), intervals over people:
 
-## The margin of the per-track offsets *(measuring)*
+| Profile | Margin: offset (decades) | Known tracks named | by a single face | Strangers' tracks named |
+|---|---|---|---|---|
+| best (AdaFace) | bound (shipped): 2.20 | 58.6 % (51.7-66.0) | 18.6 % (12.7-24.3) | 0 of 6,440 (0-0.9 %) |
+| | median: 1.30 | 79.3 % (73.2-85.3) | 40.3 % (33.1-47.2) | 0 |
+| | none: 0 | 95.2 % (91.6-97.9) | 73.0 % (65.7-79.4) | 0 |
+| licensed (ResNet-50) | bound (shipped): 2.54 | 76.0 % (69.7-82.3) | 31.6 % (24.9-38.8) | 0 of 6,440 (0-0.9 %) |
+| | median: 1.60 | 83.4 % (77.6-88.8) | 45.2 % (37.8-52.0) | 0 |
+| | none: 0 | 92.4 % (88.3-96.0) | 65.8 % (57.9-72.5) | 0 |
+| commercial (SFace) | bound (shipped): 2.60 | 71.4 % (64.0-77.9) | 45.2 % (37.5-52.1) | 0 of 6,440 (0-0.9 %) |
+| | median: 1.06 | 91.2 % (86.8-95.3) | 66.7 % (59.2-73.1) | 0 |
+| | none: 0 | 96.9 % (94.0-99.0) | 87.5 % (82.4-92.0) | 0 |
+
+No known person's track was named as somebody else, under any margin (0 of 1,840). The point estimate's offsets
+(1.30, 1.70, 1.22) name within a point of the median's.
+
+**What it means.** On real faces the models are far better than on the faces made from photos of avatars (d' 5.7-8.2,
+EER 0.3-0.7 %), and the shipped calibrations are on the safe side: no real stranger's track was named at all, even
+without the per-track offset, while the offset costs a fifth to a third of the known people's tracks (named 59-76 %
+instead of 92-97 %), and a single face names a person only 19-45 % of the time (the first face of a track). The
+gallery here is a single photo per person and the faces are LFW's (press photos, aligned), so the levels are not the
+Mac's; the direction is, and it is what P4 and P5 check there.
+
+## The margin of the per-track offsets
 
 **What is compared.** The calibration adds an offset to a single decision's accept rarity so that a stranger's
 *track*, decided after every face, is named at the target rate at most. The shipped offsets are the smallest whose
 **upper bound** (the 95th percentile of a bootstrap over identity pairs, on simulated stranger tracks of the 87
 calibration avatars) stays at the target. Read from the same simulated tracks: the bootstrap's **median**, the
 **point** estimate (the tracks' own share), and **no** offset. `margins.py` makes the calibration's faces again from
-what `bifold-faces calibrate` kept (read only) and computes each margin's offsets with the calibration's seeds (the
-bound comes out as shipped), and their false-alarm rate per track on 60 other halvings of those avatars. What each
-costs in names is measured on identities the calibration never saw: the fair's, as tracks made from the stills
-(`margins.simulated_tracks`) and as the scene runs replayed (`evalscene.replayed`).
+what `bifold-faces calibrate` kept (read only) and computes each margin's offsets with the calibration's seeds, and
+their false-alarm rate per track on 60 other halvings of those avatars. What each costs in names, and whether any lets
+strangers through, is measured on identities the calibration never saw: the fair's, as tracks made from the stills
+(`margins.simulated_tracks`) and as the scene runs replayed (`evalscene.replayed`), and LFW's real people (P6).
+
+**The offsets of each margin** at 1 % per stranger track (the bound comes out exactly as shipped for all three), and
+the share of simulated stranger tracks named on 60 other halvings of the calibration's avatars (about 8,300-8,600
+tracks of 600-760 identity pairs per model; 90 % intervals over identity pairs, as F2 reported them):
+
+| Profile | Margin | Offset (decades) | Stranger tracks named, other halvings | Per decision |
+|---|---|---|---|---|
+| best (AdaFace) | bound (shipped) | 2.20 | 0.70 % (0.33-1.15) | 0.42 % |
+| | median = point | 1.30 | 1.39 % (0.68-2.22) | 1.00 % |
+| | none | 0 | 3.62 % (1.95-5.46) | 3.03 % |
+| licensed (ResNet-50) | bound (shipped) | 2.54 | 0.52 % (0.18-0.90) | 0.27 % |
+| | median | 1.60 | 1.04 % (0.48-1.67) | 0.75 % |
+| | point | 1.70 | 0.98 % (0.44-1.60) | 0.69 % |
+| | none | 0 | 3.01 % (1.62-4.52) | 2.70 % |
+| commercial (SFace) | bound (shipped) | 2.60 | 0.61 % (0.08-1.26) | 0.40 % |
+| | median | 1.06 | 1.07 % (0.37-1.93) | 0.71 % |
+| | point | 1.22 | 0.94 % (0.29-1.75) | 0.65 % |
+| | none | 0 | 2.48 % (1.25-3.92) | 1.58 % |
+
+On the avatars they were made from, the median and point offsets give about the target (0.9-1.4 %), the bound about
+half of it, no offset 2.5-3.6 times it. The offsets at the other targets (0.1, 0.03, 0.01, 0.003, 0.001 per track):
+AdaFace bound 0.24, 1.22, 2.2, 3.0, 3.0 and point 0, 0.56, 1.3, 2.36, 3.0 (median 0, 0.52, 1.3, 2.2, 3.0); the
+ResNet-50 bound 0.1, 1.28, 2.54, 3.0, 3.0 and point 0, 0.48, 1.7, 2.98, 3.0 (median 0, 0.46, 1.6, 2.94, 3.0); SFace
+bound 0.12, 1.06, 2.6, 3.0, 3.0 and point 0, 0.3, 1.22, 2.56, 3.0 (median 0, 0.24, 1.06, 2.42, 3.0).
+
+**On identities the calibration never saw** (known people's tracks named / strangers' tracks named):
+
+| Profile | Margin | Fair, stills as tracks: fitted head (20 people) | own face | LFW, real faces (185 known, 414 strangers) | Strangers named (fair; LFW) |
+|---|---|---|---|---|---|
+| best (AdaFace) | bound (shipped) | 2 % (0-5) | 100 % | 58.6 % (51.7-66.0) | 0 of 200 (0-6.3 %); 0 of 6,440 (0-0.9 %) |
+| | median = point | 35 % (12-56) | 100 % | 79.3 % (73.2-85.3) | 0; 0 |
+| | none | 62 % (39-83) | 100 % | 95.2 % (91.6-97.9) | 0; 0 |
+| licensed (ResNet-50) | bound (shipped) | 28 % (8-48) | 100 % | 76.0 % (69.7-82.3) | 0 of 200 (0-5.8 %); 0 of 6,440 (0-0.9 %) |
+| | median / point | 39 % (16-60) / 39 % | 100 % | 83.4 % (77.6-88.8) / 82.9 % | 0; 0 |
+| | none | 70 % (50-88) | 100 % | 92.4 % (88.3-96.0) | 0; 0 |
+| commercial (SFace) | bound (shipped) | 0 % (0-17) | 43 % (23-62) | 71.4 % (64.0-77.9) | 0 of 200 (0-5.6 %); 0 of 6,440 (0-0.9 %) |
+| | median / point | 14 % (2-31) / 12 % | 94 % / 90 % | 91.2 % (86.8-95.3) / 90.6 % | 0; 0 |
+| | none | 78 % (60-92) | 100 % | 96.9 % (94.0-99.0) | 0; 0 |
+
+The fair's tracks: each identity's faces of one kind seen in all of P2's sweeps through the ideal camera (sizes 8-100
+pixels, turns, nods, lights, occluders), in a random order, decided after each face as live, 20 halvings (200 known
+and 200 stranger tracks per margin; the per-camera size sweeps give the same picture). No known person's track was
+named as somebody else under any margin, on the fair's identities or on LFW's.
+
+**P3's scene runs replayed per margin** *(measuring: the commercial profile so far)*: with the shipped bound no known
+person was named (0 of 25 tracks whose face was shown a second, 12 people); the median's offset names 24 % of them
+(4 % within 2 s), the point estimate's 20 % (4 %), no offset 88 % (44 % within 2 s, 24-64 %); no stranger's track was
+named under any margin (0 of 25, 15 people) and no known person was named wrongly.
+
+**Recommendation: make the point estimate the default margin.** Its offsets keep a stranger's track at the target on
+the very avatars the calibration was made from (0.9-1.4 % per track at 1 % asked, within the acceptance test's factor
+of 2; the bound gives 0.5-0.7 %), and on every held-out set here (the fair's avatars, LFW's real people, the scene
+runs) they let no stranger's track through, exactly as the bound does, while naming far more of the known people: on
+real faces 79-91 % of the known tracks instead of 59-76 % (with no offset 92-97 %), on the fair's faces made from
+photos 12-39 % instead of 0-28 %. The bound buys a factor of 2 against lookalike pairs like the calibration avatars'
+(helmets, masks, reused faces), a protection no held-out identity needed here; no offset at all is too loose for such
+pairs (2.5-3.6 % per track). The bootstrap's median names about as many (within a few points). A wrong name is the
+worst outcome: none was measured under any margin, but with 20 held-out avatars and 414 real strangers the strangers'
+upper bounds are 0.9-6 %, so the claim that the looser margin keeps 1 % rests on the calibration avatars' own
+halvings, where it measured the target. Shipping it changes F2's calibrations (their `track` offsets, listed above per
+target), so it is proposed here, not made: `bifold-faces calibrate` would take the margin as an option, and its
+per-track check would then show about the target instead of half of it.
 
 ## The acceptance test *(measuring)*
 
@@ -298,7 +430,10 @@ On this sandbox (four x86 cores shared with another builder; CPU only, ONNX Runt
 - **embedding** P2's faces in batches of 16: SFace 2,698 in 21 s (8 ms a face), the ResNet-50 2,695 in 278 s (0.10 s),
   AdaFace 2,695 in about 2,100 s (0.8 s, with another builder's job running);
 - **rendering** P2's 2,700 probes with their 40 faces made from set A: 2,881 s (1.07 s a still);
-- **scoring** P2 with 1,000 bootstrap draws per measure and condition: 3 to 4 minutes per profile.
+- **scoring** P2 from the caches with 1,000 bootstrap draws per measure and condition: 69 s for the three profiles;
+  LFW's subset with the real-face tracks and every margin, 14 s;
+- **embedding** LFW's 3,000 aligned faces (in batches of 32, under load): AdaFace about 39 minutes (0.8 s a face),
+  the ResNet-50 9 (0.18 s), SFace 44 s (15 ms).
 
 ## Real people on the Mac (P4, P5)
 
