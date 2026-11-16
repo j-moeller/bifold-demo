@@ -44,6 +44,7 @@ set A.
 from __future__ import annotations
 
 import json
+import random
 from pathlib import Path
 
 from .evaluate import FORMAT
@@ -65,7 +66,7 @@ LADDER_VIEW_IED = (10.0, 14.0, 20.0)  # pixels between the eyes in the 720p view
 LADDER_YAWS = (0.0, 30.0)
 SENSOR_SCALE = 6.0  # the 8K sensor against the 720p view
 
-__all__ = ["bodies", "fair_identities", "ladder", "lfw", "p2", "photos", "sides"]
+__all__ = ["bodies", "fair_identities", "gallery_items", "halves", "ladder", "lfw", "p2", "p3", "photos", "sides"]
 
 
 def fair_identities(library=None) -> list[str]:
@@ -116,8 +117,12 @@ def _still(item_id, role, identity, conditions) -> dict:
             "conditions": conditions}
 
 
-def _gallery(identities) -> list[dict]:
+def gallery_items(identities) -> list[dict]:
+    """Set B of ``identities``: the gallery's items (see the module docs)."""
     return [_still(f"g|{n}|{y:+.0f}", "gallery", n, {**GALLERY, "yaw": y}) for n in identities for y in GALLERY_YAWS]
+
+
+_gallery = gallery_items
 
 
 def _variant(name, identity, body) -> dict:
@@ -223,6 +228,58 @@ def ladder(identities, variants=("own", "renders")) -> dict:
             "description": "Baselines and ablations at matched distance and pose (protocols.ladder)",
             "sides": {**sides(identities), "bodies": wearers},
             "settings": {"splits": 20, "seed": 0, "breakdowns": breakdowns}, "items": items}
+
+
+def halves(identities) -> tuple[list[str], list[str]]:
+    """Two complementary halves of ``identities`` to enrol in turn, such that no enrolled identity's carrier
+    (:func:`bodies`) is enrolled with it: along each cycle of carriers every other identity (a carrier's head and
+    hair show through the face it wears, so it must not be a known person of the same run). Identities that cannot
+    be placed so (an odd cycle) are strangers in both."""
+    wearers = bodies(identities)
+    first, seen = [], set()
+    for start in sorted(identities):
+        if start in seen:
+            continue
+        cycle, name = [], start
+        while name not in seen:
+            seen.add(name)
+            cycle.append(name)
+            name = wearers[name]
+        first += cycle[0:len(cycle) - len(cycle) % 2:2]
+    second = [n for n in sorted(identities) if n not in first]
+    second = [n for n in second if wearers[n] not in second]
+    return sorted(first), sorted(second)
+
+
+def p3(identities, runs: int = 4, seconds: float = 60.0, fps: float = 5.0, lanes: int = 8, crossers: int = 4,
+       fpir: float = 0.01, detector: str = "profile", windows: bool = True, preset: str = "ideal") -> dict:
+    """P3, rendered video (``evalscene``): ``runs`` parades, enrolling the two :func:`halves` in turn; in each, half
+    the ``lanes`` known people (their faces from set A on the fitted head, worn by their carriers) and half strangers
+    (avatars with their own faces), and ``crossers`` strangers walking across; seeded."""
+    identities = sorted(identities)
+    wearers = bodies(identities)
+    a, b = halves(identities)
+    items = []
+    for r in range(runs):
+        known = a if r % 2 == 0 else b
+        strangers = [n for n in identities if n not in known]
+        rng = random.Random(f"p3 {r}")
+        lane_known = rng.sample(known, min(len(known), lanes // 2))
+        lane_strangers = rng.sample(strangers, min(len(strangers), lanes - len(lane_known)))
+        rest = [n for n in strangers if n not in lane_strangers]
+        walking = rng.sample(rest, min(len(rest), crossers))
+        people = [{"identity": n, "body": wearers[n], "face": "renders", "head": "fitted", "role": "lane"}
+                  for n in lane_known]
+        people += [{"identity": n, "body": n, "face": "own", "head": "own", "role": "lane"} for n in lane_strangers]
+        rng.shuffle(people)
+        people += [{"identity": n, "body": n, "face": "own", "head": "own", "role": "crosser"} for n in walking]
+        items.append({"id": f"p3-{r + 1}", "kind": "scene", "scene": "parade", "seconds": float(seconds),
+                      "fps": float(fps), "seed": r + 1, "people": people, "known": known, "windows": windows,
+                      "preset": preset, "detector": detector, "fpir": fpir})
+    return {"format": FORMAT, "name": f"p3-{runs}x{seconds:g}s", "protocol": "P3",
+            "description": "Rendered video: parades of known people (faces from set A, fitted) and strangers through "
+                           "the whole pipeline (protocols.p3, evalscene)",
+            "sides": {**sides(identities), "bodies": wearers, "halves": [a, b]}, "items": items}
 
 
 def _distance(view_ied: float) -> float:

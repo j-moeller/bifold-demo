@@ -142,6 +142,34 @@ def test_a_tiny_p2_end_to_end(world):
     assert measured() == first  # (deterministic: the same numbers from the caches)
 
 
+def test_a_tiny_p3_end_to_end(world):
+    """A short parade (one known person, enrolled from set B, and one stranger, both with their own faces; people
+    found from the truth) through the whole pipeline, twice: the same tracks, decisions and scores."""
+    from bifold_demo.recognition import evalscene
+    from bifold_demo.recognition import evaluate as E
+
+    renderer, engine, out = world
+    raw = {"format": 1, "name": "p3-tiny", "items": [{
+        "id": "run", "kind": "scene", "scene": "parade", "seconds": 4.0, "fps": 5.0, "seed": 3,
+        "known": ["Male_Adult_05"], "detector": "truth",
+        "people": [{"identity": "Male_Adult_05", "role": "lane"}, {"identity": "Male_Adult_12", "role": "lane"}]}]}
+    manifest = E.parse(raw, ".")
+    run = E.Run({"commercial": engine}, out, library=str(CHARACTERS), renderer=lambda: renderer, progress=None,
+                draws=50)
+    first = evalscene.run_scenes(run, manifest)["commercial"]
+    again = evalscene.run_scenes(run, manifest)["commercial"]
+    a, b = first["runs"][0], again["runs"][0]
+    assert a["frames"] == 20 and a["known"] == ["Male_Adult_05"]
+    assert a["segments"] == b["segments"] and a["timeline"] == b["timeline"]
+    people = {g["person"]: g for g in a["segments"]}
+    assert people and all(g["avatar"] in ("Male_Adult_05", "Male_Adult_12") for g in a["segments"])
+    assert not any(g["wrong"] for g in a["segments"])  # (no wrong name)
+    assert all(g["named_at"] is None for g in a["segments"] if not g["known"])  # (no stranger named)
+    score = first["score"]
+    assert score["runs"] == 1 and score["acceptance"]["verdict"] in ("pass", "fail")
+    assert score["replay_agrees"]["agree"] == score["replay_agrees"]["segments"]
+
+
 def test_a_face_made_from_renders_of_another_avatar(world):
     """Male_Adult_05's face (textures made from a render of him) on Male_Adult_12: it is still Male_Adult_05 to the
     recogniser, more than it is Male_Adult_12."""

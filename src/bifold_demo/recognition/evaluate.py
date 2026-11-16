@@ -177,7 +177,7 @@ RENDER: dict[str, Condition] = {
     "seed": Condition(int, 0, low=0, high=2 ** 31 - 1, help="the camera model's noise"),
 }
 SCENE_KEYS = {"scene": str, "seconds": float, "fps": float, "seed": int, "people": list, "known": list,
-              "windows": bool, "preset": str, "detector": str, "rate": float}
+              "windows": bool, "preset": str, "detector": str, "rate": float, "fpir": float}
 
 
 # -- manifests ---------------------------------------------------------------------------------------------------------
@@ -1120,9 +1120,18 @@ def summary_lines(results: dict) -> list[str]:
             tars = ", ".join(f"TAR@{f} {_pct(t['tar'], t.get('interval'))}" for f, t in r["tar_at_far"].items())
             lines.append(f"  {pack} {profile} ({r['model']}): {r['pairs']} pairs, accuracy "
                          f"{r['accuracy']['accuracy']:.2f} %, d' {r['d_prime']:.2f}, EER {_pct(r['eer'])}, {tars}")
-    for scene, r in (results.get("scenes") or {}).items():
-        for line in r.get("lines", []):
-            lines.append(f"  {scene}: {line}")
+    for profile, r in (results.get("scenes") or {}).items():
+        score = r.get("score")
+        if not score:
+            continue
+        s, acc = score["summary"], score["acceptance"]
+        within = s["known"]["named_within"].get("2") or {}
+        fpir = s["strangers"]["fpir"]
+        lines.append(f"  {profile}: {score['runs']} runs, {s['segments']} tracks of {s['people']} people; known named "
+                     f"within 2 s {_pct(within.get('rate'), within.get('interval'))} of {s['known']['eligible']}, "
+                     f"strangers named {_pct(fpir.get('rate'), fpir.get('interval'))} of {s['strangers']['eligible']},"
+                     f" wrong names {s['wrong_names']}; acceptance: {acc['verdict']}"
+                     + (" (confident)" if acc["confident"] else " (not with confidence)"))
     return lines
 
 
@@ -1241,7 +1250,8 @@ class Run:
                     record.update({f"truth_{k}": float(truth.get(k, math.nan)) for k in ("yaw", "pitch", "ied")})
                     stores[dkey].put(key, record)
             if (n + 1) % 50 == 0:
-                self.progress(f"[eval] {n + 1}/{len(todo)} stills ({time.perf_counter() - started:.0f} s)")
+                self.progress(f"[eval] {n + 1}/{len(todo)} stills ({time.perf_counter() - started:.0f} s, peak "
+                              f"memory {metrics.peak_memory_mb():.0f} MB)")
         for store in stores.values():
             store.save()
         return {dkey: {i.id: stores[dkey].get(self.key(manifest, i)) for i in items} for dkey in detectors}
@@ -1330,8 +1340,9 @@ class Run:
 
     # -- a manifest ----------------------------------------------------------------------------------------------------
 
-    def stills(self, manifest: Manifest, count: int | None = None, conditions: bool = True) -> dict:
-        """Every profile's measures on ``manifest``'s stills (see the module docs): ``{profile: report}``."""
+    def stills(self, manifest: Manifest, count: int | None = None, conditions: bool = True, done=None) -> dict:
+        """Every profile's measures on ``manifest``'s stills (see the module docs): ``{profile: report}``; ``done``:
+        called with the reports so far after each profile (a long run's results appear as they come)."""
         probes = manifest.stills("probe")
         if not probes:
             return {}
@@ -1352,6 +1363,8 @@ class Run:
             out[profile] = report
             self.progress(f"[eval] {manifest.name}: {profile} ({engine.model_id}) scored in "
                           f"{time.perf_counter() - started:.0f} s")
+            if done is not None:
+                done(dict(out))
         return out
 
     def packs(self, manifest: Manifest) -> dict:

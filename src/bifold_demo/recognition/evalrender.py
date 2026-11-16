@@ -74,26 +74,17 @@ def occluders(kind: str, eyes: np.ndarray, camera_position) -> list:
     raise ValueError(f"unknown occluder {kind!r}")
 
 
-class StillRenderer:
-    """Draws the evaluation's rendered stills (see the module docs). ``library``: the avatars' folder (default:
-    ``$BIFOLD_CHARACTERS``); ``cache``: where the faces made from renders are kept (default: the head textures'
-    cache). Not thread safe; one OpenGL context per renderer."""
+class FaceMaker:
+    """The people of the evaluation (see the module docs): avatars loaded (the last :data:`MODELS_KEPT`), and faces
+    made from set A, on the carrier's own or the fitted head (the last :data:`FACES_KEPT` in memory, all of them on
+    disk in ``cache``). ``library``: the avatars' folder (default: ``$BIFOLD_CHARACTERS``). Needs OpenGL for set A."""
 
     def __init__(self, library=None, cache=None, progress=print):
         from ..characters.library import CharacterLibrary
-        from ..scene.renderer import Renderer
-        from ..scenes import fair
-        from ..sensor.geometry import Sensor
 
         self.library = CharacterLibrary(library) if library else CharacterLibrary()
         self.cache = cache
         self.progress = progress or (lambda *_: None)
-        self.scene = fair.build_scene(people=[])  # the hall, its light and haze, nobody in it
-        s = self.scene
-        self._fair_light = (tuple(s.light_direction), float(s.ambient), tuple(s.light_color), float(s.hemisphere))
-        self.renderer = Renderer(*VIEW)
-        self.renderer.detail_wait = True  # (the 2048 heads read before the frame: deterministic)
-        self.sensor = Sensor.scaled(6, VIEW)
         self._models: OrderedDict = OrderedDict()
         self._faces: OrderedDict = OrderedDict()
         self._photo_tools = None
@@ -102,9 +93,6 @@ class StillRenderer:
         for tool in self._photo_tools or ():
             tool.close()
         self._photo_tools = None
-        self.renderer.release()
-
-    # -- people ----------------------------------------------------------------------------------------------------
 
     def model(self, name: str):
         """The avatar ``name``, loaded (the last :data:`MODELS_KEPT` stay loaded: the stills come ordered by body)."""
@@ -170,6 +158,28 @@ class StillRenderer:
             self._faces.popitem(last=False)
             _collect()
         return model, textures
+
+
+class StillRenderer(FaceMaker):
+    """Draws the evaluation's rendered stills (see the module docs), with its people (:class:`FaceMaker`). Not thread
+    safe; one OpenGL context per renderer."""
+
+    def __init__(self, library=None, cache=None, progress=print):
+        from ..scene.renderer import Renderer
+        from ..scenes import fair
+        from ..sensor.geometry import Sensor
+
+        super().__init__(library, cache, progress)
+        self.scene = fair.build_scene(people=[])  # the hall, its light and haze, nobody in it
+        s = self.scene
+        self._fair_light = (tuple(s.light_direction), float(s.ambient), tuple(s.light_color), float(s.hemisphere))
+        self.renderer = Renderer(*VIEW)
+        self.renderer.detail_wait = True  # (the 2048 heads read before the frame: deterministic)
+        self.sensor = Sensor.scaled(6, VIEW)
+
+    def close(self) -> None:
+        super().close()
+        self.renderer.release()
 
     # -- a still ---------------------------------------------------------------------------------------------------
 

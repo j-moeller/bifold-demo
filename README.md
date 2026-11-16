@@ -1385,6 +1385,38 @@ manifests record both lists).
 - **The ladder B0-B5**, one change at a time at matched distance and pose:
   the 720p view with the old shading; the sensor's windows; the camera
   presets; 2048 textures; linear light and the maps; the fitted head.
+- **P3, rendered video.** Scripted parades in the fair's hall
+  (`recognition/evalscene.py`): people walk up towards the camera, watch it
+  a while and walk back, with others crossing in front of them. Known people
+  wear faces made from set A on fitted heads, as in P2; strangers are avatars
+  with their own faces, and no carrier is enrolled in its own run. Each run
+  goes through the whole pipeline of the demo's `N` (person tracks, windows,
+  the budget, the calibrated decisions) and is scored per track against the
+  scene's truth: known people named within 2 and 5 seconds of their face
+  being shown, the time to the first name, wrong names per track and per
+  hour, strangers named, name switches, one name on two tracks.
+
+```bash
+bifold-faces eval --build p3 --runs 4 --seconds 60
+bifold-faces eval eval/manifests/p3-4x60s.json --profiles commercial
+bifold-faces eval eval/manifests/p3-4x60s.json --profiles best --embed-rate 10 --yolo yolo26n.pt
+bifold-faces eval eval/manifests/p3-4x60s.json --profiles best --acceptance   # exit status 1 when it fails
+```
+
+**The acceptance test** (`--acceptance`, from the research): at least 95 %
+of enrolled people's tracks whose face was shown for a second, turned less
+than 45 degrees, are named correctly within 2 seconds, at a false-alarm rate
+of 1 % per stranger track, achieved within a factor of 2, with no name on two
+tracks at once. The verdict says whether the measured shares meet it and
+whether their intervals do too: a few dozen people cannot show 95 % or 1 %
+with confidence, and the output says how many were counted.
+
+`--embed-rate` sets the embeddings a second, to see what a faster machine
+would do; the scene's time is fixed-step, so a run on this CPU is slower than
+real time but decides as a machine with that budget would. Each segment's
+decisions are kept, and replayed with other margins of the calibration's
+per-track offsets (`recognition/margins.py`: the 95 % bound that ships, the
+bootstrap's median, the point estimate).
 
 ## The virtual high-resolution sensor
 

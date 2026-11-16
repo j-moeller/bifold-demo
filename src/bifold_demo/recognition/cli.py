@@ -14,8 +14,11 @@
     bifold-faces eval MANIFEST ... [--profiles P ...] [--out DIR]
                                                measure the recognition on manifests of photos, renders and test
                                                packs (metrics as JSON, curves as images: see .evaluate)
-    bifold-faces eval --build p2|ladder|lfw|photos [--pack lfw.bin] [--photos DIR]
+    bifold-faces eval --build p2|ladder|p3|lfw|photos [--pack lfw.bin] [--photos DIR]
                                                write a protocol's manifest (.protocols)
+    bifold-faces eval P3.json --profiles best [--embed-rate R] --acceptance
+                                               scene runs scored per track, judged by the acceptance test (exit 1
+                                               when it fails; .evalscene)
     bifold-faces landmarks [AVATAR ...]        MediaPipe's face landmarks on avatars' heads (head textures, stage 0)
     bifold-faces register PHOTO[:VIEW] ... --avatar NAME [--out DIR] [--segment]
                                                register photos of a head to an avatar's head (stage 1)
@@ -411,6 +414,10 @@ def cmd_eval(args) -> int:
             if not args.pack:
                 raise ValueError("--build lfw needs --pack lfw.bin")
             raw = protocols.lfw(args.pack, None if args.all_pairs else (75, 75))
+        elif args.build == "p3":
+            names = args.identities or protocols.fair_identities(args.characters)
+            raw = protocols.p3(names, runs=args.runs, seconds=args.seconds,
+                               detector="truth" if args.truth_people else "profile")
         else:
             if not args.photos:
                 raise ValueError("--build photos needs --photos DIR (laid out as the README says)")
@@ -448,12 +455,28 @@ def cmd_eval(args) -> int:
                        "settings": {"draws": args.draws, "seed": args.seed, "splits": args.splits,
                                     "level": evaluate.metrics.LEVEL}}
             if manifest.stills("probe"):
-                results["stills"] = run.stills(manifest, args.splits, conditions=not args.no_conditions)
+                def done(so_far, results=results, name=manifest.name):  # (each profile's results as they come)
+                    evaluate.write_json(out / name / "results.json", {**results, "stills": so_far})
+
+                results["stills"] = run.stills(manifest, args.splits, conditions=not args.no_conditions, done=done)
             if manifest.of_kind("pack"):
                 results["packs"] = run.packs(manifest)
             if manifest.of_kind("scene"):
-                raise ValueError(f"{manifest.name}: scene runs are not measured by this version")
-            path = evaluate.write_json(out / manifest.name / "results.json", results)
+                from . import evalscene
+
+                name = manifest.name if args.embed_rate is None else f"{manifest.name}@{args.embed_rate:g}"
+
+                def ran(so_far, results=results, name=name):  # (each run's results as they come)
+                    evaluate.write_json(out / name / "results.json", {**results, "scenes": so_far})
+
+                results["scenes"] = evalscene.run_scenes(run, manifest, args.embed_rate, args.yolo, done=ran)
+                if args.acceptance:
+                    for scored in results["scenes"].values():
+                        verdict = scored["score"]["acceptance"]
+                        status = max(status, 0 if verdict["verdict"] == "pass" else 1)
+                path = evaluate.write_json(out / name / "results.json", results)
+            else:
+                path = evaluate.write_json(out / manifest.name / "results.json", results)
             for line in evaluate.summary_lines(results):
                 print(line)
             if not args.no_plots:
@@ -566,7 +589,7 @@ def main(argv=None) -> int:
                             help="the profiles to measure (default: all three)")
     evaluation.add_argument("--out", default="eval", metavar="DIR",
                             help="where results, curves and caches go (default: eval, git-ignored)")
-    evaluation.add_argument("--build", choices=("p2", "ladder", "lfw", "photos"), default=None,
+    evaluation.add_argument("--build", choices=("p2", "ladder", "p3", "lfw", "photos"), default=None,
                             help="write a protocol's manifest first (into DIR/manifests, or --manifest-out)")
     evaluation.add_argument("--manifest-out", default=None, metavar="FILE", help="where --build writes")
     evaluation.add_argument("--size", choices=("full", "small", "tiny"), default="full",
@@ -578,6 +601,16 @@ def main(argv=None) -> int:
     evaluation.add_argument("--pack", default=None, metavar="FILE", help="lfw.bin for --build lfw")
     evaluation.add_argument("--all-pairs", action="store_true", help="--build lfw: every pair, not F1's subset")
     evaluation.add_argument("--photos", default=None, metavar="DIR", help="a folder of photos for --build photos")
+    evaluation.add_argument("--runs", type=int, default=4, help="--build p3: scene runs (default 4)")
+    evaluation.add_argument("--seconds", type=float, default=60.0, help="--build p3: seconds per run (default 60)")
+    evaluation.add_argument("--truth-people", action="store_true",
+                            help="--build p3: people found from the scene's truth, not the profile's person detector")
+    evaluation.add_argument("--embed-rate", type=float, default=None, metavar="R",
+                            help="scene runs: embeddings a second (default: the profile's; a faster machine's, say)")
+    evaluation.add_argument("--yolo", default=None, metavar="FILE",
+                            help="scene runs: YOLO26n's weights for the best and licensed profiles")
+    evaluation.add_argument("--acceptance", action="store_true",
+                            help="judge the scene runs by the acceptance test (exit 1 when a profile fails it)")
     evaluation.add_argument("--splits", type=int, default=None,
                             help="splits of the identities into enrolled and strangers (default: the manifest's)")
     evaluation.add_argument("--draws", type=int, default=1000, help="bootstrap draws (default 1000)")

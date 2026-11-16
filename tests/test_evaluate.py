@@ -443,6 +443,80 @@ def test_the_protocols_manifests_parse(tmp_path):
     assert b0.conditions["view"] == "frame" and not b0.conditions["linear"] and b0.conditions["detail"] == 1024
 
 
+def test_halves_never_enrol_a_carrier_with_the_face_it_wears():
+    fair = ["Business_Female_01", "Business_Female_02", "Business_Male_02", "Business_Male_05", "Business_Male_07",
+            "Female_Adult_01", "Female_Adult_04", "Female_Adult_06", "Female_Adult_09", "Female_Adult_13",
+            "Female_Child_01", "Female_Party_02", "Male_Adult_04", "Male_Adult_05", "Male_Adult_10", "Male_Adult_12",
+            "Male_Adult_14", "Male_Adult_17", "Male_Adult_21", "Male_Child_02"]
+    wearers = protocols.bodies(fair)
+    a, b = protocols.halves(fair)
+    assert len(a) == len(b) == 10 and not set(a) & set(b)
+    for half in (a, b):
+        assert not any(wearers[n] in half for n in half)
+    odd = protocols.halves(["Male_Adult_04", "Male_Adult_05", "Male_Adult_10"])  # a cycle of three: one left out
+    for half in odd:
+        assert not any(protocols.bodies(["Male_Adult_04", "Male_Adult_05", "Male_Adult_10"])[n] in half for n in half)
+
+
+def test_the_p3_manifest(tmp_path):
+    raw = protocols.p3(NAMES + ["Female_Adult_09", "Male_Adult_17"], runs=2, seconds=10)
+    manifest = E.parse(raw, tmp_path)
+    runs = manifest.of_kind("scene")
+    assert len(runs) == 2 and runs[0].extra["known"] != runs[1].extra["known"]
+    for run in runs:
+        known = set(run.extra["known"])
+        lanes = [p for p in run.extra["people"] if p["role"] == "lane"]
+        assert lanes and all((p["identity"] in known) == (p["face"] == "renders") for p in lanes)
+        assert all(p["body"] not in known for p in run.extra["people"] if p["face"] == "renders")
+        assert all(p["identity"] not in known for p in run.extra["people"] if p["role"] == "crosser")
+    with pytest.raises(E.ManifestError, match="needs fps"):
+        E.parse({"format": 1, "items": [{"id": "s", "kind": "scene", "scene": "parade", "seconds": 5,
+                                         "people": []}]}, tmp_path)
+
+
+def test_a_replay_with_its_own_margin_and_looser_ones():
+    from bifold_demo.recognition import evalscene
+
+    rows = [[0.0, False, "Ada", None, None, None, 0.0, "undecided", None, 2.0],
+            [0.2, True, "Ada", 3.1, 1.0, 4.0, 1.0, "undecided", None, 9.0],
+            [0.4, True, "Ada", 3.6, 1.0, 4.0, 1.0, "undecided", None, 9.0],
+            [0.6, True, "Ada", 4.2, 3.5, 4.0, 1.0, "undecided", None, 9.0],  # (the runner-up too close)
+            [0.8, True, "Ada", 4.5, 1.0, 4.0, 1.0, "named", "Ada", 9.0]]
+    assert evalscene.replay(rows, 0.0)["named_at"] == 0.8
+    assert evalscene.replay(rows, -0.5)["named_at"] == 0.4
+    assert evalscene.replay(rows, -1.0)["named_at"] == 0.2
+    assert evalscene.replay(rows, 1.0)["named_at"] is None
+    got = evalscene.replay(rows, 0.0)
+    assert got["first_shown"] == 0.2 and got["shown"] == pytest.approx(0.6)
+
+
+def test_the_margins_offsets():
+    """Simulated stranger tracks whose best rarities pass a single decision's threshold for a few pairs: no offset
+    lets them through; the point estimate's offset keeps their share at the target; the bootstrap's median about
+    there; the 95 % bound further (the few pairs make the share uncertain)."""
+    from bifold_demo.recognition import calibrate as cal
+    from bifold_demo.recognition import margins
+    from bifold_demo.recognition.calibration import per_person
+
+    rng = np.random.default_rng(5)
+    n_pairs, per_pair = 60, 20
+    accept = -np.log10(per_person(0.01, 10))
+    lookalike = np.repeat(np.arange(n_pairs) < 6, per_pair)  # six pairs of lookalikes make the false alarms
+    best = accept + np.where(lookalike, rng.uniform(-0.2, 1.5, n_pairs * per_pair), rng.uniform(-4, -1, n_pairs *
+                                                                                                    per_pair))
+    avatars = np.repeat([f"s{k}" for k in range(n_pairs)], per_pair)
+    tracks = cal.StrangerTracks(avatars, np.zeros(len(best), int), np.full(len(best), 10), best,
+                                np.repeat([f"k{k}" for k in range(n_pairs)], per_pair), np.arange(len(best)), best)
+    chosen = {c: margins.offsets(tracks, c, targets=(0.1, 0.01)) for c in margins.CHOICES}
+    at = {c: dict(zip(v["targets"], v["offsets"]))[0.01] for c, v in chosen.items()}
+    assert at["none"] == 0.0 and 0.0 < at["point"] <= at["median"] + 0.02 <= at["bound"] + 0.02
+    assert at["point"] < at["bound"]
+    assert np.mean(tracks.excess(0.01, at["point"]) >= -1e-12) <= 0.01
+    assert np.mean(tracks.excess(0.01, at["point"] - 0.02) >= -1e-12) > 0.01
+    checked = margins.check(tracks, chosen, draws=200)
+    assert checked["none"]["0.01"]["with"]["per_track"] > checked["bound"]["0.01"]["with"]["per_track"]
+
+
 def test_the_calibrations_hold_none_of_the_fairs_avatars():
     """The shipped calibrations were made from avatars that are not in the fair's library."""
     fair = ["Business_Female_01", "Business_Female_02", "Business_Male_02", "Business_Male_05", "Business_Male_07",
