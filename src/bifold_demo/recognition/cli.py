@@ -11,6 +11,11 @@
     bifold-faces calibrate [--profiles P ...] [--characters DIR] [--avatars NAME ...] [--refit]
                                                calibrate the decisions of each profile's recogniser from renders of
                                                avatars (writes models/calibration/<model>.json)
+    bifold-faces eval MANIFEST ... [--profiles P ...] [--out DIR]
+                                               measure the recognition on manifests of photos, renders and test
+                                               packs (metrics as JSON, curves as images: see .evaluate)
+    bifold-faces eval --build p2|ladder|lfw|photos [--pack lfw.bin] [--photos DIR]
+                                               write a protocol's manifest (.protocols)
     bifold-faces landmarks [AVATAR ...]        MediaPipe's face landmarks on avatars' heads (head textures, stage 0)
     bifold-faces register PHOTO[:VIEW] ... --avatar NAME [--out DIR] [--segment]
                                                register photos of a head to an avatar's head (stage 1)
@@ -390,6 +395,78 @@ def _embedded(engine, probes, path: Path, progress=print):
     return vectors.astype(np.float64), fiqa
 
 
+def cmd_eval(args) -> int:
+    """Measure the profiles on manifests (see :mod:`.evaluate`), or write a protocol's manifest (``--build``)."""
+    import json
+
+    from . import evaluate, protocols
+    from .engine import FaceEngine
+
+    out = Path(args.out)
+    if args.build:
+        if args.build in ("p2", "ladder"):
+            names = args.identities or protocols.fair_identities(args.characters)
+            raw = protocols.p2(names, args.size) if args.build == "p2" else protocols.ladder(names)
+        elif args.build == "lfw":
+            if not args.pack:
+                raise ValueError("--build lfw needs --pack lfw.bin")
+            raw = protocols.lfw(args.pack, None if args.all_pairs else (75, 75))
+        else:
+            if not args.photos:
+                raise ValueError("--build photos needs --photos DIR (laid out as the README says)")
+            raw = protocols.photos(args.photos)
+        folder = Path(args.photos) if args.build == "photos" else Path(".")
+        manifest = evaluate.parse(raw, folder, source=f"the {args.build} protocol")
+        target = Path(args.manifest_out or (Path(args.photos) / "manifest.json" if args.build == "photos" else
+                                            out / "manifests" / f"{manifest.name}.json"))
+        if args.build == "photos":
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(raw, indent=1))
+        else:
+            evaluate.dump(manifest, target)
+        kinds = {k: len(manifest.of_kind(k)) for k in evaluate.KINDS if manifest.of_kind(k)}
+        print(f"wrote {target}: {', '.join(f'{v} {k}' for k, v in kinds.items())}, "
+              f"{len(manifest.identities())} identities")
+        if not args.manifests:
+            return 0
+    if not args.manifests:
+        raise ValueError("give manifests to measure (or --build a protocol's)")
+    manifests = [evaluate.load(path) for path in args.manifests]
+    engines = {}
+    for name in args.profiles or list(registry.PROFILES):
+        engine = FaceEngine(args.models, download=not args.offline, profile=name, progress=None)
+        for note in engine.notes:
+            print(f"[faces] {note}", file=sys.stderr)
+        engines[name] = engine
+    run = evaluate.Run(engines, out, library=args.characters, draws=args.draws, seed=args.seed,
+                       models_folder=args.models)
+    status = 0
+    try:
+        for manifest in manifests:
+            results = {"manifest": manifest.name, "protocol": manifest.protocol, "description": manifest.description,
+                       "sides": manifest.sides, "environment": evaluate.environment(),
+                       "settings": {"draws": args.draws, "seed": args.seed, "splits": args.splits,
+                                    "level": evaluate.metrics.LEVEL}}
+            if manifest.stills("probe"):
+                results["stills"] = run.stills(manifest, args.splits, conditions=not args.no_conditions)
+            if manifest.of_kind("pack"):
+                results["packs"] = run.packs(manifest)
+            if manifest.of_kind("scene"):
+                raise ValueError(f"{manifest.name}: scene runs are not measured by this version")
+            path = evaluate.write_json(out / manifest.name / "results.json", results)
+            for line in evaluate.summary_lines(results):
+                print(line)
+            if not args.no_plots:
+                from . import evalplots
+
+                for image in evalplots.plot_results(results, out / manifest.name / "curves"):
+                    print(f"[eval] {image}")
+            print(f"[eval] {manifest.name}: {path}")
+    finally:
+        run.close()
+    return status
+
+
 def cmd_who(args) -> int:
     gallery = _gallery(args)
     gallery.refresh(force=True)
@@ -481,6 +558,34 @@ def main(argv=None) -> int:
     calibrate.add_argument("--seed", type=int, default=0, help="the seed of the places and the halvings")
     calibrate.add_argument("--offline", action="store_true", help="do not download missing models")
     calibrate.set_defaults(run=cmd_calibrate)
+    evaluation = sub.add_parser("eval", help="measure the recognition on manifests (stills, renders, packs, scenes)",
+                                description="Measure the face recognition on manifests (see the README, "
+                                            "'Evaluating the face recognition'), or write a protocol's manifest.")
+    evaluation.add_argument("manifests", nargs="*", help="manifests (JSON, or CSV of stills) to measure")
+    evaluation.add_argument("--profiles", nargs="+", default=None, choices=tuple(registry.PROFILES), metavar="P",
+                            help="the profiles to measure (default: all three)")
+    evaluation.add_argument("--out", default="eval", metavar="DIR",
+                            help="where results, curves and caches go (default: eval, git-ignored)")
+    evaluation.add_argument("--build", choices=("p2", "ladder", "lfw", "photos"), default=None,
+                            help="write a protocol's manifest first (into DIR/manifests, or --manifest-out)")
+    evaluation.add_argument("--manifest-out", default=None, metavar="FILE", help="where --build writes")
+    evaluation.add_argument("--size", choices=("full", "small", "tiny"), default="full",
+                            help="P2's size (default full)")
+    evaluation.add_argument("--identities", nargs="+", default=None, metavar="NAME",
+                            help="the avatars measured (default: the fair's library's)")
+    evaluation.add_argument("--characters", default=None, metavar="DIR",
+                            help="the avatars' folder (default: $BIFOLD_CHARACTERS)")
+    evaluation.add_argument("--pack", default=None, metavar="FILE", help="lfw.bin for --build lfw")
+    evaluation.add_argument("--all-pairs", action="store_true", help="--build lfw: every pair, not F1's subset")
+    evaluation.add_argument("--photos", default=None, metavar="DIR", help="a folder of photos for --build photos")
+    evaluation.add_argument("--splits", type=int, default=None,
+                            help="splits of the identities into enrolled and strangers (default: the manifest's)")
+    evaluation.add_argument("--draws", type=int, default=1000, help="bootstrap draws (default 1000)")
+    evaluation.add_argument("--seed", type=int, default=0, help="the seed of the splits and the bootstrap")
+    evaluation.add_argument("--no-conditions", action="store_true", help="no per-condition reports (quicker)")
+    evaluation.add_argument("--no-plots", action="store_true", help="write no curves")
+    evaluation.add_argument("--offline", action="store_true", help="do not download missing models")
+    evaluation.set_defaults(run=cmd_eval)
     from ..characters.headtex.cli import add_commands
 
     add_commands(sub)

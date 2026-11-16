@@ -1301,6 +1301,91 @@ of 120 analysed frames.
 [docs/previews/face_photo.jpg](docs/previews/face_photo.jpg) shows it with
 renders of other avatars as the "photos".
 
+### Evaluating the face recognition
+
+`bifold-faces eval` measures the profiles on **manifests**: lists of stills
+(photos or renders), test packs and scene runs with their conditions. It
+writes the measures as JSON and the curves as images into a git-ignored
+folder (`eval/` by default), with intervals from a bootstrap over people
+(never over frames), and every number with the people and tracks it was
+counted on.
+
+```bash
+bifold-faces eval --build p2                  # write a protocol's manifest (eval/manifests/p2-full.json)
+bifold-faces eval eval/manifests/p2-full.json --profiles best licensed commercial
+bifold-faces eval --build lfw --pack lfw.bin  # LFW's pairs (F1's subset; --all-pairs for all 6,000)
+bifold-faces eval --build photos --photos ~/consented   # photos of consenting people (P4, below)
+bifold-faces eval --build ladder              # the baselines and ablations B0-B5
+```
+
+What is measured, per profile (`recognition/evaluate.py`; the metrics are
+`recognition/metrics.py`, numpy only):
+
+- **Verification:** every probe against every identity's gallery: TAR at
+  FAR 1e-2, 1e-3 and lower where the pairs allow (counted, never
+  interpolated), EER and d', DET curves.
+- **Open-set identification**, the demo's case: the identities with a
+  gallery are split many times into an enrolled half and strangers (seeded);
+  FNIR and DIR at FPIR, rank-1 and the CMC as a sanity check.
+- **The system's decisions** on single faces, as live: calibrated scores,
+  the accept threshold of the target false-alarm rate, the runner-up margin;
+  the false-alarm rate achieved against the one asked, per face-size bin.
+- **Failures to acquire:** no face found, or one the live quality gate would
+  not embed. They count as misses and name nobody.
+- All of it **per condition**: each manifest's breakdowns, and the research's
+  bins of the measured eye distance.
+
+A manifest is JSON (or CSV for stills: the columns `id, kind, role, identity,
+source, path` and one column per condition):
+
+```json
+{"format": 1, "name": "mine", "settings": {"splits": 20},
+ "defaults": {"light": "fair", "preset": "good 4K"},
+ "items": [
+  {"id": "g1", "kind": "still", "role": "gallery", "identity": "Ada", "source": "image", "path": "enrol/Ada/1.jpg"},
+  {"id": "p1", "kind": "still", "role": "probe", "identity": "Ada", "source": "image", "path": "probe/Ada/1.jpg",
+   "conditions": {"light": "window", "scale": 0.25}},
+  {"id": "p2", "kind": "still", "role": "probe", "identity": "Male_Adult_05", "source": "render",
+   "conditions": {"body": "Male_Adult_12", "face": "renders", "head": "fitted", "ied": 24, "yaw": 30}},
+  {"id": "lfw", "kind": "pack", "path": "lfw.bin", "per_fold": [75, 75]}]}
+```
+
+- A **photo's** conditions are free labels to group the results by, except
+  `scale`: the photo shrunk by that factor (a size curve).
+- A **render's** conditions say everything that is drawn: who (`body`, `face`
+  own or made from the identity's renders, `head` own or fitted to them),
+  `view` (the sensor's window, or the 720p frame), `ied` (pixels between the
+  eyes), `distance`, `side`, `yaw`, `pitch`, `light` (fair, side, warm, top),
+  `preset`, `occluder` (low, side), `expression`, the renderer's `quality`,
+  `linear` and `detail`, and `seed`.
+- `labels` on an item are free labels, and `settings.breakdowns` says which
+  groups to report (`{"name", "where": {label: value}, "by": [conditions]}`).
+
+`bifold-faces eval` refuses a manifest with unknown conditions, values out of
+range, missing files, duplicate ids, or the same image or render both enrolled
+and probed (leakage), and lists every problem at once.
+
+**Caches.** The faces found and their embeddings are cached under
+`eval/cache/`, keyed by the item's content (a photo's bytes, or a render's
+every condition and the avatars' files), the model and detector files'
+SHA-256 and the code's versions. A re-run reuses them, and a long run that
+stops resumes where it was. Runs are deterministic.
+
+**The rendered protocols.** The identities are the fair's 20 avatars; the
+shipped calibrations were made from 87 others, so all 20 are held out (the
+manifests record both lists).
+
+- **P2, rendered stills.** Every avatar is a person whose textures are made
+  from one set of renders (set A) and whose gallery is a disjoint set (set B:
+  other light, expression and turns). Its face is worn by another avatar of
+  its sex and age, on that avatar's head and on the head fitted to set A. The
+  probes sweep the eye distance from 8 to 100 pixels through the camera
+  presets, the turn up to 90 degrees, the nod, four lights and two occluders.
+  The avatars' own faces are measured beside them.
+- **The ladder B0-B5**, one change at a time at matched distance and pose:
+  the 720p view with the old shading; the sensor's windows; the camera
+  presets; 2048 textures; linear light and the maps; the fitted head.
+
 ## The virtual high-resolution sensor
 
 Faces in the 1280x720 view have only 10-22 pixels between the eyes, while

@@ -316,8 +316,9 @@ def pairs_report(genuine, impostor, genuine_people=None, impostor_people=None, f
                  draws: int = DRAWS, seed: int = 0, level: float = LEVEL) -> dict:
     """The verification measures of ``genuine`` and ``impostor`` scores with intervals from a bootstrap over people:
     ``genuine_people`` (one person per genuine pair) and ``impostor_people`` (``(n, 2)``: the two people of each
-    impostor pair); a drawn person's pairs count as often as they were drawn, an impostor pair with the product of
-    its two people's counts. Without people the pairs are taken as independent (an interval over pairs). TAR at each
+    impostor pair; or one cluster label per pair, e.g. a benchmark's fold); a drawn person's pairs count as often as
+    they were drawn, an impostor pair with the product of its two people's counts. Without people the pairs are taken
+    as independent (an interval over pairs). TAR at each
     of ``far`` that the impostor pairs resolve (:func:`far_levels`), the EER and d' (with intervals), and the counts."""
     genuine, impostor = _scores(genuine), _scores(impostor)
     levels = far_levels(len(impostor), far)
@@ -330,9 +331,13 @@ def pairs_report(genuine, impostor, genuine_people=None, impostor_people=None, f
         i_index = np.stack([np.arange(len(impostor)) + len(genuine), np.full(len(impostor), -1)], axis=1)
         out["people"] = None
     else:
-        names = np.unique(np.r_[np.asarray(genuine_people, str), np.asarray(impostor_people, str).ravel()])
+        pairs = np.asarray(impostor_people, str)
+        names = np.unique(np.r_[np.asarray(genuine_people, str), pairs.ravel()])
         g_index = np.searchsorted(names, np.asarray(genuine_people, str))
-        i_index = np.searchsorted(names, np.asarray(impostor_people, str).reshape(-1, 2))
+        if pairs.ndim == 1:  # one cluster per impostor pair (a fold of a benchmark, say)
+            i_index = np.stack([np.searchsorted(names, pairs), np.full(len(pairs), -1)], axis=1)
+        else:
+            i_index = np.searchsorted(names, pairs.reshape(-1, 2))
         people = len(names)
         out["people"] = people
     boot = {"d_prime": [], "eer": [], **{f"{f:g}": [] for f in levels}}

@@ -9,6 +9,7 @@ dist/
 
 # downloaded model weights and demo output
 models/
+eval/
 *.pt
 *.mlpackage/
 screenshots/
