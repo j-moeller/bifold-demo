@@ -678,3 +678,14 @@ branch and pushed; its results go into the progress log.
   - **S4 up close:** finer meshes change nothing the recognisers measure; the close-up shading adds d' 0.4.
   - [face_recognition_status.md](face_recognition_status.md) has a section on what each step buys. Still running: E1's
     scene runs, LFW, the margins and the acceptance test.
+- **16 November, 07:35 UTC: E1's margin recommendation; S4 on faces from photos up close.**
+  - **The margin.** The shipped 95 % bound keeps strangers' tracks at about half the asked rate but names too few.
+    - On LFW's real-face tracks it names 59-76 % of known people.
+    - In the scripted scenes so far the commercial profile named 0 of 25.
+  - The point estimate gives about the asked rate (0.9-1.4 % at 1 %) and names 79-91 % on LFW.
+  - No stranger was named under any margin.
+  - **Recommendation:** adopt the point estimate as the default, if the remaining scene runs confirm it, keeping the
+    bound as an option.
+  - T-norm does not help real faces for any profile.
+  - **S4:** faces from photos keep their identity up close. Same-person scores move -0.012 to +0.005, and d' rises from
+    3.2-3.4 to 3.4-3.8.

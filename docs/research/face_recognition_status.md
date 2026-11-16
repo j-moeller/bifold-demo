@@ -207,6 +207,26 @@ intervals over people. Details in [face_recognition_e1_results.md](face_recognit
   - rank-1 is 1.000 throughout;
   - the finer meshes matter for how close-ups look, not for recognition.
 
+### The calibration margin (E1, measured)
+
+The per-track offsets were made from F2's data with four margins and checked on 60 other halvings of the avatars:
+
+| Margin | Measured false alarms per stranger track, 1 % asked | Known people's real-face tracks named (LFW, 185 known, 414 strangers) |
+|---|---|---|
+| 95 % upper bound (shipped) | about 0.5 % | 59-76 % |
+| point estimate | 0.9-1.4 % | 79-91 % |
+| none | 2.5-3.6 % | 92-97 % |
+
+- Under every margin, no stranger's track was named: none of 6,440 real-face tracks, and none of the fair's held-out
+  identities.
+- In the scripted scenes so far, the commercial profile named 0 of 25 known tracks with the shipped bound, 20 % with
+  the point estimate and 88 % with none.
+- **E1 recommends the point estimate as the default:** it gives about the asked rate.
+- **Decision:** adopt it if the scene runs confirm it, keeping the 95 % bound as the cautious option.
+- **Two smaller findings:**
+  - T-norm does not separate real faces better for any profile.
+  - On LFW, SFace's calibration holds per comparison: 1 % asked, 0.9 % measured.
+
 ## Open issues
 
 1. **Naming speed against false alarms.**
