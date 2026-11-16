@@ -188,6 +188,25 @@ intervals over people. Details in [face_recognition_e1_results.md](face_recognit
 - **A test pitfall found and fixed:** a face worn on another avatar's head still carries that avatar's identity (it
   shows through in 7-18 % of probes). So a worn face is never compared with its carrier.
 
+### What each step buys (E1's ladder and S4's close-ups, measured)
+
+- **The ladder** changes one thing at a time, from B0 (the 720p view with the old shading) to B5 (windows of a good 4K
+  camera with fitted heads): 1,800 probes of the fair's 20 identities, at the fair's distances.
+  - **The virtual sensor's windows are by far the biggest step.** d' rises by about half. The faces made from photos
+    that the 720p view misses at a measured 1 % (12-19 %) are found.
+  - **Camera faults** cost little at the windows' sizes.
+  - **2048 textures** add nothing measurable at these distances.
+  - **Linear light with normal and specular maps** raises d' by a fifth to a third for the avatars' own faces.
+  - **The fitted head shape** helps faces made from photos a little.
+  - **The calibrated decision names no more faces from photos on any rung:** the shipped thresholds rise with face
+    size. The calibration, not the rendering, is now the limit.
+- **Up close (S4)**, at 64-256 px between the eyes, ten avatars, three turns, two lights:
+  - the finer head meshes change what the recognisers see by almost nothing (same-person scores under 0.002);
+  - the close-up skin, eye and lash shading raises same-person scores by 0.006-0.012 and d' by 0.4, mostly in side
+    light and on turned faces;
+  - rank-1 is 1.000 throughout;
+  - the finer meshes matter for how close-ups look, not for recognition.
+
 ## Open issues
 
 1. **Naming speed against false alarms.**

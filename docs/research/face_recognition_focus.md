@@ -667,3 +667,14 @@ branch and pushed; its results go into the progress log.
     the calibrations were made.
   - The results note [closeups_results.md](closeups_results.md) has begun: the subdivided heads, the outline, the
     windows, the shading and the calibrations. Recognition up close and the costs follow.
+- **16 November, 06:45 UTC: resumed after the usage limit (both builders stopped at about 04:45 and went on at 06:30);
+  E1's ladder and S4's recognition up close are on the branch.**
+  - **The ladder (B0-B5):**
+    - windows are the biggest step (d' up by about half; the faces from photos that the 720p view misses are found);
+    - camera faults cost little at the windows' sizes, and 2048 textures nothing;
+    - linear light and the maps add a fifth to a third of d' for own faces;
+    - fitted heads help the faces from photos a little;
+    - the calibrated decision is now the limit for faces from photos.
+  - **S4 up close:** finer meshes change nothing the recognisers measure; the close-up shading adds d' 0.4.
+  - [face_recognition_status.md](face_recognition_status.md) has a section on what each step buys. Still running: E1's
+    scene runs, LFW, the margins and the acceptance test.
