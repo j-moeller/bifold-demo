@@ -689,3 +689,14 @@ branch and pushed; its results go into the progress log.
   - T-norm does not help real faces for any profile.
   - **S4:** faces from photos keep their identity up close. Same-person scores move -0.012 to +0.005, and d' rises from
     3.2-3.4 to 3.4-3.8.
+- **16 November, 08:00 UTC: E1's first scene runs (P3); S4's results note complete; an F2 follow-up started.**
+  - **P3 with the cautious bound** (commercial and licensed, 4 runs of 60 s, 12 people each):
+    - no known person wearing a face from photos was named within 2 or 5 s;
+    - no stranger was recognised wrongly.
+    - But one stranger crossing in front of a named person took over her track, name and all, without showing a face:
+      a tracker swap, which the face checks cannot see. The tracker swaps about 50 times a profile in these runs.
+  - **Replaying the margins** on these runs confirms the point estimate as the loosest margin that adds no false alarm.
+  - **F2 follow-up:** names become unconfirmed after a possible swap (heavy box overlap, a track lost and found next to
+    another, abrupt changes, optionally a clothes-colour check) until a new face confirms them, and are withdrawn if
+    none does. Measured with E1's scene runs.
+  - **S4:** [closeups_results.md](closeups_results.md) is complete, with a preview of avatars only.

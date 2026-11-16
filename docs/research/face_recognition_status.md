@@ -239,8 +239,12 @@ The per-track offsets were made from F2's data with four margins and checked on 
    - The Mac's speed (CoreML) is not measured.
 4. **AuraFace,** the commercial profile's intended recogniser, is not calibrated: it needs Hugging Face, which is
    unreachable here. Until then the commercial profile uses SFace.
-5. **Tracking** has no re-identification: a person who leaves the picture for over a second comes back as a new
-   track.
+5. **Tracking.**
+   - There is no re-identification: a person who leaves the picture for over a second comes back as a new track.
+   - Tracker swaps can carry a name onto the wrong person. In E1's scene runs a stranger crossing in front of a named
+     person took over her track, name and all, without showing a face, and the face checks never ran. The tracker
+     swaps about 50 times a profile in 4 minutes of people crossing.
+   - A follow-up fix is being built: names unconfirmed after a possible swap until a new face confirms them.
 6. **Head shapes:**
    - the ears keep the avatar's shape;
    - the iris-based size is not validated on real heads;
