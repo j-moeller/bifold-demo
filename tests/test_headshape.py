@@ -433,6 +433,16 @@ def test_folds_are_smoothed_away(made, setup):
     assert (np.einsum("tk,tk->t", before, after) > 0).all()
     far = np.linalg.norm(points - points[victim[0]], axis=1) > 0.03
     assert np.abs(out[far]).max() == 0.0  # elsewhere nothing changes
+    edge = made.fade <= 0.0  # a fold next to the neck's edge: smoothed away, the edge kept where it is
+    near = tri[skin[tri].all(axis=1) & edge[tri].any(axis=1) & ~edge[tri].all(axis=1)][0]
+    inner = near[~edge[near]][0]
+    offsets = np.zeros_like(points)
+    offsets[inner] = (points[near[near != inner][0]] - points[inner]) * 2.2
+    out = rig.untangle(points, head.indices, skin, offsets, fixed=edge)
+    assert np.abs(out[edge]).max() == 0.0
+    moved = points + out
+    after = np.cross(moved[skin_tri[:, 1]] - moved[skin_tri[:, 0]], moved[skin_tri[:, 2]] - moved[skin_tri[:, 0]])
+    assert (np.einsum("tk,tk->t", before, after) > 0).all()
 
 
 def test_mediapipes_blendshapes_name_icts_expressions():

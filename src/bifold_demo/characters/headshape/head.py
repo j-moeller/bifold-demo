@@ -53,11 +53,13 @@ import numpy as np
 from ..headtex import canonical as cf
 from . import mesh
 
-VERSION = 5
+VERSION = 6
 SKIN, EYE, INNER = 1, 2, 3
 NECK_FADE = 0.05  # metres from the neck's edge (along the surface) over which the skin's offsets fade in
 JAW_LINE = (454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234)
-# (the face oval below the ears: the fade is done by these at the latest)
+# (the face oval below the ears: the fade is done by these at the latest ...
+JAW_FADE = 0.02  # ... over this much at least (metres) ...
+JAW_SEAM = 0.005  # ... unless the neck's edge runs along the jaw line (a point of it this near): that stays
 MATCH_DISTANCE = (0.02, 0.008)  # metres: the registration's closest points further than this (first, last) are left out
 STIFFNESS = (40.0, 15.0, 6.0, 2.5, 1.0, 0.5)  # the registration's Laplacian weights, step by step
 ICP_ROUNDS = 3  # closest-point rounds per stiffness step
@@ -442,9 +444,10 @@ def neck_fade(model, primitive: int, parts: np.ndarray, distance: float = NECK_F
     skin = parts == SKIN
     along = _along_surface(points, skin_tri, node, count, anchored)  # (inf where no skin leads to an anchor)
     d[skin] = np.where(np.isfinite(along[skin]), along[skin], d[skin])
-    if jaw is not None and len(jaw):
+    if jaw is not None and len(jaw):  # (a fade done by the jaw line; where the seam runs along it, it stays)
         near = np.argmin(np.linalg.norm(points[None] - np.asarray(jaw, np.float64)[:, None], axis=2), axis=1)
-        distance = float(np.clip(d[near].min(), 0.01, distance))  # (a fade done by the jaw line)
+        if d[near].min() > JAW_SEAM:
+            distance = float(np.clip(d[near].min(), JAW_FADE, distance))
     return mesh.smoothstep(d / distance).astype(np.float32)
 
 

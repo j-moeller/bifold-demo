@@ -37,10 +37,10 @@ the avatar's (:data:`LID_TOLERANCE`); a face that shuts an eye shows no more of 
 nearer the lips' front than the avatar's do (:data:`TEETH_TOLERANCE`); the lips' front (where the avatar's is
 :data:`LIP_FRONT` or more in front of the tooth behind it, seen from the front, in each face) does not come behind
 that tooth by more than :data:`LIP_TOLERANCE` (a lip pulled behind the teeth; the lips' inside, against the teeth
-already, is hidden whatever it does); and where the avatar's mouth is shut seen from the front (fewer than :data:`CLOSED_MOUTH` pixels of its teeth), the
-fitted head shows no more of them from either side. Each problem is put down to a part of the head
-(:attr:`RigCheck.where`: an eye, the mouth, a fold, the neck, the size), so that a shape can be kept smaller there
-only (:func:`~.fitted.fit_shape`).
+already, is hidden whatever it does); and where the avatar's mouth is shut seen from the front (fewer than
+:data:`CLOSED_MOUTH` pixels of its teeth), the fitted head shows no more of them from either side. Each problem is put
+down to a part of the head (:attr:`RigCheck.where`: an eye, the mouth, a fold, the neck, the size), so that a shape can
+be kept smaller there only (:func:`~.fitted.put_on`).
 """
 
 from __future__ import annotations
@@ -187,12 +187,13 @@ def base_key(model) -> str:
     return geometry_key(model)
 
 
-def untangle(points, triangles, skin, offsets, tie=None, rounds: int = 40) -> np.ndarray:
+def untangle(points, triangles, skin, offsets, tie=None, rounds: int = 40, fixed=None) -> np.ndarray:
     """``offsets`` (``(N, 3)``) smoothed where they would turn a skin triangle inside out or squash or stretch it
     beyond :data:`AREA_LIMITS`: the offsets of such triangles' vertices and their neighbours are averaged with their
     neighbours', round by round, until none is left (at most ``rounds`` rounds); a fold that stays (its surroundings
     hold it) widens the smoothed region by a ring every :data:`UNTANGLE_GROW` rounds. Elsewhere the offsets stay as
-    they are. ``tie``: groups of vertices that move as one (:attr:`~.head.HeadSpace.tie`)."""
+    they are, and so do they on ``fixed`` vertices (a mask: the neck's edge). ``tie``: groups of vertices that move
+    as one (:attr:`~.head.HeadSpace.tie`)."""
     points = np.asarray(points, np.float64)
     tri = np.asarray(triangles, np.int64).reshape(-1, 3)
     tri = tri[np.asarray(skin)[tri].all(axis=1)]
@@ -232,6 +233,8 @@ def untangle(points, triangles, skin, offsets, tie=None, rounds: int = 40) -> np
                              for n in nodes])
         node_offsets[nodes] = 0.5 * node_offsets[nodes] + 0.5 * smoothed
         changed = np.isin(node, nodes) & np.asarray(skin)
+        if fixed is not None:
+            changed &= ~np.asarray(fixed)
         out[changed] = node_offsets[node[changed]]
     return out
 
@@ -248,11 +251,12 @@ def make_shape(model, hs, offsets, fit=None) -> Shape:
 
     prim = model.primitives[hs.primitive]
     skin = hs.parts == SKIN
-    offsets = untangle(prim.positions, prim.indices, skin, offsets, hs.tie)
+    edge = hs.fade <= 0.0  # (the neck's edge never moves)
+    offsets = untangle(prim.positions, prim.indices, skin, offsets, hs.tie, fixed=edge)
     moved = hs.transfer(model, offsets)
-    again = untangle(prim.positions, prim.indices, skin, moved.head, hs.tie)  # what the ties and the skin with no
-    if not np.allclose(again[skin], moved.head[skin], atol=1e-9):  # counterpart folded again, smoothed; the rest
-        moved = hs.transfer(model, again, keep_skin=True)  # (eyes, mouth, bones, parts) from that skin
+    again = untangle(prim.positions, prim.indices, skin, moved.head, hs.tie, fixed=edge)  # what the ties and the
+    if not np.allclose(again[skin], moved.head[skin], atol=1e-9):  # skin with no counterpart folded again,
+        moved = hs.transfer(model, again, keep_skin=True)  # smoothed; the rest (eyes, mouth, bones, parts) from it
     skeleton = model.skeleton
     head = model.primitives[hs.primitive]
     others = {model.primitives[k].name: v.astype(np.float32) for k, v in moved.others.items()}
