@@ -266,8 +266,14 @@ def _swept(plt, stills: dict, folder: Path, breakdown: str, key: str, xlabel: st
     return [path]
 
 
+LADDER_ORDER = ("B0", "B1", "B1=", "B2 good 4K", "B2 budget 1080p", "B3", "B4", "B5")
+LADDER_TICKS = {"B2 good 4K": "B2\n4K", "B2 budget 1080p": "B2\n1080p"}
+
+
 def _ladder(plt, stills: dict, folder: Path) -> list[Path]:
-    """The ladder's rungs: the share of known probes named rightly at 1 % per decision, per profile."""
+    """The ladder's rungs per kind of face (columns), per profile: above, the share of known probes named rightly at
+    1 % per decision (intervals as bars) and, dashed, the share found at a measured FPIR of 1 %; below, d' (the
+    separation of the scores)."""
     series: dict = {}
     order = []
     for profile, report in stills.items():
@@ -279,31 +285,48 @@ def _ladder(plt, stills: dict, folder: Path) -> list[Path]:
             variant = "own" if parts.get("variant") == "own" else "renders"  # (B5 continues the faces from set A)
             if parts["rung"] not in order:
                 order.append(parts["rung"])
-            series.setdefault(variant, {}).setdefault(profile, {})[parts["rung"]] = named
+            d = (entry.get("verification") or {}).get("d_prime")
+            series.setdefault(variant, {}).setdefault(profile, {})[parts["rung"]] = (*named, _found(entry), d)
     if not series:
         return []
-    rungs = sorted(order, key=lambda r: (r[:2], r))
+    rungs = sorted(order, key=lambda r: (LADDER_ORDER.index(r) if r in LADDER_ORDER else len(LADDER_ORDER), r))
     panels = [v for v in ("own", "renders") if v in series]
-    fig, axes = plt.subplots(1, len(panels), figsize=(4.6 * len(panels), 3.2), squeeze=False, sharey=True)
-    for ax, variant in zip(axes[0], panels):
+    fig, axes = plt.subplots(2, len(panels), figsize=(4.8 * len(panels), 5.4), squeeze=False, sharex="col",
+                             gridspec_kw={"height_ratios": (3, 2)})
+    for column, variant in enumerate(panels):
+        ax, low = axes[0][column], axes[1][column]
         here = [r for r in rungs if any(r in s for s in series[variant].values())]
         for k, (profile, points) in enumerate(series[variant].items()):
-            xs = [here.index(r) + (k - 1) * 0.12 for r in here if r in points]
-            ys = [points[r][0] for r in here if r in points]
+            mine = [r for r in here if r in points]
+            xs = [here.index(r) + (k - 1) * 0.12 for r in mine]
+            ys = [points[r][0] for r in mine]
             err = [[max(0.0, points[r][0] - (points[r][1][0] if points[r][1][0] is not None else points[r][0]))
-                    for r in here if r in points],
+                    for r in mine],
                    [max(0.0, (points[r][1][1] if points[r][1][1] is not None else points[r][0]) - points[r][0])
-                    for r in here if r in points]]
+                    for r in mine]]
             colour = PROFILE_COLOURS.get(profile, MUTED)
             ax.errorbar(xs, ys, yerr=err, color=colour, marker=MARKERS.get(profile, "o"), linestyle="-",
                         linewidth=1.0, capsize=2, label=profile)
-        ax.set_xticks(range(len(here)), [r.replace(" ", "\n", 1) for r in here], fontsize=7.5)
-        ax.set_ylim(-0.02, 1.02)
+            found = [(x, points[r][2]) for x, r in zip(xs, mine) if points[r][2] is not None]
+            if found:
+                ax.plot([f[0] for f in found], [f[1] for f in found], color=colour, linestyle="--", linewidth=0.9)
+            dee = [(x, points[r][3]) for x, r in zip(xs, mine) if points[r][3] is not None]
+            low.plot([p[0] for p in dee], [p[1] for p in dee], color=colour, marker=MARKERS.get(profile, "o"),
+                     linewidth=1.0)
+        ax.set_ylim(-0.02, 1.04)
         ax.set_title("the avatars' own faces" if variant == "own" else "faces from set A (B5: the fitted head)")
-    axes[0][0].set_ylabel("known probes named rightly (1 % per decision)")
-    axes[0][-1].legend(loc="lower right", fontsize=7.5)
+        low.set_xticks(range(len(here)), [LADDER_TICKS.get(r, r) for r in here], fontsize=7.5)
+        low.set_ylim(bottom=0.0)
+    axes[0][0].set_ylabel("known probes named rightly")
+    axes[1][0].set_ylabel("d'")
+    from matplotlib.lines import Line2D
+
+    handles, labels = axes[0][-1].get_legend_handles_labels()
+    handles += [Line2D([], [], color=MUTED, linestyle="-"), Line2D([], [], color=MUTED, linestyle="--")]
+    labels += ["named: calibrated, 1 % per decision", "found: at a measured FPIR of 1 %"]
+    fig.legend(handles, labels, loc="lower center", ncol=len(labels), fontsize=7, bbox_to_anchor=(0.5, 0.0))
     fig.suptitle("The ladder B0-B5, one change at a time (matched distance and pose)", fontsize=10)
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0.05, 1, 1))
     path = folder / "ladder.png"
     fig.savefig(path, dpi=150)
     return [path]

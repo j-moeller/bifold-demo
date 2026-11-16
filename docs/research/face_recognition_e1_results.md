@@ -194,7 +194,7 @@ commercial, one number when the three agree):
 At 1 % asked no bin of any profile named a stranger (upper bounds 2.3-3.7 % per bin). Known faces named as somebody
 else: none, in 27,000 decisions per profile and target.
 
-## The ladder B0-B5 *(measuring)*
+## The ladder B0-B5
 
 **What was drawn** (`--build ladder`, `protocols.ladder`; high_res_faces.md, section 4.5): one change at a time, each
 rung adding to the one before, at matched distance and pose. The person stands where the 720p view shows the face 10,
@@ -211,7 +211,44 @@ rung adding to the one before, at matched distance and pose. The person stands w
 | B5 | + the head fitted to set A, with the textures made on it (faces from set A only) | 60, 84, 120 |
 
 Every rung is measured for the avatars' own faces and for the faces made from set A (B0-B4 worn on the carrier's own
-head, B5 on the fitted one): 1,800 probes of 20 identities, decided as in P2.
+head, B5 on the fitted one): 1,800 probes of 20 identities, decided as in P2 (rendered in 29 minutes here). The
+gallery is the same for every rung (set B, drawn with the current renderer). Each cell: 120 probes of 20 people
+(three distances, frontal and turned 30 degrees); best, licensed, commercial in that order:
+
+| Rung | Own faces: d' | Own: named at 1 % | From set A: d' | From set A: FNIR at FPIR 1e-2 | From set A: named at 1 % |
+|---|---|---|---|---|---|
+| B0 | 6.8, 6.6, 5.5 | 98, 98, 99 | 3.7, 3.9, 3.9 | 19 (8-32), 12 (3-21), 17 (4-40) | 21 (6-38), 30 (15-46), 78 (67-89) |
+| B1 | 9.8, 9.1, 7.7 | 100, 100, 100 | 4.4, 5.0, 5.6 | 10 (0-25), 0 (0-17), 1 (0-4) | 27 (8-46), 34 (15-55), 70 (55-84) |
+| B1= | 6.5, 6.5, 5.2 | 96, 98, 99 | 3.7, 3.8, 3.9 | 24 (7-39), 11 (4-22), 17 (6-35) | 24 (8-42), 31 (14-48), 76 (64-87) |
+| B2 good 4K | 9.8, 9.2, 7.7 | 100, 100, 99 | 4.4, 4.9, 5.6 | 6 (0-16), 0 (0-17), 0 (0-17) | 28 (9-47), 35 (16-56), 71 (55-86) |
+| B2 budget 1080p | 9.5, 9.0, 7.6 | 100, 100, 98 | 4.4, 4.8, 5.6 | 5 (0-17), 2 (0-4), 0 (0-17) | 27 (8-46), 29 (12-49), 67 (52-81) |
+| B3 | 9.8, 9.2, 7.7 | 100, 100, 99 | 4.4, 5.0, 5.6 | 8 (0-18), 0 (0-17), 0 (0-17) | 28 (9-47), 36 (17-56), 70 (55-85) |
+| B4 | 12.4, 12.5, 9.3 | 100, 100, 100 | 4.3, 4.8, 5.5 | 10 (0-20), 0 (0-17), 0 (0-17) | 26 (8-46), 27 (9-47), 61 (45-77) |
+| B5 | | | 5.4, 6.0, 5.5 | 0 (0-17), 0 (0-17), 0 (0-17) | 38 (19-56), 40 (21-60), 64 (45-80) |
+
+The own faces' named shares are 96-100 % on every rung (intervals at least 83-100 %).
+
+![The ladder: named at 1 % and found at a measured 1 % above, d' below](e1/ladder.png)
+
+**What each piece buys.**
+
+- **The sensor's windows (B0 to B1)** are the biggest step: the separation of the scores grows by about half (d'
+  5.5-6.8 to 7.7-9.8 for the own faces, 3.7-3.9 to 4.4-5.6 for the faces from set A), and the faces from set A that
+  the 720p view misses at a measured 1 % (12-19 %) are found (0-1 %; AdaFace 10 %). The control B1= (the window at
+  the view's own eye distance) is no better than B0, so the gain is the pixels, not the path through the window.
+- **The camera presets (B2)** cost little at the windows' 60-120 pixels: d' 0.0-0.3 lower through the budget camera.
+- **2048 textures (B3)** change nothing measurable at these distances (they show only from about 64 pixels).
+- **Linear light and the maps (B4)** raise the own faces' d' again, by a fifth to a third (to 9.3-12.5): the probes
+  are then drawn as the gallery is. They do nothing for the faces from set A, probably because those textures carry
+  the light of the renders they were made from.
+- **The fitted head (B5)** lifts the faces from set A a little (d' 5.4-6.0 against 4.3-5.5, named 38-64 % against
+  26-61 %), within the intervals.
+- **The calibrated decision does not follow.** For the faces from set A every rung names about as many at 1 % per
+  decision as B0 (21-78 %), the windows' bigger faces included: the shipped thresholds rise with the face's size bin
+  (P2, point 1), so a bigger face that differs from the person meets a stricter test. The avatars' own faces are named
+  on every rung, the 720p view included, because at the fair's distances (10-20 pixels between the eyes) and frontal
+  or turned 30 degrees they are well inside what the models handle; the windows' margin shows in d', which the
+  turned, smaller and occluded faces of P3 need.
 
 ## P3, rendered video *(measuring)*
 
@@ -220,11 +257,13 @@ camera along fanned-out lanes, stopping 3 to 7 m from it, watching it 3 to 7 s, 
 again; four more crossing in front of them now and then. Four of the eight are known (their faces from set A on fitted
 heads, worn by carriers that are strangers in that run), four are strangers with their own faces, and so are the
 crossers. Four runs of 60 s at 5 frames a second, each with its own seed, enrolling the two halves of the 20
-identities in turn (`protocols.halves`: no carrier is enrolled with the face it wears). Each run goes through the
-whole pipeline of the demo's `N`: the profile's person detector (YOLO26n, or YOLOX-s for the commercial profile), the
-tracker, up to four windows a frame of the ideal 8K camera, the profile's embedding budget, the calibrated decisions
-at 1 % per stranger track. A segment is one person followed by one track; a face is *shown* while turned less than 45
-degrees, its eyes not hidden and at least 3 pixels apart in the view.
+identities in turn (`protocols.halves`: no carrier is enrolled with the face it wears). With 20 avatars a carrier is
+often in the same run as a stranger with its own face too, so two people may share a body and clothes: a hard case
+for the tracker, not for the faces. Each run goes through the whole pipeline of the demo's `N`: the profile's person
+detector (YOLO26n, or YOLOX-s for the commercial profile), the tracker, up to four windows a frame of the ideal 8K
+camera, the profile's embedding budget, the calibrated decisions at 1 % per stranger track. A segment is one person
+followed by one track; a face is *shown* while turned less than 45 degrees, its eyes not hidden and at least 3 pixels
+apart in the view.
 
 ## P6, LFW: the real-face gap *(measuring)*
 
@@ -251,6 +290,15 @@ costs in names is measured on identities the calibration never saw: the fair's, 
 (`margins.simulated_tracks`) and as the scene runs replayed (`evalscene.replayed`).
 
 ## The acceptance test *(measuring)*
+
+## Cost, measured here *(measuring)*
+
+On this sandbox (four x86 cores shared with another builder; CPU only, ONNX Runtime):
+
+- **embedding** P2's faces in batches of 16: SFace 2,698 in 21 s (8 ms a face), the ResNet-50 2,695 in 278 s (0.10 s),
+  AdaFace 2,695 in about 2,100 s (0.8 s, with another builder's job running);
+- **rendering** P2's 2,700 probes with their 40 faces made from set A: 2,881 s (1.07 s a still);
+- **scoring** P2 with 1,000 bootstrap draws per measure and condition: 3 to 4 minutes per profile.
 
 ## Real people on the Mac (P4, P5)
 

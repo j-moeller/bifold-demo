@@ -648,7 +648,8 @@ def test_the_curves_are_drawn_from_the_results_alone(tmp_path):
                   "ied by preset": {f"variant={v}, preset={p}, ied={i}": entry(i / 100) for v in ("own", "fitted")
                                     for p in ("ideal", "good 4K", "budget 1080p") for i in (8.0, 38.0, 100.0)},
                   "turn": {f"variant=own, turn={t}": entry(1 - t / 90) for t in (15.0, 45.0, 90.0)},
-                  "rung": {f"rung={r}, variant={v}": entry(0.6) for r in ("B0", "B1", "B5") for v in ("own", "renders")}}
+                  "rung": {f"rung={r}, variant={v}": entry(0.6) for r in ("B0", "B1", "B5")
+                           for v in ("own", "renders")}}
     results = {"stills": {p: {"verification": {"curve": curve}, "conditions": conditions}
                           for p in ("best", "commercial")},
                "packs": {"lfw": {"best": {"curve": curve}}},
