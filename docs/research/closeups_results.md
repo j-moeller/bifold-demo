@@ -14,8 +14,8 @@ memory; only aggregate numbers are reported.
 
 <!-- IN SHORT: filled in last -->
 
-*Results so far: sections 5, 7 and 8 (recognition up close, faces from real photos, the windows' render times) are
-being measured, and this note is completed when they are.*
+*Results so far: the faces from photos of section 5, and sections 7 and 8 (faces from real photos, the windows'
+render times) are being measured, and this note is completed when they are.*
 
 ## 1. The subdivided heads
 
@@ -167,7 +167,51 @@ close quality as shipped (x4 below 180 px, x16 from 180, the shading). Each wind
 (each probe against each identity's best gallery photo), d', rank-1 among the ten; and the change of each probe's
 same-person score from the coarse head's in the same window.
 
-<!-- RECOGNITION TABLES -->
+**The avatars' own faces** (300 windows per configuration and recogniser; galleries drawn in the same configuration;
+95 % intervals over the ten identities):
+
+| Recogniser | configuration | same-person | stranger | d' | rank-1 | same-person change from the coarse head |
+|---|---|---|---|---|---|---|
+| AdaFace IR-101 | coarse | 0.842 | 0.138 | 7.01 (6.16-8.08) | 1.000 | |
+| | x4 | 0.841 | 0.134 | 6.99 (6.10-8.08) | 1.000 | -0.001 (-0.004 to +0.002) |
+| | x16 | 0.840 | 0.134 | 7.00 (6.12-8.10) | 1.000 | -0.002 (-0.005 to +0.002) |
+| | shading | 0.847 | 0.136 | 7.39 (6.36-8.76) | 1.000 | +0.006 (+0.000 to +0.011) |
+| | x16 + shading | 0.845 | 0.129 | 7.33 (6.30-8.70) | 1.000 | +0.004 (-0.002 to +0.009) |
+| | close | 0.845 | 0.131 | 7.31 (6.26-8.70) | 1.000 | +0.003 (-0.002 to +0.008) |
+| ResNet-50 | coarse | 0.837 | 0.139 | 6.75 (5.89-7.91) | 1.000 | |
+| | x4 | 0.837 | 0.134 | 6.81 (5.90-8.00) | 1.000 | +0.000 (-0.001 to +0.001) |
+| | x16 | 0.836 | 0.133 | 6.84 (5.96-7.98) | 1.000 | -0.000 (-0.002 to +0.001) |
+| | shading | 0.846 | 0.139 | 7.17 (6.16-8.56) | 1.000 | +0.009 (+0.005 to +0.013) |
+| | x16 + shading | 0.844 | 0.132 | 7.15 (6.11-8.56) | 1.000 | +0.007 (+0.002 to +0.011) |
+| | close | 0.843 | 0.133 | 7.15 (6.10-8.53) | 1.000 | +0.006 (+0.002 to +0.011) |
+| SFace | coarse | 0.845 | 0.265 | 5.68 (5.00-6.78) | 1.000 | |
+| | x4 | 0.842 | 0.261 | 5.42 (4.79-6.54) | 0.997 | -0.001 (-0.002 to +0.002) |
+| | x16 | 0.843 | 0.260 | 5.43 (4.80-6.53) | 0.997 | +0.000 (-0.002 to +0.003) |
+| | shading | 0.855 | 0.267 | 6.07 (5.37-7.30) | 1.000 | +0.012 (+0.006 to +0.017) |
+| | x16 + shading | 0.855 | 0.263 | 6.09 (5.34-7.41) | 1.000 | +0.011 (+0.006 to +0.017) |
+| | close | 0.854 | 0.264 | 6.08 (5.35-7.41) | 1.000 | +0.010 (+0.005 to +0.016) |
+
+d' by eye distance (64, 96, 128, 192, 256 px): AdaFace coarse 6.97, 7.00, 7.01, 7.03, 7.03; x16 7.00, 6.97, 6.99,
+7.05, 7.02; close 7.21, 7.35, 7.31, 7.32, 7.37. The ResNet-50 coarse 6.70-6.79, x16 6.80-6.87, close 7.08-7.22. SFace
+coarse 5.47-5.89, x16 4.54-5.93, close 5.93-6.22.
+
+- **The finer head changes next to nothing the recognisers see.** Against galleries drawn the same way the
+  same-person scores move by less than 0.002 (the intervals hold 0) and d' by less than 0.1 for AdaFace and the
+  ResNet-50, at every size from 64 to 256 px; against the coarse head's gallery (people enrolled before), by -0.002
+  to -0.004. SFace's d' falls from 5.68 to 5.42 with the finer heads because of one window: Male_Adult_05 turned 45
+  degrees in the side light at 256 px, where YuNet's landmarks miss the face (same-person 0.03); without it, the finer
+  heads score as the coarse one.
+- **The close-up shading helps a little, where the light is hard.** The same-person scores rise by 0.006 (AdaFace),
+  0.009 (the ResNet-50) and 0.012 (SFace), the strangers' stay, and d' rises from 7.0 to 7.4, 6.8 to 7.2 and 5.7 to
+  6.1 (the intervals over ten identities overlap). The gain is in the side light (AdaFace's d' 7.8 to 8.4, the
+  ResNet-50's 7.4 to 7.8, SFace's 5.8 to 6.2) and on turned faces (45 degrees: 7.3 to 8.1, 7.2 to 7.7, 5.8 to 6.3),
+  where the wrapped light fills the shadow side; in the fair's light and from the front it is small either way
+  (frontal faces: AdaFace 9.9 to 9.6, the ResNet-50 9.5 to 9.7, SFace 7.5 to 7.8). Against a gallery drawn at high the same-person scores keep their level
+  (-0.004 to +0.005, the intervals hold 0) and d' still rises (AdaFace 7.0 to 7.6): the scores spread less.
+- **Rank-1 among the ten is 1.000** in every configuration but SFace's finer heads (0.997: the window above): faces
+  of 64 px and more are all named among ten people; the differences show in the scores, not in the names.
+
+<!-- PHOTO FACES (D1) -->
 
 ## 6. The shipped calibrations, made at "high"
 
