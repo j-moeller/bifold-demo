@@ -201,6 +201,19 @@ work goes on. The people are avatars from the
   and B fitted wearing the face textures made from A's renders on the fitted
   head. Top: the front; bottom: turned 75 degrees. Renders of avatars only
   (`docs/research/head_shape_results.md`).
+- `e1_conditions.jpg`: the evaluation's rendered stills (step E1, P2) for one
+  identity, Male_Adult_05 standing in for a person. Top row: set A, the six
+  studio renders standing in for his photos (the face textures are made from
+  them). Second row: set B, his gallery (windows in the hall, smiling), then
+  probes at 38 pixels between the eyes: his avatar's own face, and his face
+  from set A worn by Male_Adult_12 on Male_Adult_12's own head and on the head
+  fitted to set A. Below, the fitted head's probes through the conditions
+  swept: 8, 12 and 18 pixels between the eyes, the good 4K and budget 1080p
+  cameras, the 720p view, turned 45 and 90 degrees, nodded, three lights, the
+  lower face and one side hidden, small and turned, and the ladder's two ends
+  (B0, the 720p view with the old shading; B5, a window of a good 4K camera
+  with the fitted head). Renders of avatars only
+  (`docs/research/face_recognition_e1_results.md`).
 - `people_identity.jpg`: the demo's `N` (step F2) in the fair, 20 s into a
   measurement run of the best profile (AdaFace, at the one embedding a second
   this CPU allows) with the virtual sensor's windows

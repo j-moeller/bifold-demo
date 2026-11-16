@@ -1308,7 +1308,9 @@ renders of other avatars as the "photos".
 writes the measures as JSON and the curves as images into a git-ignored
 folder (`eval/` by default), with intervals from a bootstrap over people
 (never over frames), and every number with the people and tracks it was
-counted on.
+counted on. The measurements made with it, and what they mean for the
+profiles, the calibrations and the Mac, are in
+[docs/research/face_recognition_e1_results.md](docs/research/face_recognition_e1_results.md).
 
 ```bash
 bifold-faces eval --build p2                  # write a protocol's manifest (eval/manifests/p2-full.json)
