@@ -84,16 +84,40 @@ def _weights(weights, n: int) -> np.ndarray:
     return weights
 
 
+class _Steps:
+    """The (weighted) share of ``scores`` at or above each of fixed ``thresholds``: sorted once, so that the shares
+    under many weightings (bootstrap draws) cost a cumulative sum each."""
+
+    def __init__(self, scores: np.ndarray, thresholds: np.ndarray):
+        self.order = np.argsort(scores, kind="stable")
+        self.first = np.searchsorted(scores[self.order], thresholds, side="left")  # the first score >= t
+        self.n = len(thresholds)
+
+    def shares(self, weights=None) -> np.ndarray:
+        w = np.ones(len(self.order)) if weights is None else np.asarray(weights, dtype=np.float64)[self.order]
+        below = np.concatenate([[0.0], np.cumsum(w)])  # weight strictly before index i
+        total = below[-1]
+        if total <= 0:
+            return np.full(self.n, np.nan)
+        return (total - below[self.first]) / total
+
+
 def _share_at_or_above(scores: np.ndarray, weights: np.ndarray, thresholds: np.ndarray) -> np.ndarray:
     """The (weighted) share of ``scores`` at or above each of ``thresholds``."""
-    order = np.argsort(scores, kind="stable")
-    s, w = scores[order], weights[order]
-    below = np.concatenate([[0.0], np.cumsum(w)])  # weight strictly before index i
-    total = below[-1]
-    if total <= 0:
-        return np.full(len(thresholds), np.nan)
-    first = np.searchsorted(s, thresholds, side="left")  # the first score >= t
-    return (total - below[first]) / total
+    return _Steps(scores, thresholds).shares(weights)
+
+
+def _eer_of(far: np.ndarray, frr: np.ndarray, thresholds: np.ndarray) -> dict:
+    """The equal error rate of a curve given at rising ``thresholds`` (see :func:`eer`)."""
+    gap = frr - far  # rises with the threshold, from <= 0 to >= 0
+    k = int(np.argmax(gap >= 0))
+    if k == 0 or gap[k] == 0:
+        return {"eer": float((far[k] + frr[k]) / 2.0), "threshold": float(thresholds[k])}
+    a, b = gap[k - 1], gap[k]  # a < 0 < b
+    u = -a / (b - a)
+    rate = (1 - u) * (far[k - 1] + frr[k - 1]) / 2.0 + u * (far[k] + frr[k]) / 2.0
+    t0, t1 = thresholds[k - 1], thresholds[k]
+    return {"eer": float(rate), "threshold": float(t0 + u * (t1 - t0)) if np.isfinite(t1) else float(t0)}
 
 
 def _interval(draws: np.ndarray, level: float) -> list[float | None]:
@@ -247,15 +271,7 @@ def eer(genuine, impostor, genuine_weights=None, impostor_weights=None) -> dict:
     thresholds = np.unique(np.r_[genuine, impostor, np.inf])
     far = _share_at_or_above(impostor, iw, thresholds)
     frr = 1.0 - _share_at_or_above(genuine, gw, thresholds)
-    gap = frr - far  # rises with the threshold, from <= 0 to >= 0
-    k = int(np.argmax(gap >= 0))
-    if k == 0 or gap[k] == 0:
-        return {"eer": float((far[k] + frr[k]) / 2.0), "threshold": float(thresholds[k])}
-    a, b = gap[k - 1], gap[k]  # a < 0 < b
-    u = -a / (b - a)
-    rate = (1 - u) * (far[k - 1] + frr[k - 1]) / 2.0 + u * (far[k] + frr[k]) / 2.0
-    t0, t1 = thresholds[k - 1], thresholds[k]
-    return {"eer": float(rate), "threshold": float(t0 + u * (t1 - t0)) if np.isfinite(t1) else float(t0)}
+    return _eer_of(far, frr, thresholds)
 
 
 def d_prime(genuine, impostor, genuine_weights=None, impostor_weights=None) -> float:
@@ -341,14 +357,17 @@ def pairs_report(genuine, impostor, genuine_people=None, impostor_people=None, f
         people = len(names)
         out["people"] = people
     boot = {"d_prime": [], "eer": [], **{f"{f:g}": [] for f in levels}}
+    rising = np.unique(np.r_[genuine, impostor, np.inf])  # (every draw's curve at the same thresholds)
+    g_steps, i_steps = _Steps(genuine, rising), _Steps(impostor, rising)
     for row in cluster_counts(people, draws, seed):
         gw, iw = pair_weights(row, g_index, i_index)
         if gw.sum() <= 0 or iw.sum() <= 0:
             continue
         boot["d_prime"].append(d_prime(genuine, impostor, gw, iw))
-        boot["eer"].append(eer(genuine, impostor, gw, iw)["eer"])
-        for f in levels:
-            boot[f"{f:g}"].append(tar_at_far(genuine, impostor, f, gw, iw)["tar"])
+        tar, far_ = g_steps.shares(gw), i_steps.shares(iw)
+        boot["eer"].append(_eer_of(far_, 1.0 - tar, rising)["eer"])
+        for f in levels:  # (the TAR at the strictest threshold whose FAR is at most f: as tar_at_far counts it)
+            boot[f"{f:g}"].append(float(np.max(tar[far_ <= f + 1e-12], initial=0.0)))
     out["d_prime_interval"] = _interval(np.array(boot["d_prime"]), level)
     out["eer_interval"] = _interval(np.array(boot["eer"]), level)
     for f in levels:
@@ -396,23 +415,44 @@ def cmc(scores, mate, top: int = 20) -> np.ndarray:
     return np.array([(r <= k).mean() for k in range(1, top + 1)])
 
 
+class _OpenSet:
+    """A set of searches prepared once (the best non-mated scores, the mates found first, the thresholds), so that
+    their curve under many weightings (bootstrap draws) costs two cumulative sums each."""
+
+    def __init__(self, scores, mate):
+        scores, mate = _searches(scores, mate)
+        self.mate = mate
+        best = scores.max(axis=1) if scores.shape[1] else np.full(len(mate), -np.inf)
+        first = ranks(scores, mate) == 1
+        self.stranger = mate < 0
+        found = np.where(~self.stranger & first, scores[np.arange(len(mate)), np.maximum(mate, 0)], -np.inf)
+        values = np.r_[best[self.stranger], found[~self.stranger]]
+        self.thresholds = np.r_[np.inf, np.unique(values[np.isfinite(values)])[::-1]]
+        self.false = _Steps(best[self.stranger], self.thresholds) if self.stranger.any() else None
+        self.found = _Steps(found[~self.stranger], self.thresholds) if (~self.stranger).any() else None
+
+    def curve(self, weights=None) -> tuple[np.ndarray, np.ndarray]:
+        """``(fpir, fnir)`` at :attr:`thresholds` under ``weights`` (per search)."""
+        w = _weights(weights, len(self.mate))
+        nan = np.full(len(self.thresholds), np.nan)
+        fpir = self.false.shares(w[self.stranger]) if self.false is not None else nan
+        dir_ = self.found.shares(w[~self.stranger]) if self.found is not None else nan
+        return fpir, 1.0 - dir_
+
+    @staticmethod
+    def fnir_at(fpir: np.ndarray, fnir: np.ndarray, target: float) -> int:
+        """The point of the strictest threshold whose FPIR is at most ``target`` with the fewest misses."""
+        ok = np.flatnonzero(fpir <= target + 1e-12)
+        return int(ok[np.argmin(fnir[ok])])
+
+
 def open_set(scores, mate, weights=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """``(fpir, fnir, thresholds)`` at every distinct score (thresholds falling, from ``+inf``): the share of
     non-mated searches whose best score reaches the threshold, and the share of mated searches whose mate is not the
     best candidate at or above it (the detection and identification rate is ``1 - fnir``). ``weights``: per search."""
-    scores, mate = _searches(scores, mate)
-    w = _weights(weights, len(mate))
-    best = scores.max(axis=1) if scores.shape[1] else np.full(len(mate), -np.inf)
-    first = ranks(scores, mate) == 1
-    stranger = mate < 0
-    found = np.where(~stranger & first, scores[np.arange(len(mate)), np.maximum(mate, 0)], -np.inf)
-    values = np.r_[best[stranger], found[~stranger]]
-    thresholds = np.r_[np.inf, np.unique(values[np.isfinite(values)])[::-1]]
-    fpir = _share_at_or_above(best[stranger], w[stranger], thresholds) if stranger.any() else \
-        np.full(len(thresholds), np.nan)
-    dir_ = _share_at_or_above(found[~stranger], w[~stranger], thresholds) if (~stranger).any() else \
-        np.full(len(thresholds), np.nan)
-    return fpir, 1.0 - dir_, thresholds
+    prepared = _OpenSet(scores, mate)
+    fpir, fnir = prepared.curve(weights)
+    return fpir, fnir, prepared.thresholds
 
 
 def fnir_at_fpir(scores, mate, fpir: float, weights=None) -> dict:
@@ -446,6 +486,7 @@ def open_set_report(scores, mate, people=None, levels=FPIR_LEVELS, draws: int = 
            "fnir_at_fpir": {f"{lv:g}": fnir_at_fpir(scores, mate, lv) for lv in resolved}}
     boot = {f"{lv:g}": [] for lv in resolved}
     boot["rank1"] = []
+    prepared = _OpenSet(scores, mate)
     for row in cluster_counts(count, draws, seed):
         w = row[index]
         mated_w = w[mate >= 0]
@@ -453,8 +494,9 @@ def open_set_report(scores, mate, people=None, levels=FPIR_LEVELS, draws: int = 
             boot["rank1"].append(float((mated_w * (r[mate >= 0] == 1)).sum() / mated_w.sum()))
         if w[mate < 0].sum() <= 0 or mated_w.sum() <= 0:
             continue
+        fpir, fnir = prepared.curve(w)
         for lv in resolved:
-            boot[f"{lv:g}"].append(fnir_at_fpir(scores, mate, lv, w)["fnir"])
+            boot[f"{lv:g}"].append(float(fnir[_OpenSet.fnir_at(fpir, fnir, lv)]))
     out["rank1_interval"] = _interval(np.array(boot["rank1"]), level)
     for lv in resolved:
         out["fnir_at_fpir"][f"{lv:g}"]["interval"] = _interval(np.array(boot[f"{lv:g}"]), level)
