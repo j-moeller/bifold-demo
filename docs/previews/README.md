@@ -214,6 +214,15 @@ work goes on. The people are avatars from the
   (B0, the 720p view with the old shading; B5, a window of a good 4K camera
   with the fitted head). Renders of avatars only
   (`docs/research/face_recognition_e1_results.md`).
+- `closeups.jpg`: close-ups (step S4). Faces in windows of the virtual sensor
+  with 256 pixels between the eyes, from the front and turned 70 degrees
+  (Male_Adult_05, Female_Adult_04, Male_Child_02): on the left as the high
+  quality draws them (the coarse head), on the right as the close quality
+  does (the head subdivided twice, the key light wrapped round the skin, a
+  cornea's highlight, the lashes antialiased); the jaw, chin and nose lose
+  their facets in profile. Bottom: an eye with 512 pixels between the eyes,
+  the lashes cut out and antialiased, the cornea's highlight. Renders of
+  avatars only (`docs/research/closeups_results.md`).
 - `people_identity.jpg`: the demo's `N` (step F2) in the fair, 20 s into a
   measurement run of the best profile (AdaFace, at the one embedding a second
   this CPU allows) with the virtual sensor's windows

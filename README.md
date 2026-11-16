@@ -2483,8 +2483,17 @@ within their noise: the results note, section 6):
 
 Faces from photos keep S2's rule (no avatar maps where the photo face is,
 no hemisphere variation there): the wrap and the cornea's highlight are not
-the avatar's features, and their effect on the identity scores of faces from
-real photos is measured in the results note.
+the avatar's features. Faces painted from real photos score 0.015-0.021
+higher against the person's other photo with them (the wrap does it), and
+S3's fitted faces keep their scores.
+
+**Measured** ([docs/research/closeups_results.md](docs/research/closeups_results.md)):
+at 64-256 pixels between the eyes the finer head moves the recognisers'
+same-person scores by less than 0.002 and d' by less than 0.1; the shading
+raises the scores by 0.006-0.012 and d' by about 0.4, in a hard side light
+and on turned faces; rank-1 among ten identities is 1.000 either way. On
+llvmpipe a window takes about 40 ms more with the x4 head and 140 ms more
+with x16; the shading costs nothing measurable.
 
 ## Character creator
 

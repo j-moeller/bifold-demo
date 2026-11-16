@@ -12,10 +12,31 @@ models of F1 (AdaFace IR-101, `buffalo_l`'s ResNet-50, SFace, with SCRFD and YuN
 between runs here; the scratch scripts are not in the repository. Photos of real people were used for checks only, in
 memory; only aggregate numbers are reported.
 
-<!-- IN SHORT: filled in last -->
+**In short.**
 
-*Results so far: sections 7 and 8 (faces from real photos, the windows' render times) are being measured, and this
-note is completed when they are.*
+- **A finer head where a face is seen up close.** Every triangle of the head becomes a curved one (a PN triangle),
+  split into 4 or 16: the closed lips stay closed, the lids' rims and sharp folds stay creases, the neck's edge, the
+  mouth's inside and the skin the body moves stay where they were, the eyeballs stay on their spheres, and the skin
+  weights, UVs and tangents follow. S3's rig checks pass at both levels in the 12 faces of the face rig, on four
+  avatars and on a fitted head. A head takes 0.06 s (x4) or 0.20 s (x16) and 0.7 or 2.7 MB.
+- **The outline's facets go.** The coarse jaw leaves a smooth curve by half a pixel from about 68 px between the eyes,
+  the x4 head's from about 184 px: windows subdivide once from 64 px and twice from 180 px. On the same topology the
+  curved triangles are as smooth as the modified Butterfly scheme from the front and smoother in profile.
+- **Shading up close:** the key light wraps round the skin (red furthest), the eyeballs get a cornea's highlight,
+  and lashes and hair cards are antialiased by alpha to coverage. Smaller faces and the 720p view are drawn as before,
+  bit for bit. No shadow map was made.
+- **What the recognisers see changes little.** The finer head moves the same-person scores by less than 0.002 and
+  d' by less than 0.1 (AdaFace, the ResNet-50, SFace; 64-256 px). The shading raises the same-person scores by
+  0.006-0.012 and d' by about 0.4, in a hard side light and on turned faces (in the fair's soft frontal light, by
+  little either way). Rank-1 among ten identities is 1.000 either way: up close the gain is mostly what the faces
+  look like. Faces from photos keep their identity: S3's fitted faces move by -0.012 to +0.005, and faces painted
+  from real photos gain 0.015-0.021 from the wrap.
+- **The shipped calibrations stand.** Faces drawn at close (64-128 px) change no decision on the fair's 20 avatars.
+  Gallery photos drawn at close would cost known people's small faces 0.8-1.5 points of names at 1 % (through the
+  shading), so only the demo's live windows draw close-ups; any other renderer, the calibration's and the gallery
+  photos' among them, keeps the high quality.
+- **Cost:** on llvmpipe a window takes about 40 ms more with the x4 head and 140 ms more with x16; the shading costs
+  nothing measurable.
 
 ## 1. The subdivided heads
 
@@ -102,6 +123,10 @@ eye distance at which it reaches half a pixel (it grows in proportion to the fac
   smoother in profile (8.7 against 9.5 degrees on the median, 22.5 against 25.2 at the 90th percentile), as expected
   where uneven edges meet the Butterfly's even-spacing weights. Seen in windows the two x4 heads look alike; both
   round the coarse head's jaw, chin and nose tip.
+- **In the expressions.** Contact sheets of three avatars (Male_Adult_05, Female_Adult_04, Male_Child_02) in the 13
+  faces of the face rig, front and side at 160 px, coarse against x16 (not in the repository): the expressions move
+  the finer head as the coarse one, with no lips parting, no gap at a lid and no eyeball through one, and the
+  profile's jaw, chin and nose are rounder. The preview shows the close quality at 256 px.
 
 ## 3. In windows
 
@@ -206,8 +231,9 @@ coarse 5.47-5.89, x16 4.54-5.93, close 5.93-6.22.
   6.1 (the intervals over ten identities overlap). The gain is in the side light (AdaFace's d' 7.8 to 8.4, the
   ResNet-50's 7.4 to 7.8, SFace's 5.8 to 6.2) and on turned faces (45 degrees: 7.3 to 8.1, 7.2 to 7.7, 5.8 to 6.3),
   where the wrapped light fills the shadow side; in the fair's light and from the front it is small either way
-  (frontal faces: AdaFace 9.9 to 9.6, the ResNet-50 9.5 to 9.7, SFace 7.5 to 7.8). Against a gallery drawn at high the same-person scores keep their level
-  (-0.004 to +0.005, the intervals hold 0) and d' still rises (AdaFace 7.0 to 7.6): the scores spread less.
+  (frontal faces: AdaFace 9.9 to 9.6, the ResNet-50 9.5 to 9.7, SFace 7.5 to 7.8). Against a gallery drawn at high
+  the same-person scores keep their level (-0.004 to +0.005, the intervals hold 0) and d' still rises (AdaFace 7.0
+  to 7.6): the scores spread less.
 - **Rank-1 among the ten is 1.000** in every configuration but SFace's finer heads (0.997: the window above): faces
   of 64 px and more are all named among ten people; the differences show in the scores, not in the names.
 
@@ -333,14 +359,43 @@ windows (8K, the ideal camera) in the fair's hall at 2 m, turned 0 and 25 degree
 between the eyes; the three recognisers; the same windows drawn at the high quality, at the close quality, at the
 close quality with the coarse head, and at the close quality without the skin's wrap.
 
-<!-- PHOTO NUMBERS -->
+72 windows per configuration and recogniser (4 people, 3 avatars, 2 turns, 3 sizes); the same-person score of a
+window against the person's other photo, its change from the same window at high (the mean; in how many windows it
+fell; the largest fall), rank-1 among the four:
+
+| Recogniser | high: same-person (lowest) | close | change | close, coarse head | close, no wrap | rank-1, high / close |
+|---|---|---|---|---|---|---|
+| AdaFace IR-101 | 0.358 (0.243) | 0.379 (0.265) | +0.021 (fell in 19 %, at most -0.049) | 0.383 (+0.025) | 0.356 (-0.002) | 1.000 / 1.000 |
+| ResNet-50 | 0.344 (0.242) | 0.358 (0.244) | +0.015 (29 %, -0.056) | 0.360 (+0.016) | 0.343 (-0.001) | 1.000 / 1.000 |
+| SFace | 0.375 (0.246) | 0.392 (0.273) | +0.017 (26 %, -0.035) | 0.395 (+0.020) | 0.374 (-0.001) | 0.972 / 1.000 |
+
+**Faces from real photos keep their identity up close, and gain a little.** Their same-person scores rise by 0.015-
+0.021 on the mean at the close quality (the same at 80, 128 and 192 px), the strangers' stay (-0.026 to -0.024,
+-0.016 to -0.014, 0.111 to 0.113 on the mean; the highest 0.096 to 0.091, 0.109 to 0.087, 0.339 to 0.301), and
+SFace names every window rightly among the four (from 97 %). The gain is the skin's wrapped light: without it the
+close quality scores as the high one (-0.001 to -0.002), and with the coarse head as with the finer one. The wrap
+puts none of the avatar's features on the photo's face (no maps there: S2's rule is kept), so the faces from photos
+keep it.
 
 ## 8. Costs
 
 The subdivision's (section 1): 0.06 s once and 0.20 s twice per head, 0.7 and 2.7 MB per subdivided head (in memory
 and on the GPU; cached for 64 head geometries), the labels 1.1 s the first time for an avatar.
 
-<!-- WINDOW COSTS -->
+**A window's render time** on llvmpipe (the person alone, turned 20 degrees, the fair's light; the median of 7
+renders after a first one that uploads and subdivides; three avatars, Male_Adult_05, Female_Adult_04 and
+Male_Child_02; this CPU shared with another builder's measurements, so the times scatter by 20-40 %):
+
+| Eye distance (window) | coarse (high) | x4 | x16 | x16 + shading | close (as shipped) |
+|---|---|---|---|---|---|
+| 128 px (576-720 px square) | 76-108 ms | 129-148 ms | 233-253 ms | 192-242 ms | 126-140 ms (x4) |
+| 256 px (1136-1440 px square) | 221-323 ms | 305-372 ms | 409-513 ms | 429-491 ms | 389-547 ms (x16) |
+
+The finer head is what costs: x4 adds about 40 ms to a window (40 % at 128 px, 15 % at 256 px), x16 about 140 ms (more
+than doubling a 128 px window, which is why x16 waits until 180 px, where a window has four times the pixels); the
+close-up shading adds no measurable time. The 720p view does not change (its quality stays high), nor windows of
+faces under 64 px. On a GPU (the Mac's) meshes of 13,000 and 50,000 triangles a head should cost little; that was
+not measured here.
 
 ## 9. Open issues
 
@@ -354,5 +409,16 @@ and on the GPU; cached for 64 head geometries), the labels 1.1 s the first time 
   tangent when the tangents are made again; the normal map's relief may turn the wrong way on the few triangles round
   them (not seen in the windows looked at).
 - **The Butterfly comparison is at one level** (x4) and on the outline only.
-
-<!-- MORE OPEN ISSUES -->
+- **Gallery photos must stay at the high quality.** A gallery of avatars rendered through the demo's live renderer
+  (whose windows are close) would lose small faces' names (section 6); `calibrate.gallery_photos` and the calibration
+  make renderers of their own and are safe. Remaking the calibrations at close would need their galleries at high,
+  or the whole world at close measured again.
+- **The fair's avatars cannot show a change in false alarms at 1 %**: they give none at either quality. The shift was
+  judged from the rarities and the rates per comparison, which move by little; a library with lookalike pairs (as the
+  calibrating avatars have) would test the 56-80 and 80+ bins harder.
+- **`close_from` sits on a calibrated size.** Faces asked at 64 px fall either side of it (the eye distance is taken at
+  the head bone); harmless as measured, but a threshold between the calibrated sizes (say 72 px) would make the
+  calibration's 64 px faces all drawn as at high.
+- **Rank-1 is at its ceiling** among ten identities at 64 px and more; a larger gallery would show whether the
+  shading's gain in d' turns into names.
+- **x16 is expensive on llvmpipe** (about 140 ms more per window); on the Mac it was not measured.
