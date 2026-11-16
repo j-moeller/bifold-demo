@@ -604,3 +604,37 @@ branch and pushed; its results go into the progress log.
     Its tests agree with scikit-learn's `roc_curve` (checked here with scikit-learn installed beside the environment).
   - **S4** (subdivided heads in windows; skin, eye and lash shading; measured for recognition up close) started from
     the branch's head, in parallel with E1.
+- **16 November, 02:50 UTC: E1's tools are on the branch; S4's subdivided heads too. E1's measurements are running,
+  with the end expected around 09:00 UTC.**
+  - **E1, parts 1-7:**
+    - **Metrics,** with bootstrap intervals over people. They agree with scikit-learn.
+    - **`bifold-faces eval`** with manifests and content-keyed caches. Runs are deterministic and resumable.
+    - **Rendered stills (P2):**
+      - the conditions: eye distance, turn, nod, four lights, occluders, camera presets, head own or fitted;
+      - the ladder from the 720p view (B0) to fitted heads (B5);
+      - scripted scenes through the demo's whole pipeline, scored per track (P3);
+      - the acceptance test as a command.
+    - **Margins:** replays and simulated tracks to compare them.
+    - **Real people on the Mac:** photo folders (P4) and recorded camera sessions labelled once by hand (P5).
+  - **Found and fixed while building E1:**
+    - **A leak through the carrier's face.** A face worn on another avatar still carries some of that avatar's
+      identity. With the carrier enrolled, strangers' worn faces were named in 21 % of probes on the carrier's own
+      head and 5 % on the fitted head. Worn faces are now never compared with their carrier, and that effect is
+      measured on its own.
+    - **A stale image cache.**
+    - **LFW's people split into several clusters,** now joined by a reference model.
+  - **First measurements:**
+    - **LFW subset with SFace:** reproduces F1 exactly (99.47 %, d' 5.72).
+    - **Smoke test on the local photos** (numbers only): every profile named every known person down to an eighth
+      of the photo, and no stranger. With 6 people this shows the tools work, not how well.
+    - **Preliminary: real faces per track** (LFW's photos as the faces a track gathers, SFace, shipped calibration).
+      Known people are named in about 70 % of tracks, against 44 % from a single face. The stranger rate must be
+      measured again after the cluster fix.
+    - **The tail on real faces needs watching:** real strangers reach the shipped threshold at about 5e-5 per
+      comparison, where the avatars' curve extrapolates to about 3e-7.
+  - **S4, part 1: subdivided heads.**
+    - 4 or 16 triangles for each of the head's own, on curved triangles through its vertices.
+    - Lips, lid margins and sharp folds stay creased, and closed lips stay closed.
+    - The neck's edge, the teeth and the tongue are kept; the eyeballs stay on their spheres.
+    - The same rig checks as fitted heads, in all 12 faces.
+    - 0.07 s (x4) and 0.17 s (x16) per head.
