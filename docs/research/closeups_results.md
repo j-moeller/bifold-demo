@@ -14,8 +14,8 @@ memory; only aggregate numbers are reported.
 
 <!-- IN SHORT: filled in last -->
 
-*Results so far: the faces from photos of section 5, and sections 7 and 8 (faces from real photos, the windows'
-render times) are being measured, and this note is completed when they are.*
+*Results so far: sections 7 and 8 (faces from real photos, the windows' render times) are being measured, and this
+note is completed when they are.*
 
 ## 1. The subdivided heads
 
@@ -211,7 +211,35 @@ coarse 5.47-5.89, x16 4.54-5.93, close 5.93-6.22.
 - **Rank-1 among the ten is 1.000** in every configuration but SFace's finer heads (0.997: the window above): faces
   of 64 px and more are all named among ten people; the differences show in the scores, not in the names.
 
-<!-- PHOTO FACES (D1) -->
+**Faces from photos** (S3's D1: avatar B's fitted head wearing the textures made from six renders of avatar A, the
+identity shown A; 8 pairs, 240 windows per configuration; galleries: A's own renders, drawn in the same
+configuration, or with the coarse head as for people enrolled before):
+
+| Recogniser | configuration | same-person | stranger | d' | rank-1 | same-person change, matched gallery | same-person change, coarse gallery |
+|---|---|---|---|---|---|---|---|
+| AdaFace IR-101 | coarse | 0.514 | 0.141 | 3.36 (2.71-4.41) | 0.933 | | |
+| | x4 | 0.507 | 0.137 | 3.33 (2.68-4.41) | 0.929 | -0.007 (-0.009 to -0.004) | -0.004 (-0.006 to -0.001) |
+| | x16 | 0.510 | 0.139 | 3.48 (2.74-4.59) | 0.938 | -0.004 (-0.010 to +0.002) | -0.001 (-0.006 to +0.004) |
+| | shading | 0.505 | 0.136 | 3.35 (2.59-4.51) | 0.929 | -0.009 (-0.020 to -0.000) | -0.007 (-0.013 to -0.002) |
+| | close | 0.502 | 0.132 | 3.43 (2.61-4.66) | 0.938 | -0.012 (-0.023 to -0.002) | -0.007 (-0.015 to +0.001) |
+| ResNet-50 | coarse | 0.523 | 0.145 | 3.42 (2.79-4.39) | 0.925 | | |
+| | x4 | 0.518 | 0.139 | 3.45 (2.81-4.41) | 0.929 | -0.005 (-0.008 to -0.001) | -0.002 (-0.006 to +0.001) |
+| | x16 | 0.519 | 0.139 | 3.62 (2.88-4.55) | 0.933 | -0.003 (-0.011 to +0.005) | +0.000 (-0.007 to +0.009) |
+| | shading | 0.524 | 0.143 | 3.63 (2.86-4.68) | 0.933 | +0.001 (-0.006 to +0.008) | -0.001 (-0.004 to +0.004) |
+| | close | 0.522 | 0.138 | 3.79 (2.96-4.96) | 0.938 | -0.000 (-0.010 to +0.012) | +0.000 (-0.008 to +0.012) |
+| SFace | coarse | 0.612 | 0.266 | 3.18 (2.77-3.81) | 0.924 | | |
+| | x4 | 0.607 | 0.263 | 3.22 (2.79-3.87) | 0.924 | -0.005 (-0.008 to -0.002) | -0.001 (-0.004 to +0.003) |
+| | x16 | 0.606 | 0.262 | 3.17 (2.76-3.79) | 0.920 | -0.006 (-0.010 to -0.002) | -0.001 (-0.006 to +0.003) |
+| | shading | 0.619 | 0.263 | 3.51 (2.97-4.40) | 0.933 | +0.007 (-0.000 to +0.017) | +0.007 (+0.001 to +0.012) |
+| | close | 0.614 | 0.260 | 3.49 (2.95-4.35) | 0.933 | +0.004 (-0.005 to +0.014) | +0.005 (-0.003 to +0.012) |
+
+- **Faces from photos keep their identity up close.** With the close quality their same-person scores move by
+  -0.012 to +0.005 (AdaFace a little lower: 2 % of its score, the strangers' as much; the ResNet-50 and SFace as
+  before), d' rises from 3.2-3.4 to 3.4-3.8 and rank-1 among the ten from 0.92-0.93 to 0.93-0.94; against galleries
+  drawn with the coarse head (people enrolled before) the same. The finer head alone lowers their same-person scores
+  by 0.003-0.007 against matched galleries, the shading alone moves them by -0.009 to +0.007.
+- They stay what S3 measured them to be: far less like the person than the avatars' own faces (same-person 0.50-0.61
+  against 0.84-0.85, d' 3.2-3.8 against 5.4-7.4), whatever the mesh and the shading.
 
 ## 6. The shipped calibrations, made at "high"
 
