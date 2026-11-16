@@ -177,6 +177,28 @@ def test_open_set_report():
         pytest.approx(1 / 3)
 
 
+def test_a_rate_at_an_edge_is_not_a_point():
+    """Twenty people, three searches each, never missed, and every genuine pair accepted: the bootstrap's intervals
+    would be points; they are the exact bounds over the twenty people (not over the sixty searches)."""
+    rng = np.random.default_rng(3)
+    people = [f"p{k}" for k in range(20)]
+    mate = np.repeat(np.arange(10), 3).tolist() + [-1] * 30  # (ten enrolled, ten strangers)
+    scores = rng.uniform(0.0, 0.3, (60, 10))
+    scores[np.arange(30), mate[:30]] = rng.uniform(0.8, 1.0, 30)
+    report = metrics.open_set_report(scores, mate, people=np.repeat(people, 3), levels=(0.1,), draws=100)
+    edge = 1 - 0.025 ** (1 / 10)  # (the ten enrolled people searched)
+    assert report["fnir_at_fpir"]["0.1"]["fnir"] == 0.0
+    assert report["fnir_at_fpir"]["0.1"]["interval"] == [0.0, pytest.approx(edge)]
+    assert report["rank1"] == 1.0 and report["rank1_interval"] == [pytest.approx(0.025 ** (1 / 10)), 1.0]
+    genuine = scores[np.arange(30), mate[:30]]
+    impostor = scores[30:].ravel()
+    i_people = [(people[10 + k // 10 // 3], people[k % 10]) for k in range(len(impostor))]  # (stranger, enrolled)
+    pairs = metrics.pairs_report(genuine, impostor, np.repeat(people[:10], 3), i_people, draws=100)
+    assert pairs["tar_at_far"]["0.01"]["tar"] == 1.0
+    assert pairs["tar_at_far"]["0.01"]["interval"] == [pytest.approx(0.025 ** (1 / 10)), 1.0]
+    assert pairs["eer"] == 0.0 and pairs["eer_interval"] == [0.0, pytest.approx(edge)]
+
+
 def _segment(person, known, shown=2.0, first=0.0, correct=None, named=None, wrong=(), unknown=None, end=10.0,
              frames=50, track=1):
     return Segment(person, person, track, known, 0.0, end, shown, first, correct, tuple(wrong), unknown,

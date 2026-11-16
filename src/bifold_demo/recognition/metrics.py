@@ -38,7 +38,10 @@ false-accept rate under ``1 / n`` is not resolvable (:func:`far_levels`).
 intervals come from a **bootstrap over clusters** (:func:`cluster_counts`): people (or identity pairs) are drawn with
 replacement and every comparison, search or track of a drawn cluster counts as often as it was drawn. For pairs the
 clusters are people and an impostor pair counts with the product of its two people's counts (:func:`pairs_report`).
-Percentile intervals, two-sided at ``level`` (0.95 unless said). :func:`binomial_interval` (Clopper-Pearson, exact)
+Percentile intervals, two-sided at ``level`` (0.95 unless said). A rate at 0 or 1 (no event, or every one: no
+miss, every genuine pair accepted) would get a point from the bootstrap; its interval is at least the exact bound with
+its people as the independent units, ``1 - ((1 - level) / 2) ** (1 / people)`` (16.8 % for 20 people at 95 %).
+:func:`binomial_interval` (Clopper-Pearson, exact)
 is for counts of independent units (people, identity pairs); with zero events it gives the exact upper bound (about
 three over ``n`` at 95 %, the "rule of three").
 """
@@ -127,6 +130,20 @@ def _interval(draws: np.ndarray, level: float) -> list[float | None]:
         return [None, None]
     tail = (1.0 - level) / 2.0
     return [float(np.quantile(draws, tail)), float(np.quantile(draws, 1.0 - tail))]
+
+
+def _edge(rate, interval: list, clusters: int, level: float) -> list:
+    """``interval`` (a bootstrap's) of a rate at 0 or 1 widened to at least the exact bound over ``clusters`` (as
+    :func:`bootstrap_rate` gives): no draw leaves a rate that no person moves (no mated search missed, every genuine
+    pair accepted), and a point is not an interval."""
+    if rate is None or clusters <= 0 or interval[0] is None:
+        return interval
+    bound = ((1.0 - level) / 2.0) ** (1.0 / clusters)
+    if rate <= 0.0:
+        return [0.0, max(interval[1], 1.0 - bound)]
+    if rate >= 1.0:
+        return [min(interval[0], bound), 1.0]
+    return interval
 
 
 def _clusters(clusters, n: int) -> tuple[np.ndarray, int]:
@@ -369,9 +386,11 @@ def pairs_report(genuine, impostor, genuine_people=None, impostor_people=None, f
         for f in levels:  # (the TAR at the strictest threshold whose FAR is at most f: as tar_at_far counts it)
             boot[f"{f:g}"].append(float(np.max(tar[far_ <= f + 1e-12], initial=0.0)))
     out["d_prime_interval"] = _interval(np.array(boot["d_prime"]), level)
-    out["eer_interval"] = _interval(np.array(boot["eer"]), level)
+    owners = len(np.unique(g_index))  # (the people of the genuine pairs: a TAR or an EER at an edge, bound over them)
+    out["eer_interval"] = _edge(out["eer"], _interval(np.array(boot["eer"]), level), owners, level)
     for f in levels:
-        out["tar_at_far"][f"{f:g}"]["interval"] = _interval(np.array(boot[f"{f:g}"]), level)
+        entry = out["tar_at_far"][f"{f:g}"]
+        entry["interval"] = _edge(entry["tar"], _interval(np.array(boot[f"{f:g}"]), level), owners, level)
     out["level"], out["draws"] = level, draws
     return out
 
@@ -497,9 +516,11 @@ def open_set_report(scores, mate, people=None, levels=FPIR_LEVELS, draws: int = 
         fpir, fnir = prepared.curve(w)
         for lv in resolved:
             boot[f"{lv:g}"].append(float(fnir[_OpenSet.fnir_at(fpir, fnir, lv)]))
-    out["rank1_interval"] = _interval(np.array(boot["rank1"]), level)
+    mated = len(np.unique(index[mate >= 0]))  # (the people of the mated searches: a rate at an edge, bound over them)
+    out["rank1_interval"] = _edge(out["rank1"], _interval(np.array(boot["rank1"]), level), mated, level)
     for lv in resolved:
-        out["fnir_at_fpir"][f"{lv:g}"]["interval"] = _interval(np.array(boot[f"{lv:g}"]), level)
+        entry = out["fnir_at_fpir"][f"{lv:g}"]
+        entry["interval"] = _edge(entry["fnir"], _interval(np.array(boot[f"{lv:g}"]), level), mated, level)
     out["level"], out["draws"] = level, draws
     return out
 
