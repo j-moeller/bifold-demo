@@ -534,3 +534,37 @@ branch and pushed; its results go into the progress log.
     - cached fitted heads are not refitted when the fit changes;
     - 22 of 32 mutations survive the tests.
   - **The S3 builder fixes them forward,** the 60-degree photos first.
+- **16 November, 00:55 UTC: F2's review fixed; F2 is done; E1 started.**
+  - **Twelve fix commits** are on the branch. Every finding is fixed, and the reviewer's reproduction scripts all pass
+    on the branch. The builder's full suite: 1034 passed, 8 skipped; lint unchanged.
+  - **Wrong names closed:**
+    - one name per person;
+    - the clock going back;
+    - "unknown" turning into a name too fast;
+    - no names from uncalibrated models;
+    - swaps caught at small sizes, with windows and without (0.5 s instead of 5 s);
+    - a tighter head fit (faces of missed people given to neighbours' tracks: 58 → 12 of about 750).
+  - **The calibrations, made again:**
+    - from 87 avatars (about 72 identities, those wearing a fair face left out, faces gated as live);
+    - `--fpir` now means per stranger track.
+    - Per stranger track, at 1 % asked, on held-out halvings (90 % intervals over identity pairs):
+
+      | Recogniser | Measured |
+      |---|---|
+      | AdaFace | 0.70 % [0.33-1.15] |
+      | ResNet-50 | 0.52 % [0.18-0.90] |
+      | SFace | 0.61 % [0.08-1.26] |
+
+    - The strictest target, 0.1 %, is not met for AdaFace and SFace (0.25 % and 0.34 %), because of a few
+      look-alike avatar pairs.
+  - **Real faces (LFW, numbers only):** no stranger pair passes at 1 % any more, but 34-49 % of same-person pairs fall
+    below the threshold. So the webcam keeps the 1 % target.
+  - **The cost of the honest margin:**
+    - the commercial profile now names 2 of 5 known people within 2 s in the fair, against 5 of 5 with the first
+      calibrations, which let about twice the asked false alarms through;
+    - the best profile names sooner (median 3.0 s against 5.0 s), by finishing one track first and deciding on one big
+      frontal face;
+    - no wrong name, no stranger named.
+  - **E1** (evaluation: metrics, `bifold-faces eval` with manifests, rendered stills and video, the ablation ladder,
+    the acceptance test, the margin to recommend, real-face guidance for the Mac) started from the branch's head.
+  - S3's review fixes are being finished.
