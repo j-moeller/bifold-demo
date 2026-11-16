@@ -17,9 +17,9 @@ Where the face-recognition work stands, as of 16 November 2026, with the numbers
 | S1 | Virtual high-resolution sensor: close-up windows on heads | Done |
 | S2 | High-resolution heads: 2048 textures, normal and specular maps, linear light | Done |
 | F2 | From a person to an identity: tracks, faces, evidence, calibrated decisions, demo | Done |
-| S3 | Head shape fitted to a person's photos | Built and reviewed. Review fixes 1-4 are on the branch, with the held-out numbers; the final checks are under way |
-| E1 | Evaluation: metrics, protocols, baselines, acceptance test | Started, paused before its first commit |
-| S4 | Close-ups: finer head meshes, skin and eye shading | Not started |
+| S3 | Head shape fitted to a person's photos | Done: built, reviewed, fixed |
+| E1 | Evaluation: metrics, protocols, baselines, acceptance test | Building: the metrics are on the branch |
+| S4 | Close-ups: finer head meshes, skin and eye shading | Building |
 
 **The system today.**
 
@@ -158,8 +158,15 @@ The recognisers' speeds here, per face:
   exception.
 - **Real photos,** checked locally with numbers only: same-person scores rose by 0.02-0.04. These were the same photos
   the textures were made from.
-- **Review:** no high findings, 5 medium and 11 low. Fixes 1-4 are on the branch: turned photos, sharper and local rig
-  checks, focal lengths, caches, tests, the neck seam, the numbers above.
+- **Review:** no high findings, 5 medium and 11 low, all fixed in five commits:
+  - turned photos;
+  - sharper, local rig checks, with the shrink stored with the shape;
+  - focal lengths;
+  - caches refitted when the fit changes;
+  - the neck seam;
+  - tests that catch all 65 deliberately introduced faults.
+
+  The full suite: 1043 passed, 9 skipped.
 
 ## Open issues
 

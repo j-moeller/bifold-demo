@@ -587,3 +587,20 @@ branch and pushed; its results go into the progress log.
   - AdaFace's same-person score is 0.502 with the avatar's own head and 0.585 with the fitted one; 23 of 24 pair and
     model cases gain.
   - [face_recognition_status.md](face_recognition_status.md) is updated. E1's builder started again from its brief.
+- **16 November, 01:55 UTC: S3's review fixed (S3 done); E1's metrics on the branch; S4 started.**
+  - **S3's five fix commits are on the branch.** The builder's full suite: 1043 passed, 9 skipped. The tests now catch
+    all 65 deliberately introduced faults. On the held-out pairs:
+    - the landmarks 2.17 mm (2.65 with the avatar's own head);
+    - the surface 1.10 mm (1.25);
+    - 18 of 20 pairs better;
+    - AdaFace's same-person score 0.585 (0.502).
+  - **E1, part 1:** `recognition/metrics.py`, with:
+    - ROC and DET, TAR at FAR, open-set FNIR and DIR at FPIR, CMC, EER, d';
+    - track-level shares;
+    - achieved against asked false alarms;
+    - the acceptance test;
+    - bootstrap intervals over people.
+
+    Its tests agree with scikit-learn's `roc_curve` (checked here with scikit-learn installed beside the environment).
+  - **S4** (subdivided heads in windows; skin, eye and lash shading; measured for recognition up close) started from
+    the branch's head, in parallel with E1.
