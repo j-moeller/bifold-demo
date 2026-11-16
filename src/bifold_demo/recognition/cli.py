@@ -406,6 +406,22 @@ def cmd_eval(args) -> int:
     from .engine import FaceEngine
 
     out = Path(args.out)
+    if args.record:
+        from . import evalvideo
+
+        width, _, height = args.capture.partition("x")
+        evalvideo.record(args.record, args.camera, (int(width), int(height)), args.seconds)
+        return 0
+    if args.review:
+        import os
+
+        video = Path(args.review)
+        raw = {"format": 1, "name": video.stem, "protocol": "P5", "items": [{
+            "id": video.stem, "kind": "video", "path": video.name,
+            "faces": os.path.relpath(Path(args.faces).resolve(), video.parent.resolve()),
+            "labels": Path(args.labels).name if args.labels else f"{video.stem}.labels.csv"}]}
+        args.manifests = [video.with_suffix(".manifest.json")]
+        args.manifests[0].write_text(json.dumps(raw, indent=1))
     if args.build:
         if args.build in ("p2", "ladder"):
             names = args.identities or protocols.fair_identities(args.characters)
@@ -476,6 +492,15 @@ def cmd_eval(args) -> int:
                         status = max(status, 0 if verdict["verdict"] == "pass" else 1)
                 path = evaluate.write_json(out / name / "results.json", results)
             else:
+                if manifest.of_kind("video"):
+                    from . import evalvideo
+
+                    results["videos"] = {item.id: evalvideo.run_video(run, item, manifest.folder, args.yolo)
+                                         for item in manifest.of_kind("video")}
+                    if args.acceptance:
+                        for scored in results["videos"].values():
+                            for profile in scored.values():
+                                status = max(status, 0 if profile["acceptance"]["verdict"] == "pass" else 1)
                 path = evaluate.write_json(out / manifest.name / "results.json", results)
             for line in evaluate.summary_lines(results):
                 print(line)
@@ -610,7 +635,17 @@ def main(argv=None) -> int:
     evaluation.add_argument("--yolo", default=None, metavar="FILE",
                             help="scene runs: YOLO26n's weights for the best and licensed profiles")
     evaluation.add_argument("--acceptance", action="store_true",
-                            help="judge the scene runs by the acceptance test (exit 1 when a profile fails it)")
+                            help="judge the scene runs (or recordings) by the acceptance test (exit 1 when a profile "
+                                 "fails it)")
+    evaluation.add_argument("--record", default=None, metavar="FILE",
+                            help="record a session from the camera into FILE (Motion-JPEG .avi; P5) and stop")
+    evaluation.add_argument("--camera", type=int, default=0, help="--record: the camera's index (default 0)")
+    evaluation.add_argument("--capture", default="1920x1080", metavar="WxH",
+                            help="--record: the resolution asked of the camera (default 1920x1080)")
+    evaluation.add_argument("--review", default=None, metavar="VIDEO",
+                            help="run the pipeline over a recording: the first time, write its review sheets "
+                                 "(<video>.review.jpg, <video>.labels.csv) to label; once labelled, score it")
+    evaluation.add_argument("--labels", default=None, metavar="CSV", help="--review: the labels sheet's name")
     evaluation.add_argument("--splits", type=int, default=None,
                             help="splits of the identities into enrolled and strangers (default: the manifest's)")
     evaluation.add_argument("--draws", type=int, default=1000, help="bootstrap draws (default 1000)")

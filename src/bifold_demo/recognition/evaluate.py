@@ -79,7 +79,7 @@ import numpy as np
 from . import metrics
 
 FORMAT = 1
-KINDS = ("still", "pack", "scene")
+KINDS = ("still", "pack", "scene", "video")
 ROLES = ("gallery", "probe")
 SOURCES = ("image", "render")
 RENDER_VERSION = 1  # raised when rendering changes: renders keyed with another version are not reused
@@ -307,9 +307,10 @@ def parse(raw: dict, folder=".", source="manifest") -> Manifest:
             conditions = {str(k): v for k, v in conditions.items()}
             if "scale" in conditions:
                 conditions["scale"] = float(conditions["scale"])
-        extra = {k: v for k, v in entry.items()
-                 if k not in ("id", "kind", "role", "identity", "source", "path", "conditions", "labels")}
-        labels = {str(k): v for k, v in (entry.get("labels") or {}).items()}
+        own = ("id", "kind", "role", "identity", "source", "path", "conditions") + (("labels",) if kind == "still"
+                                                                                   else ())
+        extra = {k: v for k, v in entry.items() if k not in own}
+        labels = {str(k): v for k, v in (entry.get("labels") or {}).items()} if kind == "still" else {}
         items.append(Item(str(entry["id"]), kind, entry.get("role"), entry.get("identity"), entry.get("source"),
                           entry.get("path"), conditions, extra, labels))
     return Manifest(str(raw.get("name") or "manifest"), tuple(items), str(folder), str(raw.get("protocol") or ""),
@@ -374,6 +375,13 @@ def problems(raw, folder=".") -> list[str]:
             continue
         if kind == "scene":
             out += _scene_problems(entry, where)
+            continue
+        if kind == "video":
+            path = entry.get("path")
+            if not path or not (Path(folder) / str(path)).is_file():
+                out.append(f"{where}: no such recording: {path}")
+            if not (Path(folder) / str(entry.get("faces", "faces"))).is_dir():
+                out.append(f"{where}: no faces folder (the enrolled people): {entry.get('faces', 'faces')}")
             continue
         role, identity, source = entry.get("role"), entry.get("identity"), entry.get("source")
         if role not in ROLES:
@@ -1132,6 +1140,17 @@ def summary_lines(results: dict) -> list[str]:
                      f"strangers named {_pct(fpir.get('rate'), fpir.get('interval'))} of {s['strangers']['eligible']},"
                      f" wrong names {s['wrong_names']}; acceptance: {acc['verdict']}"
                      + (" (confident)" if acc["confident"] else " (not with confidence)"))
+    for video, by_profile in (results.get("videos") or {}).items():
+        if not by_profile:
+            lines.append(f"  {video}: label its tracks, then run it again")
+        for profile, r in by_profile.items():
+            s, acc = r["summary"], r["acceptance"]
+            within = s["known"]["named_within"].get("2") or {}
+            fpir = s["strangers"]["fpir"]
+            lines.append(f"  {video} {profile}: {r['labelled']} of {r['tracks']} tracks labelled; known named within "
+                         f"2 s {_pct(within.get('rate'), within.get('interval'))} of {s['known']['eligible']}, "
+                         f"strangers named {_pct(fpir.get('rate'), fpir.get('interval'))} of "
+                         f"{s['strangers']['eligible']}, wrong names {s['wrong_names']}; acceptance: {acc['verdict']}")
     return lines
 
 

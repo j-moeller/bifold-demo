@@ -170,6 +170,77 @@ def test_a_tiny_p3_end_to_end(world):
     assert score["replay_agrees"]["agree"] == score["replay_agrees"]["segments"]
 
 
+def test_a_recording_reviewed_labelled_and_scored(world, tmp_path):
+    """A recording (P5's tooling), made here of two avatars standing in the hall facing the camera (avatars only):
+    the first look writes its review sheets; its tracks labelled from the scene's truth, the second look scores
+    them: the enrolled one named, the other not."""
+    import csv
+    import math
+
+    import cv2
+
+    from bifold_demo.characters.character import Character
+    from bifold_demo.characters.model import CharacterState
+    from bifold_demo.recognition import evaluate as E
+    from bifold_demo.recognition import evalvideo, protocols
+    from bifold_demo.recognition.truth import frame_truth
+    from bifold_demo.scenes import fair
+    from bifold_demo.sources import FixedStepClock, SceneSource
+
+    renderer, engine, out = world
+    faces = tmp_path / "faces"
+    for item in E.parse({"format": 1, "items": protocols.gallery_items(["Male_Adult_05"])}, ".").stills():
+        (faces / "Male_Adult_05").mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(faces / "Male_Adult_05" / f"{item.id[-3:]}.png"), renderer.still(item)["image"])
+    scene = fair.build_scene(people=[])
+    cam = fair.CAMERA_POSITION
+    for k, (name, distance, side) in enumerate((("Male_Adult_05", 3.5, -0.6), ("Male_Adult_12", 4.5, 0.7))):
+        spot = (cam[0] + side, 0.0, cam[2] - distance)
+        heading = math.degrees(math.atan2(cam[0] - spot[0], cam[2] - spot[2]))
+        person = Character(renderer.model(name), lambda _t, s=spot, h=heading: CharacterState(s, h, []),
+                           name=f"stand {name}")
+        scene.add(person)
+    video = tmp_path / "session.avi"
+    source = SceneSource(scene, 1920, 1080, fps=5.0, clock=FixedStepClock(5.0))
+    source.start()
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"MJPG"), 5.0, (1920, 1080))
+    truth = []
+    for _ in range(15):
+        frame = source.read()
+        writer.write(frame.image)
+        truth.append([(t.avatar, tuple(v * 1280 / 1920 for v in t.box)) for t in frame_truth(scene, (1920, 1080))])
+    writer.release()
+    source.stop()
+    raw = {"format": 1, "name": "session", "items": [{"id": "session", "kind": "video", "path": "session.avi",
+                                                      "faces": "faces", "labels": "session.labels.csv"}]}
+    manifest = E.parse(raw, tmp_path)
+    run = E.Run({"commercial": engine}, out, progress=None, draws=50)
+    item = manifest.of_kind("video")[0]
+    assert evalvideo.run_video(run, item, tmp_path, None) == {}  # (the first look: the sheets to fill in)
+    sheet = tmp_path / "session.labels.csv"
+    assert sheet.is_file() and (tmp_path / "session.review.jpg").is_file()
+    data = __import__("json").loads((tmp_path / "session.commercial.json").read_text())
+    rows = list(csv.DictReader(sheet.open()))
+    for row in rows:  # (label each track as the person its boxes overlap most)
+        boxes = {b[0]: b[1:] for b in data["tracks"][row["track"]]["boxes"]}
+        votes = {}
+        for k, people in enumerate(truth):
+            box = boxes.get(round(k / 5.0, 4))
+            for avatar, theirs in people:
+                if box is not None and evalvideo._iou(box, theirs) > 0.5:
+                    votes[avatar] = votes.get(avatar, 0) + 1
+        who = max(votes, key=votes.get) if votes else "skip"
+        row["label"] = who if who == "Male_Adult_05" else ("stranger" if who != "skip" else "skip")
+    with sheet.open("w", newline="") as handle:
+        writer_ = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer_.writeheader()
+        writer_.writerows(rows)
+    scored = evalvideo.run_video(run, item, tmp_path, None)["commercial"]
+    summary = scored["summary"]
+    assert scored["labelled"] >= 2 and summary["known"]["all"] >= 1 and summary["strangers"]["all"] >= 1
+    assert summary["known"]["named"]["rate"] == 1.0 and summary["strangers"]["fpir_all"]["rate"] == 0.0
+
+
 def test_a_face_made_from_renders_of_another_avatar(world):
     """Male_Adult_05's face (textures made from a render of him) on Male_Adult_12: it is still Male_Adult_05 to the
     recogniser, more than it is Male_Adult_12."""

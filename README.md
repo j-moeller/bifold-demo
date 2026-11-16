@@ -1418,6 +1418,59 @@ decisions are kept, and replayed with other margins of the calibration's
 per-track offsets (`recognition/margins.py`: the 95 % bound that ships, the
 bootstrap's median, the point estimate).
 
+#### Real people on the Mac (P4 and P5)
+
+The calibrations ship made from avatars, so what they do on real faces must be
+measured on real faces: with **consenting** people, in folders that are never
+committed (`eval/` is git-ignored; so is `faces/`).
+
+**P4, photos.** At least 20 people, at least 10 photos each over several days,
+lights and poses, the enrolment photos never among the probes, and consenting
+people who are not enrolled as strangers:
+
+```
+~/consented/
+  enrol/<name>/*.jpg       enrolment photos of each enrolled person (the gallery)
+  probe/<name>/*.jpg       other photos of the same people: other days, light and poses
+  strangers/<name>/*.jpg   photos of consenting people who are not enrolled
+  conditions.csv           optional: file,distance,light,pose,... (free labels to group by)
+```
+
+```bash
+bifold-faces eval --build photos --photos ~/consented     # writes ~/consented/manifest.json
+bifold-faces eval ~/consented/manifest.json --profiles best licensed commercial --out ~/consented/eval
+```
+
+Each probe is also measured shrunk to a half, a quarter and an eighth (a size
+curve; shrunk photos are not native low resolution, so P5 decides for small
+faces).
+
+**P5, webcam sessions.** Record sessions of the enrolled and the
+not-enrolled people walking and standing at 1-6 m, review the tracks once,
+then score them:
+
+```bash
+bifold-faces eval --record ~/consented/sessions/s1.avi --capture 3840x2160 --seconds 120
+bifold-faces --faces faces eval --review ~/consented/sessions/s1.avi --profiles best licensed commercial
+#   the first time: writes s1.review.jpg (each track's faces) and s1.labels.csv; fill in each track's label
+#   (the person's name as enrolled, "stranger", or "skip" for a track with two people or nobody)
+bifold-faces --faces faces eval --review ~/consented/sessions/s1.avi --profiles best licensed commercial --acceptance
+```
+
+The pipeline runs over the recording exactly as live (the windows are cut
+from the full picture), with the first profile's tracks labelled by hand and
+the other profiles' tracks taking the label of the track they overlap most.
+Without a scene's truth, a face counts as shown when the pipeline found it
+turned less than 45 degrees.
+
+**What to report** (numbers only, never the sheets or anything else made
+from the photos and recordings), per profile: the people and tracks counted;
+known people named within 2 and 5 s with their intervals, the time to a name,
+wrong names, strangers named; on P4 the TAR at FAR and FNIR at FPIR per size;
+and the acceptance verdict. If the achieved false-alarm rate on the
+strangers is far from the target (the shipped calibrations come from
+avatars), a calibration from consenting people's photos is the next step.
+
 ## The virtual high-resolution sensor
 
 Faces in the 1280x720 view have only 10-22 pixels between the eyes, while

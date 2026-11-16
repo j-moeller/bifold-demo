@@ -517,6 +517,35 @@ def test_the_margins_offsets():
     assert checked["none"]["0.01"]["with"]["per_track"] > checked["bound"]["0.01"]["with"]["per_track"]
 
 
+def test_labels_carried_to_another_profiles_tracks_and_scored(tmp_path):
+    from bifold_demo.recognition import evalvideo
+
+    sheet = tmp_path / "s.labels.csv"
+    sheet.write_text("track,first,last,frames,faces,shown_by_the_system,label\n1,0,2,3,3,,Ada\n2,0,2,3,3,,stranger\n"
+                     "3,0,1,2,0,,\n4,0,1,2,1,,skip\n")
+    labels = evalvideo.read_labels(sheet)
+    assert labels == {"1": "Ada", "2": "stranger", "4": "skip"}
+
+    def run(tracks):
+        return {"tracks": {t: {"boxes": [[k * 0.5, *box] for k in range(3)], "rows": rows, "faces": []}
+                           for t, (box, rows) in tracks.items()}}
+
+    named = [[0.0, True, "Ada", 1.0, 0.1, 4.0, 0.5, "undecided", None], [0.5, True, "Ada", 5.0, 0.2, 4.0, 1.0,
+                                                                         "named", "Ada"],
+             [1.0, True, "Ada", 5.0, 0.2, 4.0, 1.0, "named", "Ada"]]
+    waits = [[0.0, True, "Ada", 1.0, 0.1, 4.0, 1.0, "undecided", None], [0.5, True, None, None, None, None, 1.0,
+                                                                          "unknown", None],
+             [1.5, True, None, None, None, None, 1.0, "unknown", None]]
+    reference = run({"1": ((0, 0, 50, 150), named), "2": ((200, 0, 250, 150), waits), "4": ((400, 0, 450, 150), waits)})
+    other = run({"7": ((2, 1, 52, 151), named), "8": ((198, 0, 251, 149), waits), "9": ((600, 0, 650, 150), waits)})
+    carried = evalvideo.carry_labels(reference, labels, other)
+    assert carried == {"7": "Ada", "8": "stranger"}  # (track 9 overlaps nobody labelled)
+    segments = evalvideo.score_video(other | {"tracks": other["tracks"]}, carried, known=["Ada"])
+    by = {g.avatar: g for g in segments}
+    assert by["Ada"].known and by["Ada"].correct_at == 0.5 and by["Ada"].first_shown == 0.0
+    assert not by["stranger"].known and by["stranger"].named_at is None and by["stranger"].unknown_at == 0.5
+
+
 def test_the_calibrations_hold_none_of_the_fairs_avatars():
     """The shipped calibrations were made from avatars that are not in the fair's library."""
     fair = ["Business_Female_01", "Business_Female_02", "Business_Male_02", "Business_Male_05", "Business_Male_07",
