@@ -17,7 +17,7 @@ Where the face-recognition work stands, as of 16 November 2026, with the numbers
 | S1 | Virtual high-resolution sensor: close-up windows on heads | Done |
 | S2 | High-resolution heads: 2048 textures, normal and specular maps, linear light | Done |
 | F2 | From a person to an identity: tracks, faces, evidence, calibrated decisions, demo | Done |
-| S3 | Head shape fitted to a person's photos | Built and reviewed. Review fixes 1-3 are on the branch; the re-measurement on held-out avatars is unfinished |
+| S3 | Head shape fitted to a person's photos | Built and reviewed. Review fixes 1-4 are on the branch, with the held-out numbers; the final checks are under way |
 | E1 | Evaluation: metrics, protocols, baselines, acceptance test | Started, paused before its first commit |
 | S4 | Close-ups: finer head meshes, skin and eye shading | Not started |
 
@@ -143,15 +143,23 @@ The recognisers' speeds here, per face:
   AdaFace's rank-1 went from 88 % to 100 %. The face-shape space beats a simpler free-form fit alone (AdaFace d' 4.52
   against 3.92), so it stays the default. The one exception is a child standing in for a person on an adult avatar:
   its same-person score drops a little (AdaFace -0.03).
-- **The geometry improves modestly.**
-  - On held-out avatars before the review's fixes, the landmark error fell from 2.65 to 2.38 mm.
-  - The review found that photos turned 60 degrees made the fit worse, notably the cheeks. With their landmarks set
-    aside, the tuning avatars improved from 2.29 to 2.00 mm (cheek surface 1.56 to 1.13 mm).
-  - The same re-measurement on the held-out avatars is not finished.
+- **The geometry improves, and more since the review's fixes.** The review found that photos turned 60 degrees made
+  the fit worse, notably at the cheeks. Their landmarks are now set aside (their outline still counts), the fit is
+  damped, and the rig's checks shrink a shape only near a problem. On the held-out avatars (20 pairs, six photos):
+
+  | Measure (mm) | Avatar's own head | Fitted, first version | Fitted, after the review |
+  |---|---|---|---|
+  | Landmarks | 2.65 | 2.38 | 2.17 |
+  | Surface | 1.25 | 1.35 | 1.10 |
+  | Cheek surface | 1.10 | 1.71 | 1.09 |
+
+  18 of 20 pairs are better, against 13 before. AdaFace's same-person score rose from 0.502 with the avatar's own head
+  to 0.585, against 0.574 with the first version. Of the 24 pair-and-model cases, 23 gain; the child is the
+  exception.
 - **Real photos,** checked locally with numbers only: same-person scores rose by 0.02-0.04. These were the same photos
   the textures were made from.
-- **Review:** no high findings, 5 medium and 11 low. Fixes 1-3 are on the branch: turned photos, sharper and local rig
-  checks, focal lengths, caches, tests, the neck seam.
+- **Review:** no high findings, 5 medium and 11 low. Fixes 1-4 are on the branch: turned photos, sharper and local rig
+  checks, focal lengths, caches, tests, the neck seam, the numbers above.
 
 ## Open issues
 
@@ -170,13 +178,12 @@ The recognisers' speeds here, per face:
 6. **Head shapes:**
    - the ears keep the avatar's shape;
    - the iris-based size is not validated on real heads;
-   - the held-out numbers after the review's fixes are pending.
+   - the head-shape space alone moves little; the outlines and the free-form correction carry much of the gain.
 
 ## Resuming
 
-1. **S3: finish the review fixes.** The builder's unfinished re-measurement and docs are uncommitted in its worktree
-   (`.claude/worktrees/agent-ad633bfa96217d1db`, branch `s3-review-fixes`).
-2. **E1, the evaluation.** It starts from its brief; nothing was committed.
+1. **S3: the review fixes' final checks** (the full suite). Its builder is on them.
+2. **E1, the evaluation.** Its builder works from its brief and commits results as they come.
    - metrics with intervals over people;
    - `bifold-faces eval` with manifests;
    - rendered stills and video;

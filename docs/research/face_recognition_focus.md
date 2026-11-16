@@ -575,3 +575,15 @@ branch and pushed; its results go into the progress log.
   - S3's review fixes 1-3 are on the branch. Its re-measurement on the held-out avatars is unfinished, uncommitted in
     its worktree.
   - E1 was paused before its first commit. S4 is not started.
+- **16 November, 01:30 UTC: resumed on request ("Continue tasks"); S3's held-out numbers after the review's fixes are
+  on the branch.**
+  - Photos turned more than 45 degrees no longer shape the head, only its outline. The fit is damped, and the rig's
+    checks shrink a shape only near a problem.
+  - On the 20 held-out pairs:
+    - landmarks 2.65 → 2.17 mm (2.38 with the first version);
+    - surface 1.25 → 1.10 mm (1.35);
+    - the cheeks no longer get worse (surface 1.10 → 1.09 mm, against 1.71);
+    - 18 of 20 pairs are better.
+  - AdaFace's same-person score is 0.502 with the avatar's own head and 0.585 with the fitted one; 23 of 24 pair and
+    model cases gain.
+  - [face_recognition_status.md](face_recognition_status.md) is updated. E1's builder started again from its brief.
